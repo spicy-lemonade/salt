@@ -119,7 +119,3 @@ Salt puts your files in a new folder with their original names and folders. It n
 - `salt doctor` checks your setup and tells you if anything needs fixing.
 - `salt verify` makes sure every file in your backup can be unlocked.
 - `salt recovery test` checks your recovery words or passphrase still work.
-
-## 📄 License
-
-MIT
