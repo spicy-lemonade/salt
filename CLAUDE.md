@@ -84,15 +84,60 @@ make e2e
 go test ./internal/seal -run TestRoundTrip
 ```
 
-### Code Quality
-
-
 ## Project notes
 - The project uses Go 1.26+ (module `github.com/spicy-lemonade/salt`).
-- **Memory and process safety come first.** An earlier attempt crashed the machine when tests kept restarting themselves. Follow the rules in `docs/design.md` under "Process and memory safety", and don't weaken them.
+- **Memory and process safety come first.** Follow the rules in `docs/design.md` under "Process and memory safety", and don't weaken them.
 - Never touch the real keychain in tests, use `keys.MemStore` in unit tests and `SALT_KEYSTORE=file` in e2e.
 - `internal/keys` pins the phrase-to-key derivation (`TestIdentityFromEntropyPinned`). Changing `deriveSalt` or `deriveInfo` would make every existing recovery phrase useless.
 - User-facing onboarding and warning copy is agreed wording (see `docs/design.md`, "Onboarding copy"). Do not reword it without asking.
 - Salt prints to stderr only. A Hermes `--no-agent` cron job forwards any stdout as a message, so success must be silent on stdout.
 - Decided out of scope is Touch ID gating, and switching recovery method from the 12 word passphrase to the user chosen passphrase or vice versa.
 - Not yet built are the source adapters (SQLite, Postgres/pgvector, OpenViking), a `salt backup` preset, splitting files over 100 MB, the signed index, and the Homebrew tap and release.
+
+### Agent contributing rules
+
+These rules are for AI agents working on Salt for external contributors. Follow them for every change.
+
+**Tests are required.**
+- Every change must come with tests. A pull request without tests will not be accepted.
+- New behaviour needs tests for both the normal case and the failure cases, such as bad input, missing files, a wrong key or a closed terminal.
+- A bug fix needs a test that fails without the fix and passes with it.
+- Combined coverage (unit and end-to-end together) must stay at 90% or above. Never lower it.
+
+**Where tests go.**
+- Unit tests sit next to the code they test, in the same package. They must never start another program. No `git`, no `go build`, no running `salt`. `internal/rules` fails the build if they do.
+- Anything that needs real git or the real `salt` binary goes in `test/e2e`, in a file starting with `//go:build e2e`. Use the `newEnv` helper there so every run gets a temporary home folder.
+- Commands in `internal/app` are tested through the fake `UI` (`scriptUI`) and fake git (`fakeGit`) in `app_test.go`. Reuse them rather than calling real git.
+
+**Keep tests safe.**
+- Never touch the real keychain. Use `keys.MemStore` in unit tests. Any test package that could reach `keys.KeyringStore` must call `keyring.MockInit()` first. End-to-end tests already use `SALT_KEYSTORE=file`.
+- Only write inside `t.TempDir()`. Never read or write the real `~/.hermes`, a real backup repo or the real home folder.
+- Set `keys.WrapWorkFactor = 10` in any test package that locks keys with a passphrase. At full strength each lock uses 256 MB of memory.
+- Don't weaken `internal/rules`, `internal/guard` or the limits in the `Makefile`. They stop tests from crashing the machine.
+
+**How to test locally.** Run these from the repo root, in this order. All of them must pass before you open a pull request.
+
+```bash
+# Formatting. Must print nothing.
+gofmt -l .
+
+# Look for common mistakes
+make vet
+
+# Unit tests. Writes coverage.out
+make test
+
+# End-to-end tests. Writes coverage-e2e.out
+make e2e
+
+# Combined coverage. Must be 90% or above
+(cat coverage.out; tail -n +2 coverage-e2e.out) > coverage-all.out
+go tool cover -func=coverage-all.out | tail -1
+```
+
+To see which lines are not covered, open `go tool cover -html=coverage-all.out`.
+
+**Never:**
+- run `go test -tags e2e` directly. Always use `make e2e`, which sets the safety limits.
+- run `salt init`, `salt restore` or `salt recovery` on your own machine outside a temporary folder. They write to the real keychain.
+- change the recovery-phrase derivation (`deriveSalt`, `deriveInfo`) or the agreed onboarding wording in `docs/design.md`.
