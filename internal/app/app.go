@@ -25,7 +25,9 @@ type App struct {
 	// StoreName names where keys are kept, for messages ("macOS Keychain").
 	StoreName string
 	CacheDir  string
-	Git       GitOps
+	// TrustDir holds this machine's approved keys and settings per repo.
+	TrustDir string
+	Git      GitOps
 	// LookPath finds an executable the way the pre-commit hook would.
 	LookPath func(name string) (string, bool)
 	Now      func() time.Time
@@ -77,6 +79,9 @@ func LookPath(name string) (string, bool) {
 func (a *App) Seal(src, repoRoot string, prune bool) error {
 	r, err := repo.Open(repoRoot)
 	if err != nil {
+		return err
+	}
+	if err := a.checkTrusted(r); err != nil {
 		return err
 	}
 	res, err := seal.Seal(src, r, seal.Options{CacheDir: a.CacheDir, Prune: prune})

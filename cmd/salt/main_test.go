@@ -75,6 +75,8 @@ func TestRunUsageErrors(t *testing.T) {
 		{"doctor", "a", "b"},
 		{"hook"},
 		{"hook", "install", "a", "b"},
+		{"trust"},
+		{"trust", "a", "b"},
 	} {
 		var ue usageError
 		if err := run(args[0], args[1:]); !errors.As(err, &ue) {
@@ -108,6 +110,16 @@ func TestRunSealVerifyRestore(t *testing.T) {
 	os.MkdirAll(filepath.Join(src, "memories"), 0o755)
 	os.WriteFile(filepath.Join(src, "memories", "USER.md"), []byte("hello"), 0o644)
 
+	// A repo this machine hasn't approved is refused until `salt trust`.
+	if err := run("seal", []string{"--prune", src, root}); !errors.Is(err, app.ErrNotTrusted) {
+		t.Fatalf("seal before trust: %v", err)
+	}
+	if err := run("trust", []string{root}); !errors.Is(err, app.ErrNotInteractive) {
+		t.Fatalf("trust without a terminal or --yes: %v", err)
+	}
+	if err := run("trust", []string{"--yes", root}); err != nil {
+		t.Fatalf("trust --yes: %v", err)
+	}
 	if err := run("seal", []string{"--prune", src, root}); err != nil {
 		t.Fatalf("seal: %v", err)
 	}

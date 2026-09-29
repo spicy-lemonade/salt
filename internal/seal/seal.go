@@ -1,6 +1,7 @@
 package seal
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -74,6 +75,17 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(items) > MaxIndexEntries {
+		return nil, fmt.Errorf("%s has %d files; salt supports at most %d per backup", src, len(items), MaxIndexEntries)
+	}
+
+	// All repo writes go through rt, which refuses paths that lead outside
+	// the repo (for example a symlinked objects/ folder).
+	rt, err := os.OpenRoot(r.Root)
+	if err != nil {
+		return nil, err
+	}
+	defer rt.Close()
 
 	cPath, err := cachePath(opt.CacheDir, r.Root)
 	if err != nil {
@@ -96,7 +108,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		if err != nil {
 			return err
 		}
-		if prev, ok := c.Files[it.rel]; ok && prev.SHA256 == sha && objectIntact(r.Root, prev) {
+		if prev, ok := c.Files[it.rel]; ok && prev.SHA256 == sha && objectIntact(rt, prev) {
 			e.Object, e.SHA256, e.Size = prev.Object, sha, size
 			entries[i], newCache[i] = e, prev
 			reused.Add(1)
@@ -106,7 +118,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		if err != nil {
 			return err
 		}
-		ce, n, err := encryptFile(r, it.abs, obj)
+		ce, n, err := encryptFile(rt, r, it.abs, obj)
 		if err != nil {
 			return fmt.Errorf("%s: %w", it.rel, err)
 		}
@@ -138,11 +150,11 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		return nil, err
 	}
 	next.IndexSHA, next.IndexSize = ixSHA, c.IndexSize
-	if ixSHA != c.IndexSHA || !sizeIs(filepath.Join(r.Root, repo.IndexFile), c.IndexSize) {
-		if err := writeIndex(r.Root, b, r.Recipients); err != nil {
+	if ixSHA != c.IndexSHA || !sizeIs(rt, repo.IndexFile, c.IndexSize) {
+		if _, err := encryptTo(rt, repo.IndexFile, bytes.NewReader(b), r.Recipients); err != nil {
 			return nil, fmt.Errorf("writing index: %w", err)
 		}
-		fi, err := os.Stat(filepath.Join(r.Root, repo.IndexFile))
+		fi, err := rt.Lstat(repo.IndexFile)
 		if err != nil {
 			return nil, err
 		}
@@ -150,7 +162,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		res.IndexNew = true
 	}
 
-	removed, err := removeStale(r.Root, keep, opt.Prune)
+	removed, err := removeStale(rt, keep, opt.Prune)
 	res.Removed = removed
 	if err != nil {
 		return res, err
@@ -158,19 +170,18 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	return res, next.save(cPath)
 }
 
-func encryptFile(r *repo.Repo, abs, obj string) (cacheEntry, int64, error) {
+func encryptFile(rt *os.Root, r *repo.Repo, abs, obj string) (cacheEntry, int64, error) {
 	f, err := os.Open(abs)
 	if err != nil {
 		return cacheEntry{}, 0, err
 	}
 	defer f.Close()
 	cr := &countReader{r: f}
-	dst := filepath.Join(r.Root, filepath.FromSlash(obj))
-	sha, err := encryptTo(dst, cr, r.Recipients)
+	sha, err := encryptTo(rt, obj, cr, r.Recipients)
 	if err != nil {
 		return cacheEntry{}, 0, err
 	}
-	fi, err := os.Stat(dst)
+	fi, err := rt.Lstat(filepath.FromSlash(obj))
 	if err != nil {
 		return cacheEntry{}, 0, err
 	}
@@ -191,12 +202,13 @@ func objectName(encryptPaths bool, rel string) (string, error) {
 	return path.Join(repo.ObjectsDir, h[:2], h[2:]+".age"), nil
 }
 
-func objectIntact(root string, ce cacheEntry) bool {
-	return ce.Object != "" && sizeIs(filepath.Join(root, filepath.FromSlash(ce.Object)), ce.CipherSize)
+func objectIntact(rt *os.Root, ce cacheEntry) bool {
+	return ce.Object != "" && sizeIs(rt, ce.Object, ce.CipherSize)
 }
 
-func sizeIs(p string, n int64) bool {
-	fi, err := os.Stat(p)
+// sizeIs reports whether rel is a regular file (not a symlink) of size n.
+func sizeIs(rt *os.Root, rel string, n int64) bool {
+	fi, err := rt.Lstat(filepath.FromSlash(rel))
 	return err == nil && fi.Mode().IsRegular() && fi.Size() == n
 }
 
@@ -257,9 +269,10 @@ func walkSource(src string, exclude []string, res *Result) ([]item, error) {
 
 // removeStale deletes ciphertext no longer referenced by the index, leftover
 // temp files, and (with prune) anything else salt does not manage.
-func removeStale(root string, keep map[string]bool, prune bool) ([]string, error) {
+func removeStale(rt *os.Root, keep map[string]bool, prune bool) ([]string, error) {
 	var removed []string
-	entries, err := os.ReadDir(root)
+	rfs := rt.FS()
+	entries, err := fs.ReadDir(rfs, ".")
 	if err != nil {
 		return nil, err
 	}
@@ -269,25 +282,23 @@ func removeStale(root string, keep map[string]bool, prune bool) ([]string, error
 		case name == ".git" || name == repo.Dir || name == repo.IndexFile || repo.Public[name]:
 			continue
 		case name == repo.ObjectsDir || name == repo.FilesDir:
-			err := filepath.WalkDir(filepath.Join(root, name), func(p string, d fs.DirEntry, err error) error {
+			err := fs.WalkDir(rfs, name, func(rel string, d fs.DirEntry, err error) error {
 				if err != nil || d.IsDir() {
 					return err
 				}
-				rel, _ := filepath.Rel(root, p)
-				rel = filepath.ToSlash(rel)
 				if keep[rel] {
 					return nil
 				}
 				removed = append(removed, rel)
-				return os.Remove(p)
+				return rt.Remove(filepath.FromSlash(rel))
 			})
 			if err != nil {
 				return removed, err
 			}
-			removeEmptyDirs(filepath.Join(root, name))
+			removeEmptyDirs(rt, name)
 		case strings.HasPrefix(name, ".salt-tmp-") || prune:
 			removed = append(removed, name)
-			if err := os.RemoveAll(filepath.Join(root, name)); err != nil {
+			if err := rt.RemoveAll(name); err != nil {
 				return removed, err
 			}
 		}
@@ -295,17 +306,17 @@ func removeStale(root string, keep map[string]bool, prune bool) ([]string, error
 	return removed, nil
 }
 
-func removeEmptyDirs(dir string) {
-	entries, err := os.ReadDir(dir)
+func removeEmptyDirs(rt *os.Root, dir string) {
+	entries, err := fs.ReadDir(rt.FS(), dir)
 	if err != nil {
 		return
 	}
 	for _, e := range entries {
 		if e.IsDir() {
-			removeEmptyDirs(filepath.Join(dir, e.Name()))
+			removeEmptyDirs(rt, path.Join(dir, e.Name()))
 		}
 	}
-	os.Remove(dir) // fails, harmlessly, unless empty
+	rt.Remove(filepath.FromSlash(dir)) // fails, harmlessly, unless empty
 }
 
 // checkDisjoint refuses a source inside the repo or a repo inside the source:

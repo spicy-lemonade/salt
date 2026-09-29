@@ -84,6 +84,25 @@ If you lose them and this laptop, your backups cannot be recovered.
 - `salt doctor` checks the hook, the key, the repo and the last backup. It
   needs no key.
 
+## Security
+
+Salt protects backups from anyone who can read the repo. It also guards
+against someone who can push to it:
+
+- **Added keys.** The repo's key list and settings are public files. `salt
+  init` saves an approved copy on the user's machine, and `salt seal` refuses
+  if the repo's copy differs. `salt trust` approves a genuine change, and
+  approves a repo cloned onto a new machine.
+- **Hiding plaintext from the hook.** `salt check` reads staged files as
+  `:0:<path>`, so a file named like `0:x` can't hide behind `x`.
+- **Symlinks.** Every read and write inside the repo goes through `os.Root`,
+  which refuses paths that lead outside the repo.
+- **Tampered index.** The index is read one entry at a time, capped at 100,000
+  entries and 32 MB, so a crafted index can't use much memory.
+
+Not yet covered: someone who can push can still plant a fake encrypted file.
+The signed index (#7 on the board) will catch that.
+
 ## Process and memory safety
 
 An earlier attempt crashed the machine when tests kept restarting themselves.

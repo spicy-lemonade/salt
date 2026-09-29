@@ -28,7 +28,7 @@ Salt is an open-source Go CLI that encrypts AI-agent memory backups before they 
 - BIP39 12-word recovery phrases; the age key is derived from the phrase with HKDF-SHA256
 - OS keychain via `github.com/zalando/go-keyring`, with a 0600 file fallback (`SALT_KEYSTORE=file`)
 
-**Commands:** `init`, `seal`, `check`, `restore`, `verify`, `doctor`, `recovery test|show`, `hook install`, `version`.
+**Commands:** `init`, `seal`, `check`, `restore`, `verify`, `doctor`, `trust`, `recovery test|show`, `hook install`, `version`.
 
 **Package layout:**
 - `cmd/salt`: CLI entry point and flag parsing
@@ -40,6 +40,7 @@ Salt is an open-source Go CLI that encrypts AI-agent memory backups before they 
 - `internal/hook`: pre-commit hook script and installation
 - `internal/gitx`: the only way salt runs git (hooks always disabled)
 - `internal/guard`: refuses nested salt processes; sets a soft memory limit
+- `internal/trust`: this machine's approved copy of each repo's keys and settings; seal refuses if the repo differs
 - `internal/rules`: source-scan test enforcing the process-safety rules
 
 ### Data Architecture
@@ -59,6 +60,8 @@ Salt is an open-source Go CLI that encrypts AI-agent memory backups before they 
 - Sealing needs only the public key, so encrypting a backup never needs anything secret.
 - The private key lives in the OS keychain.
 - Recovery is either a 12-word phrase (the recommended option, where the words are the key, and nothing secret is stored in the repo) or a user-chosen passphrase that wraps `.salt/key.age`.
+
+**Approved keys:** `salt init` saves the repo's keys and file-name setting to the OS config dir (`salt/trusted/<hash>.json`, 0600). `salt seal` refuses if the repo's `.salt/recipients.txt` or `format.json` differ, because anyone who can push could otherwise add their own key. `salt trust` approves a change. All repo reads and writes go through `os.Root` so symlinks can't lead outside the repo.
 
 **Change detection:** age output is randomised, so a local cache (the OS cache dir, `seal-<hash>.json`, 0600, never committed) maps plaintext hashes to existing ciphertext. Unchanged files keep their ciphertext, and an unchanged snapshot produces no commit.
 

@@ -96,7 +96,7 @@ func BlobHeads(dir, rev string, paths []string, n int, fn func(path string, head
 	go func() {
 		w := bufio.NewWriter(stdin)
 		for _, p := range batch {
-			fmt.Fprintf(w, "%s:%s\n", rev, p)
+			fmt.Fprintln(w, BlobSpec(rev, p))
 		}
 		w.Flush()
 		stdin.Close()
@@ -145,6 +145,17 @@ func BlobHeads(dir, rev string, paths []string, n int, fn func(path string, head
 		return fmt.Errorf("git cat-file: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+// BlobSpec names the blob for path at rev ("" for the index). For the index
+// it always uses the explicit stage form ":0:<path>": a bare ":<path>" would
+// let a file named "0:x" be read as stage 0 of "x", so a plaintext "0:x"
+// could hide behind an encrypted "x".
+func BlobSpec(rev, path string) string {
+	if rev == "" {
+		return ":0:" + path
+	}
+	return rev + ":" + path
 }
 
 // HookPath returns where git looks for the named hook in the repository at

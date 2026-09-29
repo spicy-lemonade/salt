@@ -16,6 +16,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/spicy-lemonade/salt/internal/seal"
+	"github.com/spicy-lemonade/salt/internal/trust"
 )
 
 // StaleAfter is how old the last commit can be before doctor warns that the
@@ -91,6 +92,7 @@ func (a *App) Doctor(repoRoot string) error {
 		map[bool]string{true: "encrypted", false: "visible"}[rp.Format.EncryptPaths], recoveryNoun(rp))
 
 	a.doctorKeys(r, rp)
+	a.doctorTrust(r, rp)
 	a.doctorHook(r, root)
 	a.doctorTree(r, root)
 
@@ -170,6 +172,22 @@ func (a *App) doctorKeys(r *report, rp *repo.Repo) {
 	}
 	r.add(warn, "no key for this backup on this machine: backups still work (they only need the public key), but restoring will ask for your %s",
 		recoveryNoun(rp))
+}
+
+func (a *App) doctorTrust(r *report, rp *repo.Repo) {
+	approved, err := a.trustStore().Load(rp.Root)
+	switch {
+	case errors.Is(err, trust.ErrNotApproved):
+		r.add(warn, "this machine has not approved the repo's keys yet, so `salt seal` will refuse; run `salt trust %s`", rp.Root)
+	case err != nil:
+		r.add(warn, "could not read the approved keys: %v", err)
+	default:
+		if d := trust.Diff(approved, trust.For(rp)); len(d) > 0 {
+			r.add(fail, "the repo's keys or settings changed since you approved them: %s", strings.Join(d, "; "))
+		} else {
+			r.add(ok, "keys and settings match what you approved")
+		}
+	}
 }
 
 func (a *App) doctorHook(r *report, root string) {

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"path/filepath"
+	"os"
 	"sort"
 	"sync"
 
@@ -35,6 +35,11 @@ func Verify(root string, ids []age.Identity, workerCount int) (*VerifyResult, er
 	if err != nil {
 		return nil, err
 	}
+	rt, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer rt.Close()
 	res := &VerifyResult{}
 	var files []Entry
 	referenced := map[string]bool{}
@@ -50,7 +55,7 @@ func Verify(root string, ids []age.Identity, workerCount int) (*VerifyResult, er
 
 	var mu sync.Mutex
 	forEach(len(files), workers(workerCount), func(i int) error {
-		n, err := verifyEntry(root, ids, files[i])
+		n, err := verifyEntry(rt, ids, files[i])
 		mu.Lock()
 		defer mu.Unlock()
 		res.Bytes += n
@@ -62,12 +67,11 @@ func Verify(root string, ids []age.Identity, workerCount int) (*VerifyResult, er
 	sort.Strings(res.Problems)
 
 	for _, dir := range []string{repo.ObjectsDir, repo.FilesDir} {
-		filepath.WalkDir(filepath.Join(root, dir), func(p string, d fs.DirEntry, err error) error {
+		fs.WalkDir(rt.FS(), dir, func(rel string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return nil
 			}
-			rel, _ := filepath.Rel(root, p)
-			if rel = filepath.ToSlash(rel); !referenced[rel] {
+			if !referenced[rel] {
 				res.Unreferenced = append(res.Unreferenced, rel)
 			}
 			return nil
@@ -76,8 +80,8 @@ func Verify(root string, ids []age.Identity, workerCount int) (*VerifyResult, er
 	return res, nil
 }
 
-func verifyEntry(root string, ids []age.Identity, e Entry) (int64, error) {
-	r, closeFn, err := decryptStream(filepath.Join(root, filepath.FromSlash(e.Object)), ids)
+func verifyEntry(rt *os.Root, ids []age.Identity, e Entry) (int64, error) {
+	r, closeFn, err := decryptStream(rt, e.Object, ids)
 	if errors.Is(err, fs.ErrNotExist) {
 		return 0, fmt.Errorf("%s: its encrypted file %s is missing", e.Path, e.Object)
 	}

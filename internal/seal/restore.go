@@ -40,6 +40,11 @@ func Restore(root string, ids []age.Identity, dest string, opt RestoreOptions) (
 	if err != nil {
 		return nil, err
 	}
+	rt, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer rt.Close()
 	entries, err := filterEntries(ix.Entries, opt.Paths)
 	if err != nil {
 		return nil, err
@@ -79,7 +84,7 @@ func Restore(root string, ids []age.Identity, dest string, opt RestoreOptions) (
 		}
 	}
 	err = forEach(len(files), workers(opt.Workers), func(i int) error {
-		return restoreFile(root, ids, tmp, files[i])
+		return restoreFile(rt, ids, tmp, files[i])
 	})
 	if err != nil {
 		return nil, err
@@ -116,7 +121,7 @@ func Restore(root string, ids []age.Identity, dest string, opt RestoreOptions) (
 	return res, nil
 }
 
-func restoreFile(root string, ids []age.Identity, tmp string, e Entry) error {
+func restoreFile(rt *os.Root, ids []age.Identity, tmp string, e Entry) error {
 	if err := safeParent(tmp, e.Path); err != nil {
 		return err
 	}
@@ -124,7 +129,7 @@ func restoreFile(root string, ids []age.Identity, tmp string, e Entry) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
-	r, closeFn, err := decryptStream(filepath.Join(root, filepath.FromSlash(e.Object)), ids)
+	r, closeFn, err := decryptStream(rt, e.Object, ids)
 	if err != nil {
 		return fmt.Errorf("%s: %w", e.Path, err)
 	}

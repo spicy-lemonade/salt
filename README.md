@@ -132,8 +132,11 @@ salt restore my-backup-repo --to ~/restored-files
 
 Salt puts your files in a new folder with their original names and folders. It never overwrites anything, so you can check them before copying them back.
 
+To start backing up from the new laptop, run `salt trust my-backup-repo` once. Salt shows which keys your backups are locked with and asks you to approve them. It won't back up until you do.
+
 ## 🩺 Checking everything works
 
 - `salt doctor` checks your setup and tells you if anything needs fixing.
 - `salt verify` makes sure every file in your backup can be unlocked.
 - `salt recovery test` checks your recovery words or passphrase still work.
+- `salt trust` approves your backup repo's keys on this laptop. If someone else adds a key to your repo, Salt refuses to back up and tells you. Only run `salt trust` if you made the change yourself.

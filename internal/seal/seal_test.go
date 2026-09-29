@@ -1,9 +1,11 @@
 package seal
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -571,13 +573,17 @@ func TestReadIndexRejectsBadIndexes(t *testing.T) {
 
 func TestEncryptToErrors(t *testing.T) {
 	f := newFixture(t, true)
-	file := filepath.Join(t.TempDir(), "file")
-	os.WriteFile(file, []byte("x"), 0o644)
-	if _, err := encryptTo(filepath.Join(file, "sub", "obj.age"), strings.NewReader("x"), f.repo.Recipients); err == nil {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "file"), []byte("x"), 0o644)
+	rt := openRoot(t, dir)
+	if _, err := encryptTo(rt, "file/sub/obj.age", strings.NewReader("x"), f.repo.Recipients); err == nil {
 		t.Error("encryptTo under a file succeeded")
 	}
-	if _, err := encryptTo(filepath.Join(t.TempDir(), "obj.age"), errReader{}, f.repo.Recipients); err == nil {
+	if _, err := encryptTo(rt, "obj.age", errReader{}, f.repo.Recipients); err == nil {
 		t.Error("encryptTo with a failing reader succeeded")
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Errorf("a failed encryptTo left files behind: %v", entries)
 	}
 	if _, _, err := hashFile(filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Error("hashFile of a missing file succeeded")
@@ -644,5 +650,172 @@ func TestRestoreSizeMismatch(t *testing.T) {
 	_, err = Restore(f.root, f.ids(), filepath.Join(t.TempDir(), "r"), RestoreOptions{})
 	if err == nil || !strings.Contains(err.Error(), "does not match the index") {
 		t.Fatalf("restore with a wrong size: %v", err)
+	}
+}
+
+// writeBombIndex streams a crafted index into the repo: small once
+// compressed, huge once decompressed.
+func writeBombIndex(t *testing.T, f *fixture, gen func(w io.Writer)) {
+	t.Helper()
+	pr, pw := io.Pipe()
+	go func() {
+		gen(pw)
+		pw.Close()
+	}()
+	if _, err := encryptTo(openRoot(t, f.root), repo.IndexFile, pr, f.repo.Recipients); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(filepath.Join(f.root, repo.IndexFile)); fi.Size() > 2<<20 {
+		t.Fatalf("bomb index is %d bytes; expected it to compress well", fi.Size())
+	}
+}
+
+func allocDuring(fn func()) uint64 {
+	runtime.GC()
+	var a, b runtime.MemStats
+	runtime.ReadMemStats(&a)
+	fn()
+	runtime.ReadMemStats(&b)
+	return b.TotalAlloc - a.TotalAlloc
+}
+
+// A tampered index must be refused without using lots of memory.
+func TestIndexBombs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("decompresses tens of MB")
+	}
+	const budget = 200 << 20
+	tests := []struct {
+		name string
+		gen  func(w io.Writer)
+		want string
+	}{
+		{"a million entries", func(w io.Writer) {
+			bw := bufio.NewWriter(w)
+			bw.WriteString(`{"version":1,"entries":[`)
+			for i := 0; i < 1_000_000; i++ {
+				if i > 0 {
+					bw.WriteByte(',')
+				}
+				bw.WriteString(`{"path":"a","object":"objects/aa/b.age","size":1,"mode":420}`)
+			}
+			bw.WriteString(`]}`)
+			bw.Flush()
+		}, "more than 100000 entries"},
+		{"one huge path", func(w io.Writer) {
+			bw := bufio.NewWriter(w)
+			bw.WriteString(`{"version":1,"entries":[{"path":"`)
+			chunk := bytes.Repeat([]byte("a"), 1<<20)
+			for i := 0; i < 100; i++ {
+				bw.Write(chunk)
+			}
+			bw.WriteString(`"}]}`)
+			bw.Flush()
+		}, "larger than"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t, true)
+			writeBombIndex(t, f, tt.gen)
+			var err error
+			used := allocDuring(func() { _, err = ReadIndex(f.root, f.ids()) })
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ReadIndex error = %v, want %q", err, tt.want)
+			}
+			t.Logf("allocated %d MiB", used>>20)
+			if used > budget {
+				t.Fatalf("ReadIndex allocated %d MiB, budget %d MiB", used>>20, budget>>20)
+			}
+		})
+	}
+}
+
+func TestSealRefusesTooManyFiles(t *testing.T) {
+	f := newFixture(t, true)
+	old := MaxIndexEntriesForTest(3)
+	defer MaxIndexEntriesForTest(old)
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); err == nil || !strings.Contains(err.Error(), "at most 3") {
+		t.Fatalf("Seal with too many files: %v", err)
+	}
+}
+
+func openRoot(t *testing.T, dir string) *os.Root {
+	t.Helper()
+	rt, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { rt.Close() })
+	return rt
+}
+
+// Someone with push access commits objects/ (or files/) as a symlink to a
+// folder outside the repo. Seal must refuse rather than write there.
+func TestSealRefusesSymlinkedObjectFolders(t *testing.T) {
+	for _, encryptPaths := range []bool{true, false} {
+		dir := map[bool]string{true: repo.ObjectsDir, false: repo.FilesDir}[encryptPaths]
+		t.Run(dir, func(t *testing.T) {
+			f := newFixture(t, encryptPaths)
+			outside := t.TempDir()
+			// With visible paths the object name is predictable, so a file
+			// outside could be overwritten.
+			victim := filepath.Join(outside, "SOUL.md.age")
+			os.WriteFile(victim, []byte("do not touch"), 0o644)
+			if err := os.Symlink(outside, filepath.Join(f.root, dir)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); err == nil {
+				t.Fatal("Seal wrote through a symlinked folder")
+			}
+			entries, _ := os.ReadDir(outside)
+			if len(entries) != 1 {
+				t.Fatalf("files written outside the repo: %v", entries)
+			}
+			if b, _ := os.ReadFile(victim); string(b) != "do not touch" {
+				t.Fatal("a file outside the repo was overwritten")
+			}
+		})
+	}
+}
+
+// A symlinked subfolder inside objects/ is refused the same way.
+func TestSealRefusesSymlinkInsideObjects(t *testing.T) {
+	f := newFixture(t, true)
+	f.seal(false)
+	outside := t.TempDir()
+	// Point every possible two-letter shard at the outside folder.
+	os.RemoveAll(filepath.Join(f.root, repo.ObjectsDir))
+	os.MkdirAll(filepath.Join(f.root, repo.ObjectsDir), 0o755)
+	for i := 0; i < 256; i++ {
+		os.Symlink(outside, filepath.Join(f.root, repo.ObjectsDir, fmt.Sprintf("%02x", i)))
+	}
+	os.RemoveAll(f.cache)
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); err == nil {
+		t.Fatal("Seal wrote through a symlinked shard folder")
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+		t.Fatalf("files written outside the repo: %v", entries)
+	}
+}
+
+// Restore must not read objects through a symlink that leaves the repo.
+func TestRestoreRefusesSymlinkedObjects(t *testing.T) {
+	f := newFixture(t, false)
+	f.seal(false)
+	moved := t.TempDir()
+	files := filepath.Join(f.root, repo.FilesDir)
+	if err := os.Rename(files, filepath.Join(moved, "files")); err != nil {
+		t.Fatal(err)
+	}
+	os.Symlink(filepath.Join(moved, "files"), files)
+	if _, err := Restore(f.root, f.ids(), filepath.Join(t.TempDir(), "r"), RestoreOptions{}); err == nil {
+		t.Fatal("restore read objects from outside the repo")
+	}
+	res, err := Verify(f.root, f.ids(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Problems) != res.Files {
+		t.Fatalf("verify accepted objects from outside the repo: %+v", res)
 	}
 }

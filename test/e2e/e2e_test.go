@@ -282,3 +282,61 @@ func TestExitCodes(t *testing.T) {
 		}
 	}
 }
+
+// A plaintext file named "0:x" must not hide behind an encrypted "x":
+// git reads ":0:x" as stage 0 of "x".
+func TestCheckStageNameTrick(t *testing.T) {
+	e := newEnv(t)
+	repoDir := filepath.Join(t.TempDir(), "r")
+	e.must(filepath.Dir(repoDir), "git", "init", "-q", "-b", "main", repoDir)
+	write(t, filepath.Join(repoDir, "x"), "age-encryption.org/v1\n-> X25519 fake\n")
+	write(t, filepath.Join(repoDir, "0:x"), "secret plaintext")
+	e.must(repoDir, "git", "add", "x", "0:x")
+	out, code := e.run(repoDir, "salt", "check")
+	if code != 1 || !strings.Contains(out, "0:x: not encrypted") {
+		t.Fatalf("check: exit %d\n%s", code, out)
+	}
+}
+
+// Someone with push access adds their own key to the repo. After a pull,
+// seal must refuse until the owner approves the change with `salt trust`.
+func TestSealRefusesAKeyAddedByAnotherPusher(t *testing.T) {
+	e := newEnv(t)
+	base := t.TempDir()
+	remote := filepath.Join(base, "remote.git")
+	mine := filepath.Join(base, "mine")
+	theirs := filepath.Join(base, "theirs")
+	src := filepath.Join(base, "stage")
+	e.must(base, "git", "init", "-q", "--bare", "-b", "main", remote)
+	e.must(base, "git", "clone", "-q", remote, mine)
+	passFile := filepath.Join(base, "pass")
+	write(t, passFile, "correct horse battery staple\n")
+	e.must(base, "salt", "init", mine, "--recovery", "passphrase", "--passphrase-file", passFile)
+	write(t, filepath.Join(src, "USER.md"), "secret\n")
+	e.must(base, "salt", "seal", "--prune", src, mine)
+	e.must(mine, "git", "add", "-A")
+	e.must(mine, "git", "commit", "-q", "-m", "backup 1")
+	e.must(mine, "git", "push", "-q", "origin", "main")
+
+	// The attacker adds their key from another clone. The hook doesn't stop
+	// them: recipients.txt is a public file.
+	e.must(base, "git", "clone", "-q", remote, theirs)
+	f, _ := os.OpenFile(filepath.Join(theirs, ".salt", "recipients.txt"), os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString("age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq\n")
+	f.Close()
+	e.must(theirs, "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-am", "totally normal change")
+	e.must(theirs, "git", "push", "-q", "origin", "main")
+
+	e.must(mine, "git", "pull", "-q", "--ff-only")
+	write(t, filepath.Join(src, "USER.md"), "new secret\n")
+	out, code := e.run(base, "salt", "seal", "--prune", src, mine)
+	if code != 1 || !strings.Contains(out, "key added: age1qyqszqgpqyqszqgp") {
+		t.Fatalf("seal after the attacker's commit: exit %d\n%s", code, out)
+	}
+	if out, code := e.run(base, "salt", "doctor", mine); code != 1 || !strings.Contains(out, "changed since you approved") {
+		t.Fatalf("doctor: exit %d\n%s", code, out)
+	}
+	// Once the owner has checked and approved the change, sealing works.
+	e.must(base, "salt", "trust", "--yes", mine)
+	e.must(base, "salt", "seal", "--prune", src, mine)
+}

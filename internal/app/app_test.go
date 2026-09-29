@@ -89,6 +89,7 @@ func newEnv(t *testing.T) *testEnv {
 		Store:     e.store,
 		StoreName: "test store",
 		CacheDir:  filepath.Join(base, "cache"),
+		TrustDir:  filepath.Join(base, "trusted"),
 		Git:       e.git,
 		LookPath:  func(name string) (string, bool) { return "/usr/local/bin/" + name, true },
 		Now:       func() time.Time { return e.now },

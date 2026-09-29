@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"path/filepath"
+	"os"
 
 	"filippo.io/age"
 	"github.com/spicy-lemonade/salt/internal/repo"
@@ -30,8 +30,17 @@ type Entry struct {
 	Symlink string `json:"symlink,omitempty"` // target, symlinks only
 }
 
-// maxIndexSize bounds how much decrypted index salt will read into memory.
-const maxIndexSize = 256 << 20
+// Limits on a decrypted index. A tampered index is only a few KB once
+// compressed but could expand far beyond what salt should hold in memory, so
+// it is read one entry at a time and refused past these limits. Seal refuses
+// to write an index that would break them.
+const (
+	maxIndexSize   = 32 << 20 // bytes of decrypted JSON
+	maxIndexString = 4096     // bytes in any path, object name or link target
+)
+
+// MaxIndexEntries is the most files and symlinks one backup can hold.
+var MaxIndexEntries = 100_000
 
 func (ix *Index) marshal() ([]byte, string, error) {
 	b, err := json.Marshal(ix)
@@ -43,42 +52,112 @@ func (ix *Index) marshal() ([]byte, string, error) {
 }
 
 func writeIndex(root string, b []byte, recipients []age.Recipient) error {
-	_, err := encryptTo(filepath.Join(root, repo.IndexFile), bytes.NewReader(b), recipients)
+	rt, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+	_, err = encryptTo(rt, repo.IndexFile, bytes.NewReader(b), recipients)
 	return err
 }
 
-// ReadIndex decrypts and validates a repository's index.
+// ReadIndex decrypts and validates a repository's index. It decodes one entry
+// at a time, so memory stays bounded however the index was crafted.
 func ReadIndex(root string, ids []age.Identity) (*Index, error) {
-	r, closeFn, err := decryptStream(filepath.Join(root, repo.IndexFile), ids)
+	rt, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer rt.Close()
+	r, closeFn, err := decryptStream(rt, repo.IndexFile, ids)
 	if err != nil {
 		return nil, err
 	}
 	defer closeFn()
-	b, err := io.ReadAll(io.LimitReader(r, maxIndexSize+1))
-	if err != nil {
-		return nil, fmt.Errorf("reading index: %w", err)
-	}
-	if len(b) > maxIndexSize {
+	lr := &io.LimitedReader{R: r, N: maxIndexSize + 1}
+	ix, err := decodeIndex(json.NewDecoder(lr))
+	if lr.N <= 0 {
 		return nil, fmt.Errorf("index is larger than %d bytes", maxIndexSize)
 	}
-	var ix Index
-	if err := json.Unmarshal(b, &ix); err != nil {
+	if err != nil {
 		return nil, fmt.Errorf("index: %w", err)
 	}
 	if ix.Version != repo.FormatVersion {
 		return nil, fmt.Errorf("index version %d is not supported", ix.Version)
 	}
-	for i, e := range ix.Entries {
-		p, err := repo.CleanPath(e.Path)
+	return ix, nil
+}
+
+func decodeIndex(dec *json.Decoder) (*Index, error) {
+	if err := expectDelim(dec, '{'); err != nil {
+		return nil, err
+	}
+	ix := &Index{}
+	for dec.More() {
+		key, err := dec.Token()
 		if err != nil {
-			return nil, fmt.Errorf("index: %w", err)
+			return nil, err
 		}
-		ix.Entries[i].Path = p
-		if e.Symlink == "" {
-			if _, err := repo.CleanPath(e.Object); err != nil {
-				return nil, fmt.Errorf("index: object for %s: %w", p, err)
+		switch key {
+		case "version":
+			if err := dec.Decode(&ix.Version); err != nil {
+				return nil, err
 			}
+		case "entries":
+			if err := decodeEntries(dec, ix); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, fmt.Errorf("unexpected field %v", key)
 		}
 	}
-	return &ix, nil
+	return ix, expectDelim(dec, '}')
+}
+
+func decodeEntries(dec *json.Decoder, ix *Index) error {
+	if err := expectDelim(dec, '['); err != nil {
+		return err
+	}
+	for dec.More() {
+		if len(ix.Entries) >= MaxIndexEntries {
+			return fmt.Errorf("more than %d entries", MaxIndexEntries)
+		}
+		var e Entry
+		if err := dec.Decode(&e); err != nil {
+			return err
+		}
+		if err := validEntry(&e); err != nil {
+			return err
+		}
+		ix.Entries = append(ix.Entries, e)
+	}
+	return expectDelim(dec, ']')
+}
+
+func validEntry(e *Entry) error {
+	if len(e.Path) > maxIndexString || len(e.Object) > maxIndexString || len(e.Symlink) > maxIndexString {
+		return fmt.Errorf("entry longer than %d bytes", maxIndexString)
+	}
+	p, err := repo.CleanPath(e.Path)
+	if err != nil {
+		return err
+	}
+	e.Path = p
+	if e.Symlink == "" {
+		if _, err := repo.CleanPath(e.Object); err != nil {
+			return fmt.Errorf("object for %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
+func expectDelim(dec *json.Decoder, want json.Delim) error {
+	t, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if d, ok := t.(json.Delim); !ok || d != want {
+		return fmt.Errorf("expected %q, got %v", want, t)
+	}
+	return nil
 }

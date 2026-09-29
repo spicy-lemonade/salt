@@ -47,6 +47,10 @@ Checking:
       the index. Needs your key.
   salt doctor [REPO]
       Check salt, the hook, the key and the repo are healthy. Needs no key.
+  salt trust [--yes] REPO
+      Approve the repo's keys and settings for backups from this machine.
+      Needed after cloning a backup repo onto a new machine, or after you
+      change its keys yourself.
 
 Other:
   salt hook install [REPO]
@@ -113,6 +117,7 @@ func newApp() (*app.App, error) {
 		Store:     store,
 		StoreName: name,
 		CacheDir:  cache,
+		TrustDir:  filepath.Join(cfg, "salt", "trusted"),
 		Git:       app.RealGit{},
 		LookPath:  app.LookPath,
 		Now:       time.Now,
@@ -207,6 +212,14 @@ func run(cmd string, args []string) error {
 			return err
 		}
 		return a.Doctor(orDot(pos))
+	case "trust":
+		fs := newFlags("trust")
+		yes := fs.Bool("yes", false, "approve without asking")
+		pos, err := parse(fs, args, 1, 1)
+		if err != nil {
+			return err
+		}
+		return a.Trust(pos[0], *yes)
 	case "hook":
 		if len(args) == 0 || args[0] != "install" {
 			return usageError{"usage: salt hook install [REPO]"}
