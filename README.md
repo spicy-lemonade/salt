@@ -22,7 +22,7 @@ Salt locks your files before they reach GitHub. Anyone who looks inside only see
 brew install spicy-lemonade/tap/salt
 ```
 
-Use the full name above. A plain `brew install salt` installs a different tool called SaltStack.
+Use the full name above. (A plain `brew install salt` installs a different tool called SaltStack, so don't do that!).
 
 You can also install Salt with Go.
 
