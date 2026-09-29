@@ -1,0 +1,85 @@
+package seal
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// cache is salt's local memory of what it sealed last time, so unchanged
+// files keep their existing ciphertext (age output is randomised, so
+// re-encrypting would change every file every night). It holds plaintext
+// hashes and real paths, so it is never committed and is written 0600.
+type cache struct {
+	// Key ties the cache to a set of recipients and layout; if either
+	// changes, everything is re-encrypted.
+	Key       string                `json:"key"`
+	IndexSHA  string                `json:"index_sha"`
+	IndexSize int64                 `json:"index_size"`
+	Files     map[string]cacheEntry `json:"files"`
+}
+
+type cacheEntry struct {
+	SHA256     string `json:"sha256"`
+	Object     string `json:"object"`
+	CipherSize int64  `json:"cipher_size"`
+}
+
+func cacheKey(recipients []string, encryptPaths bool) string {
+	h := sha256.New()
+	h.Write([]byte(strings.Join(recipients, "\n")))
+	if encryptPaths {
+		h.Write([]byte{1})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func cachePath(dir, repoRoot string) (string, error) {
+	abs, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	s := sha256.Sum256([]byte(abs))
+	return filepath.Join(dir, "seal-"+hex.EncodeToString(s[:8])+".json"), nil
+}
+
+func loadCache(path, key string) *cache {
+	empty := &cache{Key: key, Files: map[string]cacheEntry{}}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return empty
+	}
+	var c cache
+	if json.Unmarshal(b, &c) != nil || c.Key != key || c.Files == nil {
+		return empty
+	}
+	return &c
+}
+
+func (c *cache) save(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	b, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// DefaultCacheDir is ~/Library/Caches/salt, ~/.cache/salt, etc.
+func DefaultCacheDir() (string, error) {
+	d, err := os.UserCacheDir()
+	if err != nil {
+		return "", errors.New("no user cache directory; set $XDG_CACHE_HOME or $HOME")
+	}
+	return filepath.Join(d, "salt"), nil
+}
