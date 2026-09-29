@@ -98,10 +98,18 @@ func TestTrustApprovesAChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := e.ui.out.String()
-	for _, want := range []string{"(your key on this machine)", second, "Changed since you last approved", "key added: " + second, "Not approved"} {
+	for _, want := range []string{"(your key on this machine)", second + "  ⚠ NOT on this machine",
+		"⚠ 1 key(s) are not stored on this machine", "Changed since you last approved", "key added: " + second, "Not approved"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("trust output missing %q:\n%s", want, out)
 		}
+	}
+	// The warnings come before the question.
+	if strings.Index(out, "not stored on this machine") > strings.Index(out, "Approve them?") {
+		t.Error("key warning printed after the question")
+	}
+	if strings.Contains(out, "File names are visible") {
+		t.Error("visible-names warning shown for a repo with hidden names")
 	}
 	src := t.TempDir()
 	if err := e.app.Seal(src, e.root, false); !errors.Is(err, ErrNotTrusted) {
@@ -121,6 +129,29 @@ func TestTrustApprovesAChange(t *testing.T) {
 	e.app.Trust(e.root, true)
 	if !strings.Contains(e.ui.out.String(), "Nothing has changed since you last approved") {
 		t.Errorf("output:\n%s", e.ui.out.String())
+	}
+}
+
+func TestTrustWarnsAboutVisibleNames(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	showFileNames(t, e.root)
+	e.ui.out.Reset()
+	e.ui.answer = func(p, out string) (string, error) { return "n", nil }
+	if err := e.app.Trust(e.root, false); err != nil {
+		t.Fatal(err)
+	}
+	out := e.ui.out.String()
+	for _, want := range []string{"⚠ File names are visible", "file names changed from hidden to visible"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("trust output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "not stored on this machine") {
+		t.Error("key warning shown although the only key is on this machine")
+	}
+	if strings.Index(out, "File names are visible") > strings.Index(out, "Approve them?") {
+		t.Error("visible-names warning printed after the question")
 	}
 }
 

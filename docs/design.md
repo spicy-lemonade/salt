@@ -92,11 +92,15 @@ against someone who can push to it:
 - **Added keys.** The repo's key list and settings are public files. `salt
   init` saves an approved copy on the user's machine, and `salt seal` refuses
   if the repo's copy differs. `salt trust` approves a genuine change, and
-  approves a repo cloned onto a new machine.
+  approves a repo cloned onto a new machine. It warns before asking about any
+  key not stored on the machine, and about visible file names.
 - **Hiding plaintext from the hook.** `salt check` reads staged files as
   `:0:<path>`, so a file named like `0:x` can't hide behind `x`.
-- **Symlinks.** Every read and write inside the repo goes through `os.Root`,
-  which refuses paths that lead outside the repo.
+- **Symlinks.** Salt never creates symlinks where it keeps data (`.salt/`,
+  `index.age`, `objects/`, `files/`). Seal, restore and verify refuse to run
+  if one is there, whether it points outside the repo or back inside it. As a
+  second guard, every read and write goes through `os.Root`, which refuses
+  paths that lead outside the repo.
 - **Tampered index.** The index is read one entry at a time, capped at 100,000
   entries and 32 MB, so a crafted index can't use much memory.
 

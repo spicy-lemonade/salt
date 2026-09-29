@@ -31,6 +31,9 @@ type VerifyResult struct {
 // is written to disk. Unlike Restore it reports every problem rather than
 // stopping at the first.
 func Verify(root string, ids []age.Identity, workerCount int) (*VerifyResult, error) {
+	if err := checkNoSymlinks(root); err != nil {
+		return nil, err
+	}
 	ix, err := ReadIndex(root, ids)
 	if err != nil {
 		return nil, err

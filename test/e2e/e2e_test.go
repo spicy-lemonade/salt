@@ -340,3 +340,47 @@ func TestSealRefusesAKeyAddedByAnotherPusher(t *testing.T) {
 	e.must(base, "salt", "trust", "--yes", mine)
 	e.must(base, "salt", "seal", "--prune", src, mine)
 }
+
+// Someone with push access replaces objects/ with a symlink back to the repo
+// itself. Seal once "cleaned up" .git through it. It must refuse instead.
+func TestSealRefusesAPushedSymlink(t *testing.T) {
+	e := newEnv(t)
+	base := t.TempDir()
+	remote := filepath.Join(base, "remote.git")
+	mine := filepath.Join(base, "mine")
+	theirs := filepath.Join(base, "theirs")
+	src := filepath.Join(base, "stage")
+	e.must(base, "git", "init", "-q", "--bare", "-b", "main", remote)
+	e.must(base, "git", "clone", "-q", remote, mine)
+	passFile := filepath.Join(base, "pass")
+	write(t, passFile, "correct horse battery staple\n")
+	e.must(base, "salt", "init", mine, "--recovery", "passphrase", "--passphrase-file", passFile)
+	write(t, filepath.Join(src, "USER.md"), "secret\n")
+	e.must(base, "salt", "seal", "--prune", src, mine)
+	e.must(mine, "git", "add", "-A")
+	e.must(mine, "git", "commit", "-q", "-m", "backup 1")
+	e.must(mine, "git", "push", "-q", "origin", "main")
+
+	e.must(base, "git", "clone", "-q", remote, theirs)
+	e.must(theirs, "git", "rm", "-rq", "objects")
+	if err := os.Symlink(".", filepath.Join(theirs, "objects")); err != nil {
+		t.Fatal(err)
+	}
+	e.must(theirs, "git", "add", "objects")
+	e.must(theirs, "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "tidy up")
+	e.must(theirs, "git", "push", "-q", "origin", "main")
+
+	e.must(mine, "git", "pull", "-q", "--ff-only")
+	out, code := e.run(base, "salt", "seal", "--prune", src, mine)
+	if code != 1 || !strings.Contains(out, "symlink salt did not create at objects") {
+		t.Fatalf("seal after the pushed symlink: exit %d\n%s", code, out)
+	}
+	// The local repo is intact.
+	e.must(mine, "git", "status", "--short")
+	if _, err := os.Stat(filepath.Join(mine, ".salt", "format.json")); err != nil {
+		t.Fatal(".salt/format.json was deleted")
+	}
+	if out, code := e.run(base, "salt", "verify", mine); code != 1 || !strings.Contains(out, "symlink") {
+		t.Fatalf("verify: exit %d\n%s", code, out)
+	}
+}

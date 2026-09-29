@@ -66,6 +66,9 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	if err := checkDisjoint(src, r.Root); err != nil {
 		return nil, err
 	}
+	if err := checkNoSymlinks(r.Root); err != nil {
+		return nil, err
+	}
 	exclude := opt.Exclude
 	if exclude == nil {
 		exclude = DefaultExclude

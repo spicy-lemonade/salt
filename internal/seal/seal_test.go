@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -811,11 +812,53 @@ func TestRestoreRefusesSymlinkedObjects(t *testing.T) {
 	if _, err := Restore(f.root, f.ids(), filepath.Join(t.TempDir(), "r"), RestoreOptions{}); err == nil {
 		t.Fatal("restore read objects from outside the repo")
 	}
-	res, err := Verify(f.root, f.ids(), 0)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := Verify(f.root, f.ids(), 0); !errors.Is(err, ErrForeignSymlink) {
+		t.Fatalf("verify with a symlinked files/: %v", err)
 	}
-	if len(res.Problems) != res.Files {
-		t.Fatalf("verify accepted objects from outside the repo: %+v", res)
+}
+
+// A symlink pointing back inside the repo (objects/ -> .) once made seal's
+// clean-up delete files from .git and .salt while reporting success.
+func TestSymlinkPointingInsideTheRepo(t *testing.T) {
+	f := newFixture(t, true)
+	f.seal(false)
+	os.MkdirAll(filepath.Join(f.root, ".git"), 0o755)
+	os.WriteFile(filepath.Join(f.root, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+	os.RemoveAll(filepath.Join(f.root, repo.ObjectsDir))
+	os.Symlink(".", filepath.Join(f.root, repo.ObjectsDir))
+
+	_, err := Seal(f.src, f.repo, Options{CacheDir: f.cache})
+	if !errors.Is(err, ErrForeignSymlink) || !strings.Contains(err.Error(), "at objects") {
+		t.Fatalf("seal: %v", err)
+	}
+	for _, p := range []string{".git/HEAD", repo.FormatFile, repo.RecipientsFile, repo.IndexFile} {
+		if _, err := os.Stat(filepath.Join(f.root, p)); err != nil {
+			t.Errorf("%s was deleted", p)
+		}
+	}
+	if _, err := Restore(f.root, f.ids(), filepath.Join(t.TempDir(), "r"), RestoreOptions{}); !errors.Is(err, ErrForeignSymlink) {
+		t.Errorf("restore: %v", err)
+	}
+	if _, err := Verify(f.root, f.ids(), 0); !errors.Is(err, ErrForeignSymlink) {
+		t.Errorf("verify: %v", err)
+	}
+}
+
+// Symlinks anywhere salt keeps data are refused, not just objects/.
+func TestForeignSymlinksAnywhereManaged(t *testing.T) {
+	for _, link := range []string{repo.IndexFile, repo.Dir + "/extra", repo.FilesDir, repo.ObjectsDir + "/ab"} {
+		t.Run(link, func(t *testing.T) {
+			f := newFixture(t, true)
+			f.seal(false)
+			p := filepath.Join(f.root, filepath.FromSlash(link))
+			os.RemoveAll(p)
+			os.MkdirAll(filepath.Dir(p), 0o755)
+			if err := os.Symlink(t.TempDir(), p); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); !errors.Is(err, ErrForeignSymlink) {
+				t.Fatalf("seal with a symlink at %s: %v", link, err)
+			}
+		})
 	}
 }

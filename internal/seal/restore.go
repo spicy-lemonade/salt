@@ -36,6 +36,9 @@ type RestoreResult struct {
 // temporary directory next to dest, verifies every file against the index,
 // and only then moves the result into place.
 func Restore(root string, ids []age.Identity, dest string, opt RestoreOptions) (*RestoreResult, error) {
+	if err := checkNoSymlinks(root); err != nil {
+		return nil, err
+	}
 	ix, err := ReadIndex(root, ids)
 	if err != nil {
 		return nil, err

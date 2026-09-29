@@ -44,16 +44,26 @@ func (a *App) Trust(repoRoot string, yes bool) error {
 	}
 	pin := trust.For(r)
 	a.UI.Printf("Backups to %s will be encrypted to these keys:\n", r.Root)
+	unknown := 0
 	for _, rcpt := range pin.Recipients {
-		mark := ""
-		if _, err := a.Store.Get(rcpt); err == nil {
-			mark = "  (your key on this machine)"
-		} else if !errors.Is(err, keys.ErrNotFound) {
+		mark := "  (your key on this machine)"
+		if _, err := a.Store.Get(rcpt); errors.Is(err, keys.ErrNotFound) {
+			mark = "  ⚠ NOT on this machine"
+			unknown++
+		} else if err != nil {
 			return err
 		}
 		a.UI.Printf("  %s%s\n", rcpt, mark)
 	}
 	a.UI.Printf("File names are %s.\n", map[bool]string{true: "hidden", false: "visible"}[pin.EncryptPaths])
+	if unknown > 0 {
+		a.UI.Printf("\n⚠ %d key(s) are not stored on this machine. Whoever holds them can read every backup.\n"+
+			"  Only approve if you know whose they are, for example your own recovery phrase or another laptop of yours.\n", unknown)
+	}
+	if !pin.EncryptPaths {
+		a.UI.Printf("\n⚠ File names are visible. Anyone who can see the repo can read your folder and file names.\n" +
+			"  The contents are still encrypted.\n")
+	}
 	if approved, err := a.trustStore().Load(r.Root); err == nil {
 		if d := trust.Diff(approved, pin); len(d) > 0 {
 			a.UI.Printf("\nChanged since you last approved:\n  %s\n", strings.Join(d, "\n  "))
