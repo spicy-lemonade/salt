@@ -17,9 +17,13 @@ import (
 	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
+	"github.com/zalando/go-keyring"
 )
 
-func init() { keys.WrapWorkFactor = 10 } // cheap scrypt in tests
+func init() {
+	keys.WrapWorkFactor = 10 // cheap scrypt in tests
+	keyring.MockInit()       // never the real keychain
+}
 
 // scriptUI answers prompts through a callback that can see all output so far.
 type scriptUI struct {

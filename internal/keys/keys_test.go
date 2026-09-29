@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"filippo.io/age"
+	"github.com/zalando/go-keyring"
 )
 
 func init() {
+	keyring.MockInit() // never the real keychain
 	// Keep scrypt cheap in tests: 2^18 would use 256 MiB per wrap.
 	WrapWorkFactor = 10
 }
@@ -202,3 +206,99 @@ type brokenStore struct{}
 func (brokenStore) Get(string) (Secret, error) { return Secret{}, errors.New("no keychain") }
 func (brokenStore) Set(string, Secret) error   { return errors.New("no keychain") }
 func (brokenStore) Delete(string) error        { return errors.New("no keychain") }
+
+func TestKeyringStoreMocked(t *testing.T) {
+	keyring.MockInit() // in-memory; never the real keychain
+	var st KeyringStore
+	if _, err := st.Get("age1x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get missing: %v", err)
+	}
+	e, _ := NewEntropy()
+	if err := st.Set("age1x", PhraseSecret(e)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := st.Get("age1x"); err != nil || got != PhraseSecret(e) {
+		t.Fatalf("Get = %+v, %v", got, err)
+	}
+	if err := st.Delete("age1x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Delete("age1x"); err != nil {
+		t.Fatalf("Delete missing: %v", err)
+	}
+	keyring.MockInitWithError(errors.New("locked"))
+	if _, err := st.Get("age1x"); err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get with a broken keychain: %v", err)
+	}
+	if err := st.Delete("age1x"); err == nil {
+		t.Fatal("Delete with a broken keychain succeeded")
+	}
+	keyring.MockInit()
+}
+
+func TestErrorPaths(t *testing.T) {
+	if _, err := EncodePhrase([]byte{1}); err == nil {
+		t.Error("EncodePhrase accepted short entropy")
+	}
+	if _, err := IdentityFromEntropy([]byte{1}); err == nil {
+		t.Error("IdentityFromEntropy accepted short entropy")
+	}
+	if _, err := UnwrapIdentity([]byte("not an age file"), "pass"); err == nil {
+		t.Error("UnwrapIdentity accepted garbage")
+	}
+	if _, err := WrapIdentity(nil, ""); err == nil {
+		t.Error("WrapIdentity accepted an empty passphrase")
+	}
+	for _, s := range []Secret{{Kind: "weird"}, {Kind: KindPhrase, Entropy: "zz"}, {Kind: KindIdentity, Key: "nope"}} {
+		if _, err := s.Identity(); err == nil {
+			t.Errorf("Secret %+v gave an identity", s)
+		}
+	}
+	if _, err := (Secret{Kind: KindPhrase, Entropy: "zz"}).Phrase(); err == nil {
+		t.Error("bad hex gave a phrase")
+	}
+	if _, err := LookupWord("ab"); err == nil {
+		t.Error("two-letter word accepted")
+	}
+}
+
+func TestFileStoreErrors(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "file")
+	os.WriteFile(blocker, []byte("x"), 0o600)
+	fs := FileStore{Dir: blocker} // a file, not a directory
+	if err := fs.Set("age1x", Secret{Kind: KindPhrase}); err == nil {
+		t.Error("Set into a file path succeeded")
+	}
+	good := FileStore{Dir: dir}
+	os.WriteFile(good.path("age1bad"), []byte("{"), 0o600)
+	if _, err := good.Get("age1bad"); err == nil {
+		t.Error("Get of a corrupt file succeeded")
+	}
+	if err := writeFileAtomic(filepath.Join(dir, "missing", "f"), nil, 0o600); err == nil {
+		t.Error("writeFileAtomic into a missing dir succeeded")
+	}
+	if err := (FileStore{Dir: filepath.Join(dir, "none")}).Delete("age1x"); err != nil {
+		t.Errorf("Delete missing: %v", err)
+	}
+}
+
+func TestFallbackStoreMore(t *testing.T) {
+	mem := &MemStore{}
+	fs := FallbackStore{Primary: mem, Secondary: &MemStore{}}
+	e, _ := NewEntropy()
+	fs.Set("age1x", PhraseSecret(e))
+	if fs.Location("age1x") != "" {
+		t.Error("primary secret reported a fallback location")
+	}
+	fs2 := FallbackStore{Primary: brokenStore{}, Secondary: &MemStore{}}
+	if loc := fs2.Location("age1x"); loc != "fallback store" {
+		t.Errorf("Location = %q", loc)
+	}
+	if err := fs.Delete("age1x"); err != nil {
+		t.Fatal(err)
+	}
+	if mem.Len() != 0 {
+		t.Error("Delete left the secret")
+	}
+}

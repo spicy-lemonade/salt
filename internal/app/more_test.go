@@ -1,0 +1,333 @@
+package app
+
+import (
+	"bufio"
+	"bytes"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"filippo.io/age"
+	"github.com/spicy-lemonade/salt/internal/check"
+	"github.com/spicy-lemonade/salt/internal/keys"
+	"github.com/spicy-lemonade/salt/internal/repo"
+)
+
+func TestTerminal(t *testing.T) {
+	var out bytes.Buffer
+	term := &Terminal{in: bufio.NewReader(strings.NewReader("first\r\nlast")), out: &out}
+	term.Printf("hi %d\n", 1)
+	if s, err := term.ReadLine("? "); err != nil || s != "first" {
+		t.Fatalf("ReadLine = %q, %v", s, err)
+	}
+	// stdin is not a terminal in tests, so ReadSecret reads a plain line.
+	if s, err := term.ReadSecret("pw: "); err != nil || s != "last" {
+		t.Fatalf("ReadSecret = %q, %v", s, err)
+	}
+	if _, err := term.ReadLine("? "); !errors.Is(err, io.EOF) {
+		t.Fatalf("ReadLine at EOF: %v", err)
+	}
+	term.Clear() // stderr is not a terminal: nothing is printed
+	if term.Interactive() {
+		t.Error("tests should not look interactive")
+	}
+	if !strings.Contains(out.String(), "hi 1") || !strings.Contains(out.String(), "pw: ") {
+		t.Fatalf("output = %q", out.String())
+	}
+	if NewTerminal() == nil {
+		t.Fatal("NewTerminal returned nil")
+	}
+}
+
+func TestFormatHelpers(t *testing.T) {
+	for n, want := range map[int64]string{5: "5 bytes", 2048: "2.0 KB", 3 << 20: "3.0 MB", 2 << 30: "2.0 GB"} {
+		if got := humanBytes(n); got != want {
+			t.Errorf("humanBytes(%d) = %q, want %q", n, got, want)
+		}
+	}
+	for d, want := range map[time.Duration]string{5 * time.Minute: "5 minutes", 3 * time.Hour: "3 hours", 72 * time.Hour: "3 days"} {
+		if got := roughDuration(d); got != want {
+			t.Errorf("roughDuration(%v) = %q, want %q", d, got, want)
+		}
+	}
+	if shortKey("short") != "short" || !strings.Contains(shortKey(strings.Repeat("a", 40)), "…") {
+		t.Error("shortKey")
+	}
+}
+
+func TestLookPath(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "tool"), []byte("#!/bin/sh\n"), 0o755)
+	os.WriteFile(filepath.Join(dir, "plain"), []byte("x"), 0o644)
+	t.Setenv("PATH", ":"+dir)
+	if p, ok := LookPath("tool"); !ok || p != filepath.Join(dir, "tool") {
+		t.Errorf("LookPath(tool) = %q, %v", p, ok)
+	}
+	if _, ok := LookPath("plain"); ok {
+		t.Error("non-executable file found")
+	}
+	if _, ok := LookPath("salt-definitely-missing"); ok {
+		t.Error("missing command found")
+	}
+}
+
+func TestInitEdgeCases(t *testing.T) {
+	e := newEnv(t)
+	if err := e.app.Init(InitOptions{Repo: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "not a git repository") {
+		t.Fatalf("init outside git: %v", err)
+	}
+	if err := e.app.Init(InitOptions{Repo: e.root, Recovery: "carrier-pigeon"}); err == nil {
+		t.Fatal("unknown recovery method accepted")
+	}
+	e.ui.interactive = false
+	if err := e.app.Init(InitOptions{Repo: e.root}); !errors.Is(err, ErrNotInteractive) {
+		t.Fatalf("non-interactive init without --recovery: %v", err)
+	}
+	if err := e.app.Init(InitOptions{Repo: e.root, Recovery: repo.RecoveryPassphrase}); !errors.Is(err, ErrNotInteractive) {
+		t.Fatalf("non-interactive passphrase without a file: %v", err)
+	}
+	if err := e.app.Init(InitOptions{Repo: e.root, Recovery: repo.RecoveryPassphrase, PassphraseFile: "/nonexistent"}); err == nil {
+		t.Fatal("missing passphrase file accepted")
+	}
+	if _, err := os.Stat(filepath.Join(e.root, repo.Dir)); !os.IsNotExist(err) {
+		t.Fatal("a failed init wrote .salt")
+	}
+}
+
+// Choosing option 2 from the menu after an invalid answer.
+func TestChooseRecoveryMenu(t *testing.T) {
+	e := newEnv(t)
+	answers := []string{"7", "2"}
+	e.ui.answer = func(p, out string) (string, error) {
+		if strings.HasPrefix(p, "Choose [1]") {
+			a := answers[0]
+			answers = answers[1:]
+			return a, nil
+		}
+		return "correct horse battery staple", nil
+	}
+	if err := e.app.Init(InitOptions{Repo: e.root}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.ui.out.String(), "Please type 1 or 2.") {
+		t.Fatal("invalid choice not reported")
+	}
+	r, _ := repo.Open(e.root)
+	if r.Format.Recovery != repo.RecoveryPassphrase {
+		t.Fatalf("recovery = %q", r.Format.Recovery)
+	}
+}
+
+func TestInitKeepsForeignHookAndAttributes(t *testing.T) {
+	e := newEnv(t)
+	os.MkdirAll(filepath.Dir(e.hook), 0o755)
+	os.WriteFile(e.hook, []byte("#!/bin/sh\nnpm test\n"), 0o755)
+	os.WriteFile(filepath.Join(e.root, ".gitattributes"), []byte("*.png binary"), 0o644)
+	e.ui.answer = phraseAnswers(0)
+	if err := e.app.Init(InitOptions{Repo: e.root}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.ui.out.String(), "add `salt check` to it") {
+		t.Fatal("foreign hook not reported")
+	}
+	b, _ := os.ReadFile(filepath.Join(e.root, ".gitattributes"))
+	if string(b) != "*.png binary\n*.age binary\n" {
+		t.Fatalf(".gitattributes = %q", b)
+	}
+}
+
+func TestRecoveryShowBranches(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+
+	e.ui.answer = func(p, out string) (string, error) { return "n", nil }
+	if err := e.app.RecoveryShow(e.root); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(e.ui.out.String(), " 1. ") {
+		t.Fatal("phrase shown after answering no")
+	}
+
+	e.ui.interactive = false
+	if err := e.app.RecoveryShow(e.root); !errors.Is(err, ErrNotInteractive) {
+		t.Fatalf("non-interactive: %v", err)
+	}
+	e.ui.interactive = true
+	e.app.Store = &keys.MemStore{}
+	if err := e.app.RecoveryShow(e.root); err == nil || !strings.Contains(err.Error(), "no recovery phrase") {
+		t.Fatalf("no key: %v", err)
+	}
+	if err := e.app.RecoveryShow(t.TempDir()); !errors.Is(err, repo.ErrNotInitialised) {
+		t.Fatalf("not a repo: %v", err)
+	}
+	e.ui.interactive = false
+	if err := e.app.RecoveryTest(e.root); !errors.Is(err, ErrNotInteractive) {
+		t.Fatalf("RecoveryTest non-interactive: %v", err)
+	}
+	if err := e.app.Restore(RestoreOptions{Repo: e.root, To: t.TempDir()}); err == nil {
+		t.Fatal("restore without a key or terminal succeeded")
+	}
+}
+
+func TestRestoreAnswerNoToSaving(t *testing.T) {
+	e := newEnv(t)
+	phrase := healthyRepo(t, e)
+	e.app.Store = &keys.MemStore{}
+	e.ui.answer = func(p, out string) (string, error) {
+		if strings.HasPrefix(p, "Type your 12 words") {
+			return phrase, nil
+		}
+		return "n", nil
+	}
+	if err := e.app.Restore(RestoreOptions{Repo: e.root, To: filepath.Join(t.TempDir(), "r")}); err != nil {
+		t.Fatal(err)
+	}
+	if e.app.Store.(*keys.MemStore).Len() != 0 {
+		t.Fatal("key saved after answering no")
+	}
+	// Force over a non-empty destination reports where the old one went.
+	dest := t.TempDir()
+	os.WriteFile(filepath.Join(dest, "mine"), []byte("x"), 0o644)
+	if err := e.app.Restore(RestoreOptions{Repo: e.root, To: dest, Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.ui.out.String(), "previous contents were moved to") {
+		t.Fatal("moved-aside path not reported")
+	}
+}
+
+func TestPromptIdentityWrongPassphrase(t *testing.T) {
+	e := newEnv(t)
+	e.ui.interactive = false
+	pf := filepath.Join(t.TempDir(), "pass")
+	os.WriteFile(pf, []byte("correct horse battery staple\n"), 0o600)
+	if err := e.app.Init(InitOptions{Repo: e.root, Recovery: repo.RecoveryPassphrase, PassphraseFile: pf}); err != nil {
+		t.Fatal(err)
+	}
+	e.ui.interactive = true
+	e.ui.answer = func(p, out string) (string, error) { return "wrong horse battery staple", nil }
+	if err := e.app.RecoveryTest(e.root); !errors.Is(err, keys.ErrWrongPassphrase) {
+		t.Fatalf("wrong passphrase: %v", err)
+	}
+	os.Remove(filepath.Join(e.root, repo.KeyFile))
+	if err := e.app.RecoveryTest(e.root); err == nil || !strings.Contains(err.Error(), "key.age") {
+		t.Fatalf("missing key.age: %v", err)
+	}
+}
+
+func TestSealCommandReportsSkipped(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	src := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(src, "pipe"), 0o644); err != nil {
+		t.Skip("mkfifo:", err)
+	}
+	if err := e.app.Seal(src, e.root, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.ui.out.String(), "skipped pipe") {
+		t.Fatalf("output = %q", e.ui.out.String())
+	}
+	if err := e.app.Seal(src, t.TempDir(), false); !errors.Is(err, repo.ErrNotInitialised) {
+		t.Fatalf("seal into non-salt dir: %v", err)
+	}
+	if err := e.app.Seal(filepath.Join(src, "missing"), e.root, false); err == nil {
+		t.Fatal("seal of a missing dir succeeded")
+	}
+}
+
+type failingGit struct{ fakeGit }
+
+func (failingGit) HookPath(string) (string, error)             { return "", errors.New("no git") }
+func (failingGit) Committed(string) ([]check.Violation, error) { return nil, errors.New("no git") }
+func (failingGit) LastCommit(string) (time.Time, bool, error) {
+	return time.Time{}, false, errors.New("no git")
+}
+
+type brokenStore struct{}
+
+func (brokenStore) Get(string) (keys.Secret, error) { return keys.Secret{}, errors.New("locked") }
+func (brokenStore) Set(string, keys.Secret) error   { return errors.New("locked") }
+func (brokenStore) Delete(string) error             { return nil }
+
+func TestDoctorMoreBranches(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+
+	// git missing, git commands failing, keychain unreadable.
+	e.app.LookPath = func(n string) (string, bool) { return "", false }
+	e.app.Git = &failingGit{}
+	e.app.Store = brokenStore{}
+	e.ui.out.Reset()
+	if err := e.app.Doctor(e.root); !errors.Is(err, ErrReported) {
+		t.Fatalf("Doctor: %v", err)
+	}
+	out := e.ui.out.String()
+	for _, want := range []string{"git not found", "could not locate the pre-commit hook", "could not inspect the last commit",
+		"could not read the last commit", "could not read the test store", "no `origin` remote"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestDoctorKeyAndTreeBranches(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	r, _ := repo.Open(e.root)
+	other, _ := age.GenerateX25519Identity()
+	e.store.Set(r.RecipientStrings[0], keys.IdentitySecret(other)) // wrong key saved
+	os.Symlink("x", filepath.Join(e.root, "link"))
+	os.Remove(filepath.Join(e.root, ".gitattributes"))
+	e.git.hasLast = false
+	e.ui.out.Reset()
+	e.app.Doctor(e.root)
+	out := e.ui.out.String()
+	for _, want := range []string{"is damaged", "unencrypted file(s) in the working tree, e.g. link", "no commits yet", ".gitattributes does not mark"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor output missing %q:\n%s", want, out)
+		}
+	}
+	e.ui.out.Reset()
+	e.app.Doctor(t.TempDir()) // not a git repo
+	if !strings.Contains(e.ui.out.String(), "not a git repository") {
+		t.Error("non-git dir not reported")
+	}
+}
+
+func TestInstallHookError(t *testing.T) {
+	e := newEnv(t)
+	e.app.Git = &failingGit{}
+	if _, err := e.app.InstallHook(e.root); err == nil {
+		t.Fatal("InstallHook succeeded without git")
+	}
+	e.app.Git = e.git
+	os.MkdirAll(filepath.Join(e.root, repo.Dir), 0o755)
+	e.ui.answer = phraseAnswers(0)
+	e.app.Git = &failingGit{}
+	if err := e.app.Init(InitOptions{Repo: e.root}); err == nil || !strings.Contains(err.Error(), "pre-commit hook") {
+		t.Fatalf("Init with hook failure: %v", err)
+	}
+}
+
+func TestVerifyReportsUnreferenced(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	stray := filepath.Join(e.root, repo.ObjectsDir, "zz", "stray.age")
+	os.MkdirAll(filepath.Dir(stray), 0o755)
+	os.WriteFile(stray, []byte("age-encryption.org/v1\n"), 0o644)
+	if err := e.app.Verify(e.root); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.ui.out.String(), "stray.age is not in the index") {
+		t.Fatalf("output = %q", e.ui.out.String())
+	}
+	if err := e.app.Verify(t.TempDir()); !errors.Is(err, repo.ErrNotInitialised) {
+		t.Fatalf("verify non-repo: %v", err)
+	}
+}

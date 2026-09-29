@@ -38,7 +38,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatalf("SALT_BIN must be an absolute path to a prebuilt salt, got %q", bin)
 	}
 	home := t.TempDir()
-	return &env{t: t, bin: bin, home: home, vars: []string{
+	e := &env{t: t, bin: bin, home: home, vars: []string{
 		"PATH=" + filepath.Dir(bin) + ":/usr/local/go/bin:/usr/bin:/bin",
 		"HOME=" + home,
 		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
@@ -48,6 +48,11 @@ func newEnv(t *testing.T) *env {
 		"SALT_KEYSTORE=file", // never the real keychain
 		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
 	}}
+	// A coverage-recording salt writes its data here (see make e2e).
+	if d := os.Getenv("GOCOVERDIR"); d != "" {
+		e.vars = append(e.vars, "GOCOVERDIR="+d)
+	}
+	return e
 }
 
 // run runs a command and returns combined output and exit code.
@@ -217,5 +222,63 @@ func TestHookFailsClosedWithoutSalt(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "salt: not found on PATH") {
 		t.Fatalf("commit without salt on PATH: %v\n%s", err, out)
+	}
+}
+
+// Git edge cases: no repo, no commits, no remote, odd staged entries.
+func TestGitEdgeCases(t *testing.T) {
+	e := newEnv(t)
+	base := t.TempDir()
+
+	// Outside any git repo, check and hook install fail with a clear error.
+	plain := filepath.Join(base, "plain")
+	os.MkdirAll(plain, 0o755)
+	if out, code := e.run(plain, "salt", "check"); code != 1 || !strings.Contains(out, "refusing it") {
+		t.Fatalf("check outside git: exit %d\n%s", code, out)
+	}
+	if out, code := e.run(plain, "salt", "hook", "install"); code != 1 {
+		t.Fatalf("hook install outside git: exit %d\n%s", code, out)
+	}
+
+	// A fresh repo: no commits, no remote.
+	repoDir := filepath.Join(base, "fresh")
+	e.must(base, "git", "init", "-q", "-b", "main", repoDir)
+	passFile := filepath.Join(base, "pass")
+	write(t, passFile, "correct horse battery staple\n")
+	e.must(base, "salt", "init", repoDir, "--recovery", "passphrase", "--passphrase-file", passFile, "--plain-paths")
+	out, _ := e.run(base, "salt", "doctor", repoDir)
+	for _, want := range []string{"no commits yet", "no `origin` remote", "no backup sealed yet", "file paths visible"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor on a fresh repo missing %q:\n%s", want, out)
+		}
+	}
+
+	// A file name with a newline, and a submodule entry, are both refused.
+	write(t, filepath.Join(repoDir, "odd\nname.md"), "x")
+	e.must(repoDir, "git", "add", "odd\nname.md")
+	e.must(repoDir, "git", "update-index", "--add", "--cacheinfo",
+		"160000,1111111111111111111111111111111111111111,sub")
+	out, code := e.run(repoDir, "salt", "check")
+	if code != 1 || !strings.Contains(out, "2 staged file(s)") || !strings.Contains(out, "not a regular file") {
+		t.Fatalf("check with odd entries: exit %d\n%s", code, out)
+	}
+}
+
+// Exit codes: 2 for usage mistakes, 1 for failures.
+func TestExitCodes(t *testing.T) {
+	e := newEnv(t)
+	for _, tc := range []struct {
+		args []string
+		code int
+	}{
+		{nil, 2},
+		{[]string{"bogus"}, 2},
+		{[]string{"restore", "repo"}, 2},
+		{[]string{"verify", filepath.Join(e.home, "missing")}, 1},
+		{[]string{"help"}, 0},
+	} {
+		if out, code := e.run(e.home, "salt", tc.args...); code != tc.code {
+			t.Errorf("salt %v: exit %d, want %d\n%s", tc.args, code, tc.code, out)
+		}
 	}
 }

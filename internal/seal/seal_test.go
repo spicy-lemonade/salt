@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"filippo.io/age"
@@ -465,5 +467,182 @@ func TestVerify(t *testing.T) {
 	other, _ := age.GenerateX25519Identity()
 	if _, err := Verify(f.root, []age.Identity{other}, 0); err == nil {
 		t.Fatal("verify with the wrong key succeeded")
+	}
+}
+
+func TestSealErrors(t *testing.T) {
+	f := newFixture(t, true)
+	if _, err := Seal(f.src, f.repo, Options{}); err == nil {
+		t.Error("Seal without a cache dir succeeded")
+	}
+	file := filepath.Join(t.TempDir(), "file")
+	os.WriteFile(file, []byte("x"), 0o644)
+	if _, err := Seal(file, f.repo, Options{CacheDir: f.cache}); err == nil {
+		t.Error("Seal of a file (not a dir) succeeded")
+	}
+	if _, err := Seal(filepath.Join(t.TempDir(), "missing"), f.repo, Options{CacheDir: f.cache}); err == nil {
+		t.Error("Seal of a missing dir succeeded")
+	}
+	// The cache dir cannot be created (its parent is a file).
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: filepath.Join(file, "cache")}); err == nil {
+		t.Error("Seal with an unwritable cache succeeded")
+	}
+}
+
+func TestSealSkipsSpecialFilesAndExcludes(t *testing.T) {
+	f := newFixture(t, true)
+	if err := syscall.Mkfifo(filepath.Join(f.src, "pipe"), 0o644); err != nil {
+		t.Skip("mkfifo:", err)
+	}
+	os.MkdirAll(filepath.Join(f.src, ".git"), 0o755)
+	os.WriteFile(filepath.Join(f.src, ".git", "config"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(f.src, ".DS_Store"), []byte("x"), 0o644)
+	res, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Workers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0] != "pipe" || res.Files != 5 {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+func TestRestoreRefusesSymlinkParent(t *testing.T) {
+	f := newFixture(t, true)
+	outside := t.TempDir()
+	ix := &Index{Version: repo.FormatVersion, Entries: []Entry{
+		{Path: "x", Symlink: outside},
+		{Path: "x/y", Symlink: "z"},
+	}}
+	b, _, _ := ix.marshal()
+	if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Restore(f.root, f.ids(), filepath.Join(t.TempDir(), "r"), RestoreOptions{})
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("restore through a symlink: %v", err)
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+		t.Fatal("restore wrote outside the destination")
+	}
+}
+
+func TestRestoreEdgeCases(t *testing.T) {
+	f := newFixture(t, true)
+	f.seal(false)
+	// An existing empty directory is fine and gets replaced.
+	empty := t.TempDir()
+	if _, err := Restore(f.root, f.ids(), empty, RestoreOptions{}); err != nil {
+		t.Fatalf("restore into an empty dir: %v", err)
+	}
+	// A destination that is a file counts as non-empty.
+	file := filepath.Join(t.TempDir(), "file")
+	os.WriteFile(file, []byte("x"), 0o644)
+	if _, err := Restore(f.root, f.ids(), file, RestoreOptions{}); err == nil {
+		t.Fatal("restore over a file succeeded")
+	}
+	// A missing index.
+	os.Remove(filepath.Join(f.root, repo.IndexFile))
+	if _, err := Restore(f.root, f.ids(), filepath.Join(t.TempDir(), "r"), RestoreOptions{}); err == nil {
+		t.Fatal("restore without an index succeeded")
+	}
+	if _, err := Verify(f.root, f.ids(), 0); err == nil {
+		t.Fatal("verify without an index succeeded")
+	}
+}
+
+func TestReadIndexRejectsBadIndexes(t *testing.T) {
+	for name, body := range map[string]string{
+		"not json":     "{",
+		"old version":  `{"version": 99, "entries": []}`,
+		"bad object":   `{"version": 1, "entries": [{"path": "a", "object": "../x"}]}`,
+		"empty object": `{"version": 1, "entries": [{"path": "a"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, true)
+			if err := writeIndex(f.root, []byte(body), f.repo.Recipients); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReadIndex(f.root, f.ids()); err == nil {
+				t.Fatalf("index %q accepted", body)
+			}
+		})
+	}
+}
+
+func TestEncryptToErrors(t *testing.T) {
+	f := newFixture(t, true)
+	file := filepath.Join(t.TempDir(), "file")
+	os.WriteFile(file, []byte("x"), 0o644)
+	if _, err := encryptTo(filepath.Join(file, "sub", "obj.age"), strings.NewReader("x"), f.repo.Recipients); err == nil {
+		t.Error("encryptTo under a file succeeded")
+	}
+	if _, err := encryptTo(filepath.Join(t.TempDir(), "obj.age"), errReader{}, f.repo.Recipients); err == nil {
+		t.Error("encryptTo with a failing reader succeeded")
+	}
+	if _, _, err := hashFile(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Error("hashFile of a missing file succeeded")
+	}
+	if d, err := DefaultCacheDir(); err != nil || !strings.HasSuffix(d, "salt") {
+		t.Errorf("DefaultCacheDir = %q, %v", d, err)
+	}
+}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+func TestSealAndRestoreFileErrors(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root can read unreadable files")
+	}
+	f := newFixture(t, true)
+	locked := filepath.Join(f.src, "locked.md")
+	os.WriteFile(locked, []byte("x"), 0o000)
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); err == nil {
+		t.Fatal("Seal of an unreadable file succeeded")
+	}
+	os.Remove(locked)
+
+	// Leftover temp files from an interrupted seal are cleaned up.
+	os.WriteFile(filepath.Join(f.root, ".salt-tmp-1"), []byte("x"), 0o644)
+	res := f.seal(false)
+	if !slices.Contains(res.Removed, ".salt-tmp-1") {
+		t.Fatalf("removed = %v", res.Removed)
+	}
+
+	// A missing object makes restore fail and leave nothing behind.
+	for rel := range snapshot(t, f.root) {
+		if strings.HasPrefix(rel, "objects/") {
+			os.Remove(filepath.Join(f.root, rel))
+			break
+		}
+	}
+	dest := filepath.Join(t.TempDir(), "r")
+	if _, err := Restore(f.root, f.ids(), dest, RestoreOptions{}); err == nil {
+		t.Fatal("restore with a missing object succeeded")
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("failed restore left a destination")
+	}
+}
+
+func TestRestoreSizeMismatch(t *testing.T) {
+	f := newFixture(t, true)
+	f.seal(false)
+	ix, err := ReadIndex(f.root, f.ids())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range ix.Entries {
+		if ix.Entries[i].Symlink == "" {
+			ix.Entries[i].Size++ // index no longer matches the content
+			break
+		}
+	}
+	b, _, _ := ix.marshal()
+	writeIndex(f.root, b, f.repo.Recipients)
+	_, err = Restore(f.root, f.ids(), filepath.Join(t.TempDir(), "r"), RestoreOptions{})
+	if err == nil || !strings.Contains(err.Error(), "does not match the index") {
+		t.Fatalf("restore with a wrong size: %v", err)
 	}
 }
