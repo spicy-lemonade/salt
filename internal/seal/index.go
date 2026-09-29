@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"filippo.io/age"
@@ -76,7 +78,7 @@ func ReadIndex(root string, ids []age.Identity) (*Index, error) {
 	}
 	defer closeFn()
 	lr := &io.LimitedReader{R: r, N: maxIndexSize + 1}
-	ix, err := decodeIndex(json.NewDecoder(lr))
+	ix, err := decodeIndex(json.NewDecoder(newTokenLimitReader(lr, maxIndexJSONString, maxIndexToken)))
 	if lr.N <= 0 {
 		return nil, fmt.Errorf("index is larger than %d bytes", maxIndexSize)
 	}
@@ -97,12 +99,12 @@ func decodeIndex(dec *json.Decoder) (*Index, error) {
 	for dec.More() {
 		key, err := dec.Token()
 		if err != nil {
-			return nil, err
+			return nil, decodeErr(err)
 		}
 		switch key {
 		case "version":
 			if err := dec.Decode(&ix.Version); err != nil {
-				return nil, err
+				return nil, decodeErr(err)
 			}
 		case "entries":
 			if err := decodeEntries(dec, ix); err != nil {
@@ -125,7 +127,7 @@ func decodeEntries(dec *json.Decoder, ix *Index) error {
 		}
 		var e Entry
 		if err := dec.Decode(&e); err != nil {
-			return err
+			return decodeErr(err)
 		}
 		if err := validEntry(&e); err != nil {
 			return err
@@ -135,29 +137,42 @@ func decodeEntries(dec *json.Decoder, ix *Index) error {
 	return expectDelim(dec, ']')
 }
 
+// checkIndexEntries runs the checks ReadIndex makes on every entry, so seal
+// never writes an index that restore would refuse.
+func checkIndexEntries(entries []Entry) error {
+	for _, e := range entries {
+		if err := validEntry(&e); err != nil {
+			return fmt.Errorf("cannot back up %s: %w", clip(e.Path), err)
+		}
+	}
+	return nil
+}
+
 func validEntry(e *Entry) error {
 	if len(e.Path) > maxIndexString || len(e.Object) > maxIndexString || len(e.Symlink) > maxIndexString || len(e.SHA256) > maxIndexString {
 		return fmt.Errorf("entry longer than %d bytes", maxIndexString)
 	}
+	// Messages name the path through clip: it can be up to maxIndexString
+	// bytes, and repo.CleanPath's own error would quote all of it.
 	p, err := repo.CleanPath(e.Path)
 	if err != nil {
-		return err
+		return fmt.Errorf("unsafe path %s", clipQuoted(e.Path))
 	}
 	e.Path = p
 	if e.Symlink != "" {
 		if e.Object != "" || e.SHA256 != "" {
-			return fmt.Errorf("symlink %s must not have an object or hash", p)
+			return fmt.Errorf("symlink %s must not have an object or hash", clip(p))
 		}
 		return nil
 	}
 	if _, err := repo.CleanPath(e.Object); err != nil {
-		return fmt.Errorf("object for %s: %w", p, err)
+		return fmt.Errorf("object for %s: unsafe path %s", clip(p), clipQuoted(e.Object))
 	}
 	if !isSHA256(e.SHA256) {
-		return fmt.Errorf("hash for %s is not 64 hex characters", p)
+		return fmt.Errorf("hash for %s is not 64 hex characters", clip(p))
 	}
 	if e.Size < 0 {
-		return fmt.Errorf("size for %s is negative", p)
+		return fmt.Errorf("size for %s is negative", clip(p))
 	}
 	return nil
 }
@@ -184,6 +199,15 @@ func clip(s string) string {
 	return fmt.Sprintf("%q… (%d bytes)", strings.ToValidUTF8(s[:max], ""), len(s))
 }
 
+// clipQuoted is clip for a value that should be quoted even when short, such
+// as a path that may be empty or contain spaces.
+func clipQuoted(s string) string {
+	if c := clip(s); c != s {
+		return c
+	}
+	return strconv.Quote(s)
+}
+
 // clipToken is clip for a JSON token, without first copying a long string.
 func clipToken(t json.Token) string {
 	if s, ok := t.(string); ok {
@@ -192,10 +216,39 @@ func clipToken(t json.Token) string {
 	return clip(fmt.Sprint(t))
 }
 
+// maxDecodeErr is the longest error from encoding/json passed on unchanged.
+const maxDecodeErr = 160
+
+// decodeErr shortens an error from encoding/json, which can quote part of the
+// index in its message. Only encoding/json's own error types are shortened,
+// so salt's messages (including the token limits) are never touched.
+func decodeErr(err error) error {
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	if !errors.As(err, &syntaxErr) && !errors.As(err, &typeErr) {
+		return err
+	}
+	if len(err.Error()) <= maxDecodeErr {
+		return err
+	}
+	return &clippedError{err: err}
+}
+
+// clippedError keeps the original error for errors.Is and errors.As, but
+// prints only the start of it.
+type clippedError struct{ err error }
+
+func (c *clippedError) Error() string {
+	s := c.err.Error()
+	return fmt.Sprintf("%s… (%d bytes)", strings.ToValidUTF8(s[:maxDecodeErr], ""), len(s))
+}
+
+func (c *clippedError) Unwrap() error { return c.err }
+
 func expectDelim(dec *json.Decoder, want json.Delim) error {
 	t, err := dec.Token()
 	if err != nil {
-		return err
+		return decodeErr(err)
 	}
 	if d, ok := t.(json.Delim); !ok || d != want {
 		return fmt.Errorf("expected %q, got %s", want, clipToken(t))

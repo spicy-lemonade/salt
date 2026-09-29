@@ -58,6 +58,10 @@ type item struct {
 	isLink  bool
 }
 
+// entriesHook lets tests change the entries before Seal checks them. It is
+// always nil outside tests.
+var entriesHook func([]Entry) []Entry
+
 // Seal encrypts the tree at src into the repository r.
 func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	if opt.CacheDir == "" {
@@ -147,10 +151,19 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		keep[e.Object] = true
 	}
 
+	if entriesHook != nil {
+		entries = entriesHook(entries)
+	}
+	if err := checkIndexEntries(entries); err != nil {
+		return nil, err
+	}
 	ix := &Index{Version: repo.FormatVersion, Entries: entries}
 	b, ixSHA, err := ix.marshal()
 	if err != nil {
 		return nil, err
+	}
+	if len(b) > maxIndexSize {
+		return nil, fmt.Errorf("the index would be %d bytes; salt supports at most %d", len(b), maxIndexSize)
 	}
 	next.IndexSHA, next.IndexSize = ixSHA, c.IndexSize
 	if ixSHA != c.IndexSHA || !sizeIs(rt, repo.IndexFile, c.IndexSize) {

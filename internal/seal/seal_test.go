@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -572,6 +574,225 @@ func TestReadIndexRejectsBadIndexes(t *testing.T) {
 	}
 }
 
+// validEntry names the path in its errors, but a path can be up to 4096
+// bytes, so each message shortens it and still starts readably.
+func TestValidEntryClipsPaths(t *testing.T) {
+	long := strings.Repeat("a", maxIndexString)
+	hash := strings.Repeat("0", 64)
+	for name, tt := range map[string]struct {
+		e      Entry
+		prefix string
+	}{
+		"hash":           {Entry{Path: long, Object: "objects/aa/b.age"}, `hash for "aaaa`},
+		"size":           {Entry{Path: long, Object: "objects/aa/b.age", SHA256: hash, Size: -1}, `size for "aaaa`},
+		"symlink":        {Entry{Path: long, Symlink: "b", SHA256: hash}, `symlink "aaaa`},
+		"object":         {Entry{Path: long, Object: "/" + long[1:], SHA256: hash}, `object for "aaaa`},
+		"unsafe path":    {Entry{Path: "/" + long[1:], Object: "objects/aa/b.age", SHA256: hash}, `unsafe path "/aaa`},
+		"short unsafe":   {Entry{Path: "../x"}, `unsafe path "../x"`},
+		"empty path":     {Entry{Path: ""}, `unsafe path ""`},
+		"short readable": {Entry{Path: "a", Object: "objects/aa/b.age"}, `hash for a is not 64 hex characters`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := validEntry(&tt.e)
+			if err == nil || !strings.HasPrefix(err.Error(), tt.prefix) {
+				t.Fatalf("validEntry error = %.300v, want it to start with %q", err, tt.prefix)
+			}
+			if len(err.Error()) > 200 {
+				t.Fatalf("error message is %d bytes long", len(err.Error()))
+			}
+		})
+	}
+}
+
+// A path of exactly maxIndexString bytes that json.Marshal escapes to six
+// times its length is exactly at the raw string cap, and must still be read.
+func TestReadIndexAcceptsLongEscapedPath(t *testing.T) {
+	f := newFixture(t, true)
+	p := strings.Repeat("&", maxIndexString)
+	ix := &Index{Version: repo.FormatVersion, Entries: []Entry{{Path: p, Object: "objects/aa/b.age", SHA256: strings.Repeat("0", 64)}}}
+	b, _, err := ix.marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(b, []byte(strings.Repeat(`\u0026`, maxIndexString))) {
+		t.Fatal("json.Marshal no longer escapes &; this test needs another character")
+	}
+	if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadIndex(f.root, f.ids())
+	if err != nil {
+		t.Fatalf("ReadIndex: %v", err)
+	}
+	if len(got.Entries) != 1 || got.Entries[0].Path != p {
+		t.Fatal("path at the limit did not come back unchanged")
+	}
+}
+
+func TestCheckIndexEntries(t *testing.T) {
+	hash := strings.Repeat("0", 64)
+	long := strings.Repeat("a", maxIndexString+1)
+	for name, tt := range map[string]struct {
+		e    Entry
+		want string
+	}{
+		"path at the limit":          {Entry{Path: strings.Repeat("a", maxIndexString), Object: "objects/aa/b.age", SHA256: hash}, ""},
+		"symlink":                    {Entry{Path: "a", Symlink: "b"}, ""},
+		"path too long":              {Entry{Path: long, Object: "objects/aa/b.age", SHA256: hash}, "entry longer than 4096 bytes"},
+		"symlink target too long":    {Entry{Path: "a", Symlink: long}, "entry longer than 4096 bytes"},
+		"plain object name too long": {Entry{Path: strings.Repeat("a", maxIndexString-5), Object: path.Join(repo.FilesDir, strings.Repeat("a", maxIndexString-5)) + ".age", SHA256: hash}, "entry longer than 4096 bytes"},
+		"unsafe path":                {Entry{Path: "../x", Object: "objects/aa/b.age", SHA256: hash}, "unsafe path"},
+		"bad hash":                   {Entry{Path: "a", Object: "objects/aa/b.age", SHA256: "ABC"}, "not 64 hex characters"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			entries := []Entry{{Path: "ok", Object: "objects/aa/c.age", SHA256: hash}, tt.e}
+			err := checkIndexEntries(entries)
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("checkIndexEntries: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("checkIndexEntries error = %v, want %q", err, tt.want)
+			}
+			if len(err.Error()) > 200 {
+				t.Fatalf("error message is %d bytes long", len(err.Error()))
+			}
+		})
+	}
+}
+
+// Seal must refuse an entry that ReadIndex would refuse, before it writes an
+// index. The hook stands in for a path too long to create on this system.
+func TestSealRefusesEntriesRestoreWouldRefuse(t *testing.T) {
+	f := newFixture(t, true)
+	t.Cleanup(func() { entriesHook = nil })
+	breakEntries := func(entries []Entry) []Entry {
+		entries[0].Path = strings.Repeat("a", maxIndexString+1)
+		return entries
+	}
+	indexPath := filepath.Join(f.root, repo.IndexFile)
+
+	entriesHook = breakEntries
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); err == nil || !strings.Contains(err.Error(), "entry longer than 4096 bytes") {
+		t.Fatalf("Seal error = %v, want entry longer than 4096 bytes", err)
+	}
+	if _, err := os.Lstat(indexPath); !os.IsNotExist(err) {
+		t.Fatalf("index.age written despite a bad entry: %v", err)
+	}
+
+	// A failed seal must also leave an existing index alone.
+	entriesHook = nil
+	f.seal(false)
+	before, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.write("SOUL.md", "be kinder\n")
+	entriesHook = breakEntries
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); err == nil {
+		t.Fatal("Seal accepted a bad entry")
+	}
+	if after, _ := os.ReadFile(indexPath); !bytes.Equal(before, after) {
+		t.Fatal("a failed seal replaced the index")
+	}
+}
+
+// Seal must refuse an index larger than ReadIndex accepts, before it writes
+// anything. Every entry is valid on its own; only the total is too big.
+func TestSealRefusesOversizedIndex(t *testing.T) {
+	f := newFixture(t, true)
+	t.Cleanup(func() { entriesHook = nil })
+	// Each path escapes to 6 times its length, so few entries are needed.
+	big := Entry{Path: strings.Repeat("&", maxIndexString), Object: "objects/aa/b.age", SHA256: strings.Repeat("0", 64)}
+	entriesHook = func(entries []Entry) []Entry {
+		for len(entries)*maxIndexJSONString <= maxIndexSize {
+			entries = append(entries, big)
+		}
+		return entries
+	}
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); err == nil || !strings.Contains(err.Error(), "salt supports at most 33554432") {
+		t.Fatalf("Seal error = %v, want the index size limit", err)
+	}
+	if _, err := os.Lstat(filepath.Join(f.root, repo.IndexFile)); !os.IsNotExist(err) {
+		t.Fatalf("index.age written despite being too large: %v", err)
+	}
+}
+
+// A field name or value under the token caps can still be tens of KB, so
+// salt's own messages about unexpected tokens must shorten it.
+func TestReadIndexRejectsUnexpectedTokens(t *testing.T) {
+	long := strings.Repeat("k", 20_000)
+	for name, tt := range map[string]struct{ body, want string }{
+		"unknown field":        {`{"version":1,"extra":1}`, `unexpected field extra`},
+		"long unknown field":   {`{"version":1,"` + long + `":1}`, `unexpected field "kkkk`},
+		"string for the list":  {`{"version":1,"entries":"` + long + `"}`, `expected "[", got "kkkk`},
+		"object for the list":  {`{"version":1,"entries":{}}`, `expected "[", got {`},
+		"list for the index":   {`[]`, `expected "{", got [`},
+		"number for the index": {`1`, `expected "{", got 1`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, true)
+			if err := writeIndex(f.root, []byte(tt.body), f.repo.Recipients); err != nil {
+				t.Fatal(err)
+			}
+			_, err := ReadIndex(f.root, f.ids())
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ReadIndex error = %.300v, want %q", err, tt.want)
+			}
+			if len(err.Error()) > 200 {
+				t.Fatalf("error message is %d bytes long", len(err.Error()))
+			}
+		})
+	}
+}
+
+// decodeErr shortens what encoding/json says, and leaves salt's own messages
+// alone however long they are.
+func TestDecodeErrors(t *testing.T) {
+	decode := func(body string) error {
+		_, err := decodeIndex(json.NewDecoder(strings.NewReader(body)))
+		return err
+	}
+
+	err := decode(`{"version":` + strings.Repeat("9", 1000) + `}`)
+	if err == nil || !strings.Contains(err.Error(), "cannot unmarshal number") || !strings.HasSuffix(err.Error(), " bytes)") {
+		t.Fatalf("decoder error = %.300v, want it shortened", err)
+	}
+	if len(err.Error()) > 200 {
+		t.Fatalf("decoder error is %d bytes long", len(err.Error()))
+	}
+	var typeErr *json.UnmarshalTypeError
+	if !errors.As(err, &typeErr) {
+		t.Fatal("shortened error lost the original")
+	}
+
+	// A salt message from inside the decode path comes through exactly.
+	p := strings.Repeat("a", 200)
+	err = decode(`{"version":1,"entries":[{"path":"` + p + `","object":"objects/aa/b.age","sha256":"abc"}]}`)
+	if want := "hash for " + clip(p) + " is not 64 hex characters"; err == nil || err.Error() != want {
+		t.Fatalf("salt error = %v, want %q unchanged", err, want)
+	}
+
+	// decodeErr only runs where the decoder's errors come out, and salt's
+	// own messages never go there. Show that one would not be clipped
+	// anyway if it were long.
+	own := fmt.Errorf("%w at %s", ErrForeignSymlink, strings.Repeat("b", 300))
+	if got := decodeErr(own); got != own || len(got.Error()) <= maxDecodeErr {
+		t.Fatalf("decodeErr changed a salt error: %v", got)
+	}
+
+	// A short decoder error is not wrapped.
+	err = decode(`{"version":"x"}`)
+	if _, clipped := err.(*clippedError); err == nil || clipped {
+		t.Fatalf("short decoder error = %#v, want it passed on as is", err)
+	}
+	if decodeErr(nil) != nil {
+		t.Fatal("nil error became non-nil")
+	}
+}
+
 func TestEncryptToErrors(t *testing.T) {
 	f := newFixture(t, true)
 	dir := t.TempDir()
@@ -712,6 +933,17 @@ func TestIndexBombs(t *testing.T) {
 			}
 			bw.WriteString(`"}]}`)
 			bw.Flush()
+		}, "string longer than 24576 bytes"},
+		// Whitespace is not a string, so only the total size cap stops it.
+		{"padding past the size cap", func(w io.Writer) {
+			bw := bufio.NewWriter(w)
+			bw.WriteString(`{"version":1,`)
+			chunk := bytes.Repeat([]byte(" "), 1<<20)
+			for i := 0; i < 33; i++ {
+				bw.Write(chunk)
+			}
+			bw.WriteString(`"entries":[]}`)
+			bw.Flush()
 		}, "larger than"},
 		{"huge field name", func(w io.Writer) {
 			bw := bufio.NewWriter(w)
@@ -722,7 +954,49 @@ func TestIndexBombs(t *testing.T) {
 			}
 			bw.WriteString(`":1}`)
 			bw.Flush()
-		}, "unexpected field"},
+		}, "string longer than 24576 bytes"},
+		// encoding/json turns each invalid UTF-8 byte into a 3-byte U+FFFD,
+		// so this is the worst case for the field name.
+		{"huge invalid UTF-8 field name", func(w io.Writer) {
+			bw := bufio.NewWriter(w)
+			bw.WriteString(`{"`)
+			chunk := bytes.Repeat([]byte{0xff}, 1<<20)
+			for i := 0; i < 30; i++ {
+				bw.Write(chunk)
+			}
+			bw.WriteString(`":1}`)
+			bw.Flush()
+		}, "string longer than 24576 bytes"},
+		{"huge invalid UTF-8 hash", func(w io.Writer) {
+			bw := bufio.NewWriter(w)
+			bw.WriteString(`{"version":1,"entries":[{"path":"a","object":"objects/aa/b.age","sha256":"`)
+			chunk := bytes.Repeat([]byte{0xff}, 1<<20)
+			for i := 0; i < 30; i++ {
+				bw.Write(chunk)
+			}
+			bw.WriteString(`"}]}`)
+			bw.Flush()
+		}, "string longer than 24576 bytes"},
+		{"huge size number", func(w io.Writer) {
+			bw := bufio.NewWriter(w)
+			bw.WriteString(`{"version":1,"entries":[{"path":"a","object":"objects/aa/b.age","sha256":"` + strings.Repeat("0", 64) + `","size":`)
+			chunk := bytes.Repeat([]byte("9"), 1<<20)
+			for i := 0; i < 30; i++ {
+				bw.Write(chunk)
+			}
+			bw.WriteString(`}]}`)
+			bw.Flush()
+		}, "value longer than 64 bytes"},
+		{"huge version number", func(w io.Writer) {
+			bw := bufio.NewWriter(w)
+			bw.WriteString(`{"version":1`)
+			chunk := bytes.Repeat([]byte("0"), 1<<20)
+			for i := 0; i < 30; i++ {
+				bw.Write(chunk)
+			}
+			bw.WriteString(`,"entries":[]}`)
+			bw.Flush()
+		}, "value longer than 64 bytes"},
 		{"huge value where the list should be", func(w io.Writer) {
 			bw := bufio.NewWriter(w)
 			bw.WriteString(`{"version":1,"entries":"`)
@@ -732,7 +1006,7 @@ func TestIndexBombs(t *testing.T) {
 			}
 			bw.WriteString(`"}`)
 			bw.Flush()
-		}, `expected "["`},
+		}, "string longer than 24576 bytes"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -889,24 +1163,31 @@ func TestForeignSymlinksAnywhereManaged(t *testing.T) {
 
 func TestIndexEntryChecks(t *testing.T) {
 	sha := strings.Repeat("ab", 32)
-	for name, entry := range map[string]string{
-		"missing hash":      `{"path":"a","object":"objects/aa/b.age","size":1}`,
-		"short hash":        `{"path":"a","object":"objects/aa/b.age","sha256":"abc","size":1}`,
-		"uppercase hash":    `{"path":"a","object":"objects/aa/b.age","sha256":"` + strings.ToUpper(sha) + `","size":1}`,
-		"not hex":           `{"path":"a","object":"objects/aa/b.age","sha256":"` + strings.Repeat("zz", 32) + `","size":1}`,
-		"huge hash":         `{"path":"a","object":"objects/aa/b.age","sha256":"` + strings.Repeat("a", 5000) + `","size":1}`,
-		"negative size":     `{"path":"a","object":"objects/aa/b.age","sha256":"` + sha + `","size":-1}`,
-		"symlink with hash": `{"path":"a","symlink":"b","sha256":"` + sha + `"}`,
-		"symlink w/ object": `{"path":"a","symlink":"b","object":"objects/aa/b.age"}`,
+	const badHash = "is not 64 hex characters"
+	file := func(hash string) string {
+		return `{"path":"a","object":"objects/aa/b.age","sha256":"` + hash + `","size":1}`
+	}
+	for name, tt := range map[string]struct{ entry, want string }{
+		"missing hash":       {`{"path":"a","object":"objects/aa/b.age","size":1}`, badHash},
+		"empty hash":         {file(""), badHash},
+		"short hash":         {file("abc"), badHash},
+		"63 characters":      {file(sha[:63]), badHash},
+		"uppercase hash":     {file(strings.ToUpper(sha)), badHash},
+		"not hex":            {file(strings.Repeat("zz", 32)), badHash},
+		"bad last character": {file(sha[:63] + "g"), badHash},
+		"huge hash":          {file(strings.Repeat("a", 5000)), "entry longer than 4096 bytes"},
+		"negative size":      {`{"path":"a","object":"objects/aa/b.age","sha256":"` + sha + `","size":-1}`, "size for a is negative"},
+		"symlink with hash":  {`{"path":"a","symlink":"b","sha256":"` + sha + `"}`, "must not have an object or hash"},
+		"symlink w/ object":  {`{"path":"a","symlink":"b","object":"objects/aa/b.age"}`, "must not have an object or hash"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t, true)
-			body := `{"version":1,"entries":[` + entry + `]}`
+			body := `{"version":1,"entries":[` + tt.entry + `]}`
 			if err := writeIndex(f.root, []byte(body), f.repo.Recipients); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := ReadIndex(f.root, f.ids()); err == nil {
-				t.Fatalf("index entry accepted: %s", entry)
+			if _, err := ReadIndex(f.root, f.ids()); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ReadIndex error = %v, want %q", err, tt.want)
 			}
 		})
 	}
