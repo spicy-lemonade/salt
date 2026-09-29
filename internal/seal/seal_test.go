@@ -698,7 +698,7 @@ func TestIndexBombs(t *testing.T) {
 				if i > 0 {
 					bw.WriteByte(',')
 				}
-				bw.WriteString(`{"path":"a","object":"objects/aa/b.age","size":1,"mode":420}`)
+				bw.WriteString(`{"path":"a","object":"objects/aa/b.age","sha256":"` + strings.Repeat("0", 64) + `","size":1,"mode":420}`)
 			}
 			bw.WriteString(`]}`)
 			bw.Flush()
@@ -713,6 +713,26 @@ func TestIndexBombs(t *testing.T) {
 			bw.WriteString(`"}]}`)
 			bw.Flush()
 		}, "larger than"},
+		{"huge field name", func(w io.Writer) {
+			bw := bufio.NewWriter(w)
+			bw.WriteString(`{"`)
+			chunk := bytes.Repeat([]byte("k"), 1<<20)
+			for i := 0; i < 30; i++ {
+				bw.Write(chunk)
+			}
+			bw.WriteString(`":1}`)
+			bw.Flush()
+		}, "unexpected field"},
+		{"huge value where the list should be", func(w io.Writer) {
+			bw := bufio.NewWriter(w)
+			bw.WriteString(`{"version":1,"entries":"`)
+			chunk := bytes.Repeat([]byte("v"), 1<<20)
+			for i := 0; i < 30; i++ {
+				bw.Write(chunk)
+			}
+			bw.WriteString(`"}`)
+			bw.Flush()
+		}, `expected "["`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -721,7 +741,11 @@ func TestIndexBombs(t *testing.T) {
 			var err error
 			used := allocDuring(func() { _, err = ReadIndex(f.root, f.ids()) })
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("ReadIndex error = %v, want %q", err, tt.want)
+				t.Fatalf("ReadIndex error = %.200s, want %q", err, tt.want)
+			}
+			// Nothing from the index is echoed at length into logs.
+			if len(err.Error()) > 200 {
+				t.Fatalf("error message is %d bytes long", len(err.Error()))
 			}
 			t.Logf("allocated %d MiB", used>>20)
 			if used > budget {
@@ -860,5 +884,47 @@ func TestForeignSymlinksAnywhereManaged(t *testing.T) {
 				t.Fatalf("seal with a symlink at %s: %v", link, err)
 			}
 		})
+	}
+}
+
+func TestIndexEntryChecks(t *testing.T) {
+	sha := strings.Repeat("ab", 32)
+	for name, entry := range map[string]string{
+		"missing hash":      `{"path":"a","object":"objects/aa/b.age","size":1}`,
+		"short hash":        `{"path":"a","object":"objects/aa/b.age","sha256":"abc","size":1}`,
+		"uppercase hash":    `{"path":"a","object":"objects/aa/b.age","sha256":"` + strings.ToUpper(sha) + `","size":1}`,
+		"not hex":           `{"path":"a","object":"objects/aa/b.age","sha256":"` + strings.Repeat("zz", 32) + `","size":1}`,
+		"huge hash":         `{"path":"a","object":"objects/aa/b.age","sha256":"` + strings.Repeat("a", 5000) + `","size":1}`,
+		"negative size":     `{"path":"a","object":"objects/aa/b.age","sha256":"` + sha + `","size":-1}`,
+		"symlink with hash": `{"path":"a","symlink":"b","sha256":"` + sha + `"}`,
+		"symlink w/ object": `{"path":"a","symlink":"b","object":"objects/aa/b.age"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, true)
+			body := `{"version":1,"entries":[` + entry + `]}`
+			if err := writeIndex(f.root, []byte(body), f.repo.Recipients); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReadIndex(f.root, f.ids()); err == nil {
+				t.Fatalf("index entry accepted: %s", entry)
+			}
+		})
+	}
+	// A normal file and a normal symlink are accepted.
+	f := newFixture(t, true)
+	ok := `{"version":1,"entries":[{"path":"a","object":"objects/aa/b.age","sha256":"` + sha + `","size":1},{"path":"l","symlink":"a"}]}`
+	writeIndex(f.root, []byte(ok), f.repo.Recipients)
+	if _, err := ReadIndex(f.root, f.ids()); err != nil {
+		t.Fatalf("valid index refused: %v", err)
+	}
+}
+
+func TestClip(t *testing.T) {
+	if clip("short") != "short" {
+		t.Error("short value changed")
+	}
+	long := clip(strings.Repeat("é", 100))
+	if len(long) > 80 || !strings.Contains(long, "(200 bytes)") {
+		t.Errorf("clip = %q", long)
 	}
 }

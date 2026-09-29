@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"filippo.io/age"
 	"github.com/spicy-lemonade/salt/internal/repo"
@@ -108,7 +109,7 @@ func decodeIndex(dec *json.Decoder) (*Index, error) {
 				return nil, err
 			}
 		default:
-			return nil, fmt.Errorf("unexpected field %v", key)
+			return nil, fmt.Errorf("unexpected field %s", clipToken(key))
 		}
 	}
 	return ix, expectDelim(dec, '}')
@@ -135,7 +136,7 @@ func decodeEntries(dec *json.Decoder, ix *Index) error {
 }
 
 func validEntry(e *Entry) error {
-	if len(e.Path) > maxIndexString || len(e.Object) > maxIndexString || len(e.Symlink) > maxIndexString {
+	if len(e.Path) > maxIndexString || len(e.Object) > maxIndexString || len(e.Symlink) > maxIndexString || len(e.SHA256) > maxIndexString {
 		return fmt.Errorf("entry longer than %d bytes", maxIndexString)
 	}
 	p, err := repo.CleanPath(e.Path)
@@ -143,12 +144,52 @@ func validEntry(e *Entry) error {
 		return err
 	}
 	e.Path = p
-	if e.Symlink == "" {
-		if _, err := repo.CleanPath(e.Object); err != nil {
-			return fmt.Errorf("object for %s: %w", p, err)
+	if e.Symlink != "" {
+		if e.Object != "" || e.SHA256 != "" {
+			return fmt.Errorf("symlink %s must not have an object or hash", p)
 		}
+		return nil
+	}
+	if _, err := repo.CleanPath(e.Object); err != nil {
+		return fmt.Errorf("object for %s: %w", p, err)
+	}
+	if !isSHA256(e.SHA256) {
+		return fmt.Errorf("hash for %s is not 64 hex characters", p)
+	}
+	if e.Size < 0 {
+		return fmt.Errorf("size for %s is negative", p)
 	}
 	return nil
+}
+
+func isSHA256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// clip shortens a value from the index before it goes into an error message,
+// so a crafted index can't print megabytes into logs or cron mail.
+func clip(s string) string {
+	const max = 40
+	if len(s) <= max {
+		return s
+	}
+	return fmt.Sprintf("%q… (%d bytes)", strings.ToValidUTF8(s[:max], ""), len(s))
+}
+
+// clipToken is clip for a JSON token, without first copying a long string.
+func clipToken(t json.Token) string {
+	if s, ok := t.(string); ok {
+		return clip(s)
+	}
+	return clip(fmt.Sprint(t))
 }
 
 func expectDelim(dec *json.Decoder, want json.Delim) error {
@@ -157,7 +198,7 @@ func expectDelim(dec *json.Decoder, want json.Delim) error {
 		return err
 	}
 	if d, ok := t.(json.Delim); !ok || d != want {
-		return fmt.Errorf("expected %q, got %v", want, t)
+		return fmt.Errorf("expected %q, got %s", want, clipToken(t))
 	}
 	return nil
 }
