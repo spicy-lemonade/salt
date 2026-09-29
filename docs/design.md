@@ -102,10 +102,53 @@ against someone who can push to it:
   second guard, every read and write goes through `os.Root`, which refuses
   paths that lead outside the repo.
 - **Tampered index.** The index is read one entry at a time, capped at 100,000
-  entries and 32 MB, so a crafted index can't use much memory.
+  entries and 32 MB, so a crafted index can't use much memory. `salt verify`
+  lists at most 50 problems, with long paths shortened.
+- **Ignore rules and attributes.** `.gitignore` and `.gitattributes` are
+  public files, so someone who can push can add a rule that makes git skip new
+  encrypted files, or rewrite them when storing or checking them out (for
+  example `*.age text`). The backup then looks fine locally but can't be
+  restored from the remote. `salt seal` (after writing), `salt check` and
+  `salt doctor` ask git directly, so rules from the global ignore file,
+  `.git/info/exclude` and `core.attributesFile` count too. They refuse if git
+  ignores any file salt wrote, or if any `.age` file does not have `text`
+  unset or has an `eol`, `filter`, `working-tree-encoding` or `ident`
+  attribute.
+- **Interrupted restores.** A restore decrypts into a temporary folder next to
+  the destination. Ctrl-C or SIGTERM removes it. A restore killed outright
+  can't clean up, so the folder is recorded while the restore runs, and
+  `salt doctor` and the next `salt restore` report any left behind.
 
 Not yet covered: someone who can push can still plant a fake encrypted file.
 The signed index (#7 on the board) will catch that.
+
+## What the repo reveals
+
+Anyone who can read the repo cannot read your files, but they can learn some
+things about them:
+
+- **How many files there are.** Each file is one encrypted object, so the
+  number of objects is the number of files. Symlinks are kept only in the
+  index.
+- **Roughly how big each file is.** Files are compressed, then encrypted, and
+  encryption adds a small overhead (a short header and 16 bytes per 64 KiB).
+  An object's size is therefore close to the file's compressed size, which
+  also shows how well it compresses. The size of `index.age` roughly shows how
+  many files there are and how long their names are.
+- **What changed, and when.** An unchanged file keeps its encrypted object, so
+  an unchanged backup makes no commit. A changed file's old object is removed
+  and a new one added in the same commit. From the history, a reader can see
+  when backups ran, how many files changed each time, and, by matching sizes,
+  how one file such as a growing database changes over time.
+- **How many keys can decrypt the backups.** `.salt/recipients.txt` is public,
+  so a reader can see how many keys the backups are encrypted to.
+- **File names, with `--plain-paths`.** Objects are stored under their real
+  names, so file names, folders and each named file's size are visible.
+  `salt trust` warns about this.
+
+Salt does not hide these. Hiding them would mean padding every file and
+re-encrypting unchanged ones, which would make the repo larger and create a
+commit every night.
 
 ## Process and memory safety
 
