@@ -51,6 +51,9 @@ Checking:
 Other:
   salt hook install [REPO]
   salt version
+
+Environment:
+  SALT_KEYSTORE=file   keep keys in a 0600 file instead of the system keychain
 `
 
 func main() {
@@ -91,17 +94,24 @@ func newApp() (*app.App, error) {
 		return nil, err
 	}
 	ui := app.NewTerminal()
-	return &app.App{
-		UI: ui,
-		Store: keys.FallbackStore{
-			Primary:   keys.KeyringStore{},
-			Secondary: keys.FileStore{Dir: filepath.Join(cfg, "salt", "keys")},
-			Warn: func(err error) {
-				ui.Printf("salt: the system keychain is unavailable (%v); saving the key to a private file under %s instead\n",
-					err, filepath.Join(cfg, "salt", "keys"))
-			},
+	keyDir := filepath.Join(cfg, "salt", "keys")
+	var store keys.Store = keys.FallbackStore{
+		Primary:   keys.KeyringStore{},
+		Secondary: keys.FileStore{Dir: keyDir},
+		Warn: func(err error) {
+			ui.Printf("salt: the system keychain is unavailable (%v); saving the key to a private file under %s instead\n", err, keyDir)
 		},
-		StoreName: storeName(),
+	}
+	name := storeName()
+	// SALT_KEYSTORE=file skips the keychain: for headless machines, and for
+	// the e2e tests, which must never touch the real keychain.
+	if os.Getenv("SALT_KEYSTORE") == "file" {
+		store, name = keys.FileStore{Dir: keyDir}, "private key file under "+keyDir
+	}
+	return &app.App{
+		UI:        ui,
+		Store:     store,
+		StoreName: name,
 		CacheDir:  cache,
 		Git:       app.RealGit{},
 		LookPath:  app.LookPath,

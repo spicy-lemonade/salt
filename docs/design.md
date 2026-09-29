@@ -140,8 +140,10 @@ whole suite recursively. Rules:
    adapters may call `exec.Command`, and no `_test.go` outside `test/e2e`
    may. A source-scan test enforces this.
 5. **e2e tests** use the `e2e` build tag and a prebuilt `SALT_BIN`. They never
-   build salt themselves and run only in Docker with `--memory` and
-   `--pids-limit` (`make e2e`).
+   build salt themselves and run only through `make e2e`, which caps the
+   process count (`ulimit -u`), sets a soft memory limit and a timeout. Every
+   salt they start uses `SALT_KEYSTORE=file` and a temp HOME, so the real
+   keychain is never touched.
 6. **Runtime limits:** a soft memory limit (512 MiB unless `GOMEMLIMIT` is
    set), at most 4 workers.
 
@@ -176,7 +178,7 @@ For the Hermes nightly script:
 
 ## Phases
 
-0. ✅ Guardrails: guard, gitx, source-scan test, Makefile, Docker e2e, CI.
+0. ✅ Guardrails: guard, gitx, source-scan test, Makefile, capped e2e, CI.
 1. Core: ✅ keys and recovery onboarding, seal, cache, check, hook, restore;
    remaining: SQLite source adapter and Hermes preset (`salt backup`).
 2. Restore: ✅ restore, verify, doctor, round-trip e2e test; remaining: cat,

@@ -1,10 +1,10 @@
 //go:build e2e
 
 // Package e2e runs the real salt binary against real git. Run it with
-// `make e2e`, which builds salt once and runs these tests inside a memory-
-// and pid-capped container. The tests never build salt themselves, and they
-// refuse to run outside the container because `salt init` writes to the
-// system keychain.
+// `make e2e`, which builds salt once, caps the number of processes, and sets
+// the variables checked below. The tests never build salt themselves, and
+// every salt they start uses SALT_KEYSTORE=file with a temporary HOME, so the
+// real keychain is never touched.
 package e2e
 
 import (
@@ -17,8 +17,8 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if os.Getenv("SALT_E2E_CONTAINER") != "1" {
-		os.Stderr.WriteString("e2e tests only run inside the test container: use `make e2e`\n")
+	if os.Getenv("SALT_E2E") != "1" {
+		os.Stderr.WriteString("e2e tests only run through `make e2e`\n")
 		os.Exit(1)
 	}
 	os.Exit(m.Run())
@@ -45,6 +45,7 @@ func newEnv(t *testing.T) *env {
 		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"),
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_CONFIG_NOSYSTEM=1",
+		"SALT_KEYSTORE=file", // never the real keychain
 		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
 	}}
 }
@@ -168,7 +169,7 @@ func TestBackupFlow(t *testing.T) {
 
 	// Restore from a fresh clone on a "new machine": no saved key, so salt
 	// asks for the passphrase on stdin.
-	e.must(base, "rm", "-rf", filepath.Join(e.home, ".config", "salt"))
+	e.forgetKeys()
 	clone := filepath.Join(base, "clone")
 	e.must(base, "git", "clone", "-q", remote, clone)
 	dest := filepath.Join(base, "restored")
@@ -181,8 +182,25 @@ func TestBackupFlow(t *testing.T) {
 	}
 }
 
+// forgetKeys deletes every saved key, simulating a new machine.
+func (e *env) forgetKeys() {
+	e.t.Helper()
+	filepath.WalkDir(e.home, func(p string, d os.DirEntry, err error) error {
+		if err == nil && d.IsDir() && d.Name() == "keys" && filepath.Base(filepath.Dir(p)) == "salt" {
+			os.RemoveAll(p)
+			return filepath.SkipDir
+		}
+		return nil
+	})
+}
+
 // The hook calls `salt` by name; if salt is missing, the commit is refused.
 func TestHookFailsClosedWithoutSalt(t *testing.T) {
+	for _, d := range []string{"/opt/homebrew/bin", "/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin"} {
+		if _, err := os.Stat(filepath.Join(d, "salt")); err == nil {
+			t.Skipf("a salt is installed in %s, which the hook always searches", d)
+		}
+	}
 	e := newEnv(t)
 	base := t.TempDir()
 	repoDir := filepath.Join(base, "backup")
