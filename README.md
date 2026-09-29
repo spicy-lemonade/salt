@@ -16,6 +16,8 @@ AI agents remember things about you. They keep notes like `USER.md`, `MEMORY.md`
 
 Salt encrypts your files before they reach GitHub. Anyone who looks inside only sees scrambled data. Even the file names are hidden.
 
+Your backup repo can stay private, and we recommend it. Salt works with private and public repos alike, so the encryption is an extra layer on top of GitHub's access controls.
+
 ## 📦 Install
 
 ```bash

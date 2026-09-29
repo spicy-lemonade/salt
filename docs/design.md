@@ -124,6 +124,12 @@ The signed index (#7 on the board) will catch that.
 
 ## What the repo reveals
 
+The backup repo can be private or public. A private repo is recommended, and
+salt works the same way in either. In this document a "public" file means a
+file salt leaves unencrypted, such as `.salt/recipients.txt`, not a file
+anyone on the internet can see. Keeping the repo private means only you and
+the people you give access to can see what is listed below.
+
 Anyone who can read the repo cannot read your files, but they can learn some
 things about them:
 
@@ -152,8 +158,8 @@ commit every night.
 
 ## Process and memory safety
 
-An earlier attempt crashed the machine when tests kept restarting themselves.
-These rules prevent that:
+If salt starts git, and git runs the hook that starts salt again, each run can
+start another until the machine runs out of memory. These rules prevent that:
 
 1. The hook runs `salt` by name, never a file path. `os.Executable()` is
    banned.
