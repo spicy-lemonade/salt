@@ -1,0 +1,6 @@
+# Go marks a line like `if err != nil {` as "partial" when the check runs but
+# the error never happens. Count those lines as covered, matching Go's own
+# statement coverage.
+parsers:
+  go:
+    partials_as_hits: true
