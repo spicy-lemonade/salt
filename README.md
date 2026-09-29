@@ -1,4 +1,8 @@
 # 🧂 Salt
+
+[![CI](https://github.com/spicy-lemonade/salt/actions/workflows/ci.yml/badge.svg)](https://github.com/spicy-lemonade/salt/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Salt encrypts your agent's files and database memories before they leave your machine.
 
 <div align="center">

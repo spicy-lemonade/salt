@@ -1,34 +1,56 @@
-# salt design
+# Salt design
 
-salt encrypts AI-agent memory backups (Hermes, Mnemosyne, Honcho, Hindsight,
-OpenViking, and the Markdown files around them) before they are pushed to Git.
+Salt encrypts AI-agent memory (Hermes and Mnemosyne today; Honcho, Hindsight
+and OpenViking later) before it is backed up to Git.
 
 ## Principles
 
-- **Plaintext never enters the backup repo.** `salt seal SRC REPO` writes only
-  ciphertext into the repo; the pre-commit hook `salt check` refuses any staged
-  file that is not age ciphertext (fail-closed), apart from a small allowlist.
-- **Nightly backups need no secret.** Sealing uses only the public key
-  (recipient). The private key is needed only to restore.
-- **File paths are encrypted by default.** Files are stored as
-  `objects/<xx>/<id>.age` plus an encrypted `index.age`. Opt out with
-  `salt init --plain-paths` or `encrypt_paths = false` in `salt.toml`.
-- **Streaming only.** Data flows read → zstd → age → write with fixed buffers;
-  data files are never read whole into memory.
-- **Unchanged files are not re-encrypted.** A local cache (never committed)
-  maps plaintext hashes to existing ciphertext, so an unchanged snapshot makes
-  no commit.
+- **Nothing unencrypted enters the backup repo.** `salt seal SRC REPO` writes
+  only encrypted files. The pre-commit hook `salt check` blocks any staged file
+  that is not encrypted, except a short list of public files.
+- **Encrypting never needs anything secret.** Sealing uses only the public
+  key. The private key is only needed to restore.
+- **File names are hidden by default.** Turn this off with
+  `salt init --plain-paths`.
+- **Files are processed a piece at a time**, never loaded whole into memory.
+- **Unchanged files are not re-encrypted**, so an unchanged snapshot makes no
+  commit.
+
+## Example usage
+
+A backup script saves a snapshot of the agent files, then runs `salt seal` to
+encrypt them before they reach the git repo:
+
+```bash
+salt seal --prune "$STAGE" "$REPO" 2>>"$LOG" || die "salt seal failed"
+```
+
+`--prune` removes files in the repo that salt did not write. Salt prints
+nothing to stdout, so a Hermes `--no-agent` job stays silent on success.
+
+## Backup repo layout
+
+| Path | Contents |
+|---|---|
+| `.salt/format.json` | settings (public) |
+| `.salt/recipients.txt` | public keys every file is encrypted to |
+| `.salt/key.age` | passphrase-locked private key (passphrase recovery only) |
+| `index.age` | encrypted list of real file names, sizes and hashes |
+| `objects/…` | encrypted files under random names (default) |
+| `files/…` | encrypted files under real names (`--plain-paths`) |
 
 ## Keys and recovery
 
-One age X25519 key pair per user.
+The private key is kept in the OS keychain. `SALT_KEYSTORE=file` uses a
+private file instead, for machines without a keychain. At `salt init` the user
+picks how to recover the key if the laptop is lost:
 
-- Public key: in `salt.toml`, used by the nightly seal.
-- Private key: kept in the OS keychain for everyday decrypts. Touch ID gating
-  is deliberately out of scope: it needs cgo for little gain. Optional extra recipients: YubiKey (`age-plugin-yubikey`), password
-  manager, second machine.
-
-At `salt init` the user chooses a recovery method.
+- **Recovery phrase (recommended):** 12 words that are the key. Nothing
+  secret is stored in the repo. Setup shows the words, hides them, and asks for
+  all 12 back. A mistake restarts the step, and nothing is saved until it
+  passes. `salt recovery show` shows the phrase again later.
+- **Passphrase:** chosen by the user and stored as `.salt/key.age`. Weak
+  passphrases are rejected.
 
 ### Onboarding copy (use verbatim)
 
@@ -45,11 +67,7 @@ How do you want to recover your backups if this laptop is lost?
      backup repo. Ensure it is strong because anyone with access to the repo
      can try to guess your password. Consider using a password manager like
      Bitwarden.
-
-Choose [1]:
 ```
-
-Phrase display:
 
 ```
 Write these down, in order.
@@ -57,132 +75,38 @@ Anybody with these words can decrypt and read your backups.
 If you lose them and this laptop, your backups cannot be recovered.
 ```
 
-### Recovery phrase (recommended)
+## Restore and checks
 
-- 12 BIP39 words (128 bits of entropy); the age identity is derived from them,
-  so nothing key-related is stored in the repo.
-- The last word carries a checksum, so typos are caught; words are unique in
-  their first 4 letters, so entry can autocomplete.
-- **Onboarding runs `salt recovery test` immediately**: the user types all 12
-  words back. If they are wrong, onboarding restarts at the phrase display.
-  Nothing (keychain entry, config, repo files) is written until the test
-  passes, so an aborted init leaves no key behind.
-- `salt recovery show` re-displays the phrase (after a confirmation prompt),
-  for when the laptop still works but the written copy is lost.
-
-### Passphrase
-
-- The private key is encrypted with the passphrase (age scrypt, ~1s per guess)
-  and stored as `key.age` in the repo.
-- Weak passphrases are rejected (strength estimate plus minimum length).
-- Scripted installs read it from stdin or a file, never from argv.
-
-### Changing method (deferred, not in v1)
-
-The cases that matter are covered without it: a lost phrase is re-shown with
-`salt recovery show`; a user who wants a different method can `salt init` a
-fresh backup repo. If demand appears, build `salt recovery change-passphrase`
-first (same key, re-wraps key.age, no re-encryption), and full switching
-later. When it is built, the method is tied to the key. Before switching, salt
-must warn explicitly:
-
-```
-Your recovery method is tied to your encryption key. Switching creates a new
-key and re-encrypts your current backup with it. Backups made before today
-can still only be decrypted with your OLD phrase or passphrase. Keep it.
-```
-
-`salt restore` can hold several identities, so a restore that spans the change
-can unlock both.
-
-### Restore
-
-```
-brew install spicy-lemonade/tap/salt
-git clone <backup repo> && cd <backup repo>
-salt restore --to ~/.hermes
-```
-
-Identity lookup order: keychain → configured plugin/password manager → prompt
-for recovery phrase or passphrase. The unlocked key stays in memory only.
-Restores decrypt into a temp dir, verify every file against the encrypted
-index, then move into place with 0600 permissions. A live directory is never
-overwritten without `--force`. age is authenticated: tampered files fail to
-decrypt rather than yielding wrong data. Phase 2 adds a signed index to detect
-files planted by someone who can push to the repo.
-
-## Sources
-
-| Source | Method |
-|---|---|
-| Files/dirs (md, yaml, json, skills/) | glob include/exclude |
-| SQLite (Mnemosyne, state/kanban/notepad DBs) | `sqlite3 .backup` to temp, then stream |
-| Postgres + pgvector (Honcho, Hindsight) | `pg_dump -Fc` streamed, local or `docker exec` |
-| OpenViking (AGFS + vector index) | directory source with optional pre/post commands |
-
-Large files are split below GitHub's 100 MB limit. `salt prune` (opt-in,
-history rewrite) bounds repo growth.
+- `salt restore` decrypts into a temporary folder, checks every file, then
+  moves it into place. An existing folder is moved aside, never overwritten.
+- `salt verify` decrypts everything without writing it to disk, and reports
+  any file that cannot be restored. It needs the key.
+- `salt doctor` checks the hook, the key, the repo and the last backup. It
+  needs no key.
 
 ## Process and memory safety
 
-The first attempt crashed the host: the hook installed during tests pointed at
-`os.Executable()`, which was the test binary, so every test commit re-ran the
-whole suite recursively. Rules:
+An earlier attempt crashed the machine when tests kept restarting themselves.
+These rules prevent that:
 
-1. **salt never runs inside salt.** `internal/guard` sets `SALT_ACTIVE` on
-   start and refuses to run if it is already set, so a hook fired by any child
-   of salt cannot start salt again.
-2. **Git calls made by salt disable hooks** (`-c core.hooksPath=/dev/null`)
-   and salt never runs `git commit` from hook mode.
-3. **No `os.Executable()`.** Hooks call `salt` by name. A source-scan test
-   enforces this.
-4. **Unit tests never start processes.** Only `internal/gitx` and source
-   adapters may call `exec.Command`, and no `_test.go` outside `test/e2e`
-   may. A source-scan test enforces this.
-5. **e2e tests** use the `e2e` build tag and a prebuilt `SALT_BIN`. They never
-   build salt themselves and run only through `make e2e`, which caps the
-   process count (`ulimit -u`), sets a soft memory limit and a timeout. Every
-   salt they start uses `SALT_KEYSTORE=file` and a temp HOME, so the real
-   keychain is never touched.
-6. **Runtime limits:** a soft memory limit (512 MiB unless `GOMEMLIMIT` is
-   set), at most 4 workers.
+1. The hook runs `salt` by name, never a file path. `os.Executable()` is
+   banned.
+2. Salt refuses to start inside another salt (`SALT_ACTIVE`).
+3. Every git command salt runs has git hooks switched off (`internal/gitx`).
+4. Only `internal/gitx` and `internal/source` may start other programs. Unit
+   tests never start any. `internal/rules` enforces rules 1 and 4.
+5. End-to-end tests run only through `make e2e`. It builds salt once, caps
+   the number of processes, and keeps the tests away from the real keychain.
+6. At most 4 files are worked on at once, with a 512 MB soft memory limit.
 
-## Integrating with a backup script
+## Out of scope
 
-Replace the step that copies the snapshot into the repo with `salt seal`.
-For the Hermes nightly script:
+Touch ID, and switching recovery method.
 
-```diff
--find "$REPO" -mindepth 1 -maxdepth 1 ! -name .git ! -name .gitignore -exec rm -rf {} + 2>>"$LOG"
--cp -Rp "$STAGE"/. "$REPO"/ 2>>"$LOG" || die "copy into worktree failed"
-+salt seal --prune "$STAGE" "$REPO" 2>>"$LOG" || die "salt seal failed"
-```
+## Still to build
 
-`--prune` does what the removed `find … rm` line did, but keeps `.salt/`,
-`index.age` and the public files. salt writes nothing to stdout, so a
-`--no-agent` cron job stays silent on success.
-
-## Status
-
-- Keychain: macOS items are written through `security -i` (secret on stdin,
-  never argv) and are readable while the login keychain is unlocked. Linux
-  falls back to a 0600 file when no Secret Service is running.
-- `salt verify REPO` decrypts every object to /dev/null and checks hashes;
-  it needs the key, so it is a manual/periodic check, not part of the nightly
-  job. `salt doctor [REPO]` needs no key: hook, salt on the hook's PATH, key
-  location, plaintext in the working tree or last commit, backup age,
-  remote, files near GitHub's 100 MB limit.
-- Not yet built: the SQLite/Postgres/OpenViking source adapters (`salt seal`
-  works on any directory, including a staged snapshot with `.backup` copies
-  of SQLite).
-
-## Phases
-
-0. ✅ Guardrails: guard, gitx, source-scan test, Makefile, capped e2e, CI.
-1. Core: ✅ keys and recovery onboarding, seal, cache, check, hook, restore;
-   remaining: SQLite source adapter and Hermes preset (`salt backup`).
-2. Restore: ✅ restore, verify, doctor, round-trip e2e test; remaining: cat,
-   textconv diffs, signed index.
-3. Postgres (Honcho, Hindsight), OpenViking.
-4. Size: splitting, prune, maybe content-defined chunking.
-5. Release: GoReleaser, `spicy-lemonade/homebrew-tap`, public launch.
+- support for SQLite, Postgres (Honcho, Hindsight) and OpenViking data
+- a one-command `salt backup`
+- splitting files over GitHub's 100 MB limit
+- a signed index, to detect planted files
+- Homebrew tap and release
