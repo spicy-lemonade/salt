@@ -19,6 +19,9 @@ import (
 
 var version = "dev"
 
+// gitOps is how salt reaches git. Tests replace it so they never start git.
+var gitOps app.GitOps = app.RealGit{}
+
 const usage = `salt encrypts your agent's memory backups before they are pushed.
 
 Setup:
@@ -30,8 +33,10 @@ Nightly (in your backup script):
   salt seal [--prune] SRC REPO
       Encrypt the snapshot directory SRC into REPO. Unchanged files are left
       untouched. --prune removes anything in REPO that salt did not write.
+      Fails if git would ignore or change any file salt wrote.
   salt check [REPO]
-      Pre-commit hook: refuse the commit if any staged file is not encrypted.
+      Pre-commit hook: refuse the commit if any staged file is not encrypted,
+      or if git would ignore or change any file salt wrote.
 
 Restoring:
   salt restore REPO --to DIR [--force] [PATH...]
@@ -118,7 +123,7 @@ func newApp() (*app.App, error) {
 		StoreName: name,
 		CacheDir:  cache,
 		TrustDir:  filepath.Join(cfg, "salt", "trusted"),
-		Git:       app.RealGit{},
+		Git:       gitOps,
 		LookPath:  app.LookPath,
 		Now:       time.Now,
 		Version:   version,

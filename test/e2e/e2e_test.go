@@ -419,3 +419,107 @@ func TestInitRefusesASymlinkedSaltFolder(t *testing.T) {
 		t.Fatalf("init wrote outside the repo: %v", entries)
 	}
 }
+
+// pushedChange sets up a backed-up repo, lets someone else push a change to
+// one public file from their own clone, and pulls it into the owner's clone.
+// It returns the owner's clone and the snapshot directory.
+func pushedChange(t *testing.T, e *env, file, line string) (mine, src string) {
+	t.Helper()
+	base := t.TempDir()
+	remote := filepath.Join(base, "remote.git")
+	mine = filepath.Join(base, "mine")
+	theirs := filepath.Join(base, "theirs")
+	src = filepath.Join(base, "stage")
+	e.must(base, "git", "init", "-q", "--bare", "-b", "main", remote)
+	e.must(base, "git", "clone", "-q", remote, mine)
+	passFile := filepath.Join(base, "pass")
+	write(t, passFile, "correct horse battery staple\n")
+	e.must(base, "salt", "init", mine, "--recovery", "passphrase", "--passphrase-file", passFile)
+	write(t, filepath.Join(src, "USER.md"), "secret\n")
+	e.must(base, "salt", "seal", "--prune", src, mine)
+	e.must(mine, "git", "add", "-A")
+	e.must(mine, "git", "commit", "-q", "-m", "backup 1")
+	e.must(mine, "git", "push", "-q", "origin", "main")
+
+	// salt check allows the change: both files are on the public list.
+	e.must(base, "git", "clone", "-q", remote, theirs)
+	f, err := os.OpenFile(filepath.Join(theirs, file), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(line + "\n")
+	f.Close()
+	e.must(theirs, "git", "add", file)
+	e.must(theirs, "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "tidy up")
+	e.must(theirs, "git", "push", "-q", "origin", "main")
+	e.must(mine, "git", "pull", "-q", "--ff-only")
+	return mine, src
+}
+
+func commitCount(e *env, dir string) string {
+	return strings.TrimSpace(e.must(dir, "git", "rev-list", "--count", "HEAD"))
+}
+
+// A pushed "objects/" ignore rule would make `git add -A` skip every new
+// object, so the remote gets an index pointing at files it never receives.
+// The next seal must fail before the script commits anything.
+func TestPushedIgnoreRuleStopsTheBackup(t *testing.T) {
+	e := newEnv(t)
+	mine, src := pushedChange(t, e, ".gitignore", "objects/")
+	before := commitCount(e, mine)
+
+	write(t, filepath.Join(src, "USER.md"), "new secret\n")
+	out, code := e.run(mine, "salt", "seal", "--prune", src, mine)
+	if code != 1 || !strings.Contains(out, "is ignored by git (via .gitignore or your git config), so it would never reach the remote. Remove the matching ignore rule.") {
+		t.Fatalf("seal after the ignore rule: exit %d\n%s", code, out)
+	}
+	if after := commitCount(e, mine); after != before {
+		t.Fatalf("commits went from %s to %s", before, after)
+	}
+	// A script that carried on anyway is stopped by the hook.
+	e.must(mine, "git", "add", "-A")
+	if out, code := e.run(mine, "git", "commit", "-q", "-m", "backup 2"); code == 0 || !strings.Contains(out, "salt check: refusing commit") {
+		t.Fatalf("commit after the ignore rule: exit %d\n%s", code, out)
+	}
+	if out, code := e.run(mine, "salt", "doctor", mine); code != 1 || !strings.Contains(out, "is ignored by git") {
+		t.Fatalf("doctor: exit %d\n%s", code, out)
+	}
+}
+
+// A pushed "*.age text" line overrides "*.age binary", so git would rewrite
+// line endings in ciphertext it stores, and a fresh clone would rewrite the
+// objects already committed. Seal must fail even on a night with no changes.
+func TestPushedAttributeStopsTheBackup(t *testing.T) {
+	e := newEnv(t)
+	mine, src := pushedChange(t, e, ".gitattributes", "*.age text eol=crlf")
+
+	out, code := e.run(mine, "salt", "seal", "--prune", src, mine)
+	if code != 1 || !strings.Contains(out, "when storing it (text is set, eol is set to crlf); backups could not be restored. Remove the attribute from .gitattributes (or your git config) so *.age stays binary.") {
+		t.Fatalf("unchanged seal after the attribute: exit %d\n%s", code, out)
+	}
+	// One line per file, and the count in the first line counts files:
+	// index.age, .salt/key.age and the one object.
+	if n := strings.Count(out, "  git would change "); n != 3 || !strings.Contains(out, "but 3 file(s) would not reach the remote intact") {
+		t.Fatalf("want 3 files on 3 lines, got %d lines:\n%s", n, out)
+	}
+	// The hook refuses any commit, even one that stages nothing salt wrote.
+	if out, code := e.run(mine, "git", "commit", "-q", "--allow-empty", "-m", "backup 2"); code == 0 || !strings.Contains(out, "salt check: refusing commit") {
+		t.Fatalf("commit after the attribute: exit %d\n%s", code, out)
+	}
+
+	// A changed file: seal deletes the old object and writes a new one. git
+	// still lists the deleted one until it is staged, but it never reaches
+	// the remote, so seal and the hook count the same 3 files.
+	write(t, filepath.Join(src, "USER.md"), "new secret\n")
+	out, code = e.run(mine, "salt", "seal", "--prune", src, mine)
+	if n := strings.Count(out, "  git would change "); code != 1 || n != 3 || !strings.Contains(out, "but 3 file(s) would not reach the remote intact") {
+		t.Fatalf("changed seal after the attribute: exit %d, %d lines\n%s", code, n, out)
+	}
+	e.must(mine, "git", "add", "-A")
+	if out, code := e.run(mine, "git", "commit", "-q", "-m", "backup 3"); code == 0 || !strings.Contains(out, "salt check: refusing commit: 3 file(s) would not reach the remote intact") {
+		t.Fatalf("commit of the changed backup: exit %d\n%s", code, out)
+	}
+	if out, code := e.run(mine, "salt", "doctor", mine); code != 1 || !strings.Contains(out, "git would change") {
+		t.Fatalf("doctor: exit %d\n%s", code, out)
+	}
+}

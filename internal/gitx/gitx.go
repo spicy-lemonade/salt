@@ -221,3 +221,122 @@ func Remote(dir string) string {
 	}
 	return out
 }
+
+// splitZ splits NUL-terminated git output into its fields.
+func splitZ(b []byte) []string {
+	var out []string
+	for _, f := range strings.Split(string(b), "\x00") {
+		if f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// lsFiles runs git ls-files -z with the given options over pathspecs.
+func lsFiles(dir string, opts []string, pathspecs []string) ([]string, error) {
+	args := append([]string{"ls-files", "-z"}, opts...)
+	args = append(append(args, "--"), pathspecs...)
+	cmd := exec.Command("git", Args(dir, args...)...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("git ls-files: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return splitZ(stdout.Bytes()), nil
+}
+
+// IgnoredPaths lists untracked files under pathspecs that git ignores,
+// through .gitignore, .git/info/exclude or the global excludes file.
+func IgnoredPaths(dir string, pathspecs ...string) ([]string, error) {
+	return lsFiles(dir, []string{"--others", "--ignored", "--exclude-standard"}, pathspecs)
+}
+
+// AddablePaths lists files under pathspecs that git tracks or would add:
+// tracked files and untracked files that are not ignored.
+func AddablePaths(dir string, pathspecs ...string) ([]string, error) {
+	return lsFiles(dir, []string{"--cached", "--others", "--exclude-standard"}, pathspecs)
+}
+
+// Attr is one attribute of one path, as git check-attr reports it: "set",
+// "unset", "unspecified" or a value.
+type Attr struct {
+	Path, Name, Value string
+}
+
+// CheckAttrs calls fn with the named attributes of each path. Paths go to a
+// single `git check-attr --stdin` and its output is read as it comes, so a
+// long list stays cheap. Attributes come from .gitattributes,
+// .git/info/attributes and core.attributesFile.
+func CheckAttrs(dir string, paths []string, names []string, fn func(Attr) error) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	args := append([]string{"check-attr", "-z", "--stdin"}, names...)
+	cmd := exec.Command("git", Args(dir, args...)...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() {
+		w := bufio.NewWriter(stdin)
+		for _, p := range paths {
+			w.WriteString(p)
+			w.WriteByte(0)
+		}
+		w.Flush()
+		stdin.Close()
+	}()
+	if err := ReadCheckAttr(stdout, fn); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		return err
+	}
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("git check-attr: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// ReadCheckAttr reads `git check-attr -z` output (path, attribute and value,
+// each ending in NUL) and calls fn for each attribute.
+func ReadCheckAttr(r io.Reader, fn func(Attr) error) error {
+	br := bufio.NewReader(r)
+	field := func() (string, error) {
+		s, err := br.ReadString(0)
+		if err != nil {
+			return s, err
+		}
+		return s[:len(s)-1], nil
+	}
+	for {
+		path, err := field()
+		if err == io.EOF && path == "" {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("git check-attr: output ends mid-entry")
+		}
+		name, err := field()
+		if err != nil {
+			return fmt.Errorf("git check-attr: output ends mid-entry")
+		}
+		value, err := field()
+		if err != nil {
+			return fmt.Errorf("git check-attr: output ends mid-entry")
+		}
+		if err := fn(Attr{Path: path, Name: name, Value: value}); err != nil {
+			return err
+		}
+	}
+}

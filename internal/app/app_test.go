@@ -61,6 +61,12 @@ type fakeGit struct {
 	last      time.Time
 	hasLast   bool
 	remote    string
+	// storage is what Storage reports; storageCalls counts the calls.
+	storage      []check.StorageProblem
+	storageTotal int
+	storageErr   error
+	storageCalls int
+	onStorage    func(root string)
 }
 
 func (f *fakeGit) HookPath(string) (string, error) { return f.hook, nil }
@@ -72,6 +78,13 @@ func (f *fakeGit) LastCommit(string) (time.Time, bool, error) {
 	return f.last, f.hasLast, nil
 }
 func (f *fakeGit) Remote(string) string { return f.remote }
+func (f *fakeGit) Storage(root string) ([]check.StorageProblem, int, error) {
+	f.storageCalls++
+	if f.onStorage != nil {
+		f.onStorage(root)
+	}
+	return f.storage, f.storageTotal, f.storageErr
+}
 
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -249,6 +250,119 @@ func TestInitRefusesForeignSymlinks(t *testing.T) {
 	}
 }
 
+// Seal asks git about storage only after it has written the new objects:
+// before that, git has nothing new to ignore.
+func TestSealChecksStorageAfterSealing(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	src := filepath.Join(t.TempDir(), "hermes")
+	os.MkdirAll(src, 0o755)
+	os.WriteFile(filepath.Join(src, "USER.md"), []byte("changed"), 0o644)
+
+	var objectsAtCheck []string
+	e.git.onStorage = func(root string) {
+		objectsAtCheck, _ = filepath.Glob(filepath.Join(root, repo.ObjectsDir, "*", "*.age"))
+	}
+	e.git.storage = []check.StorageProblem{{Path: "objects/ab/new.age"}}
+	e.git.storageTotal = 1
+	calls := e.git.storageCalls
+	err := e.app.Seal(src, e.root, true)
+	if !errors.Is(err, ErrReported) {
+		t.Fatalf("Seal with an ignored object: %v", err)
+	}
+	if e.git.storageCalls != calls+1 || len(objectsAtCheck) != 1 {
+		t.Fatalf("storage checked %d time(s), seeing objects %v; want once, after the new object was written", e.git.storageCalls-calls, objectsAtCheck)
+	}
+	out := e.ui.out.String()
+	for _, want := range []string{"salt: sealed 1 files", "salt: the backup was sealed, but 1 file(s) would not reach the remote intact:",
+		"objects/ab/new.age is ignored by git"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("seal output missing %q:\n%s", want, out)
+		}
+	}
+
+	e.git.storage, e.git.storageTotal, e.git.storageErr = nil, 0, errors.New("no git")
+	if err := e.app.Seal(src, e.root, true); err == nil || !strings.Contains(err.Error(), "checking how git will store the backup: no git") {
+		t.Fatalf("Seal when git fails: %v", err)
+	}
+
+	e.git.storageErr = nil
+	if err := e.app.Seal(src, e.root, true); err != nil {
+		t.Fatalf("Seal with nothing wrong: %v", err)
+	}
+
+	// A repo that is not a git repo pushes nothing, so git is not asked.
+	os.RemoveAll(filepath.Join(e.root, ".git"))
+	calls = e.git.storageCalls
+	e.git.storage, e.git.storageTotal = []check.StorageProblem{{Path: "index.age"}}, 1
+	if err := e.app.Seal(src, e.root, true); err != nil || e.git.storageCalls != calls {
+		t.Fatalf("Seal outside git: %v, %d storage call(s)", err, e.git.storageCalls-calls)
+	}
+}
+
+// salt check looks at every salt file, so it refuses even when nothing salt
+// wrote is staged.
+func TestCheckRefusesStorageProblems(t *testing.T) {
+	e := newEnv(t)
+	e.git.storage = []check.StorageProblem{{Path: "objects/ab/c.age", Attrs: []check.BadAttr{{Name: "text", Value: "set"}}}}
+	e.git.storageTotal = 1
+	if err := e.app.Check(e.root); !errors.Is(err, ErrReported) {
+		t.Fatalf("Check: %v", err)
+	}
+	if out := e.ui.out.String(); !strings.Contains(out, "salt check: refusing commit: 1 file(s) would not reach the remote intact:") ||
+		!strings.Contains(out, "git would change objects/ab/c.age when storing it (text is set)") {
+		t.Fatalf("check output:\n%s", out)
+	}
+	e.git.storageErr = errors.New("no git")
+	if err := e.app.Check(e.root); err == nil || errors.Is(err, ErrReported) {
+		t.Fatalf("Check when git fails: %v", err)
+	}
+	e.git.storage, e.git.storageTotal, e.git.storageErr = nil, 0, nil
+	if err := e.app.Check(e.root); err != nil {
+		t.Fatalf("Check with nothing wrong: %v", err)
+	}
+}
+
+func TestDoctorReportsStorageProblems(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	for i := 0; i < 5; i++ {
+		e.git.storage = append(e.git.storage, check.StorageProblem{Path: fmt.Sprintf("objects/ab/%d.age", i)})
+	}
+	e.git.storageTotal = 40
+	if err := e.app.Doctor(e.root); !errors.Is(err, ErrReported) {
+		t.Fatalf("Doctor: %v", err)
+	}
+	out := e.ui.out.String()
+	for _, want := range []string{"✗ objects/ab/0.age is ignored by git", "✗ objects/ab/2.age is ignored", "✗ … and 37 more file(s) git would not store as written"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "objects/ab/3.age") {
+		t.Errorf("doctor listed more than three:\n%s", out)
+	}
+	// The summary counts files, not lines.
+	if !strings.Contains(out, "\n40 problem(s)") {
+		t.Errorf("summary does not count 40 files:\n%s", out)
+	}
+}
+
+// With 8 bad files doctor shows 3 and "… and 5 more", and the summary says 8.
+func TestDoctorCountsEveryBadFile(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	for i := 0; i < 8; i++ {
+		e.git.storage = append(e.git.storage, check.StorageProblem{Path: fmt.Sprintf("objects/ab/%d.age", i), Attrs: []check.BadAttr{{Name: "text", Value: "set"}}})
+	}
+	e.git.storageTotal = 8
+	e.app.Doctor(e.root)
+	out := e.ui.out.String()
+	if n := strings.Count(out, "✗ git would change"); n != 3 || !strings.Contains(out, "✗ … and 5 more file(s)") || !strings.Contains(out, "\n8 problem(s) and ") {
+		t.Fatalf("%d files listed; output:\n%s", n, out)
+	}
+}
+
 func TestRecoveryShowBranches(t *testing.T) {
 	e := newEnv(t)
 	healthyRepo(t, e)
@@ -356,6 +470,9 @@ func (failingGit) Committed(string) ([]check.Violation, error) { return nil, err
 func (failingGit) LastCommit(string) (time.Time, bool, error) {
 	return time.Time{}, false, errors.New("no git")
 }
+func (failingGit) Storage(string) ([]check.StorageProblem, int, error) {
+	return nil, 0, errors.New("no git")
+}
 
 type brokenStore struct{}
 
@@ -377,7 +494,7 @@ func TestDoctorMoreBranches(t *testing.T) {
 	}
 	out := e.ui.out.String()
 	for _, want := range []string{"git not found", "could not locate the pre-commit hook", "could not inspect the last commit",
-		"could not read the last commit", "could not read the test store", "no `origin` remote"} {
+		"could not read the last commit", "could not read the test store", "no `origin` remote", "could not ask git how it stores the backup"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("doctor output missing %q:\n%s", want, out)
 		}
@@ -391,12 +508,14 @@ func TestDoctorKeyAndTreeBranches(t *testing.T) {
 	other, _ := age.GenerateX25519Identity()
 	e.store.Set(r.RecipientStrings[0], keys.IdentitySecret(other)) // wrong key saved
 	os.Symlink("x", filepath.Join(e.root, "link"))
-	os.Remove(filepath.Join(e.root, ".gitattributes"))
+	// git's view of the attributes, not the file's text, decides this.
+	e.git.storage = []check.StorageProblem{{Path: "index.age", Attrs: []check.BadAttr{{Name: "text", Value: "unspecified"}}}}
+	e.git.storageTotal = 1
 	e.git.hasLast = false
 	e.ui.out.Reset()
 	e.app.Doctor(e.root)
 	out := e.ui.out.String()
-	for _, want := range []string{"is damaged", "unencrypted file(s) in the working tree, e.g. link", "no commits yet", ".gitattributes does not mark"} {
+	for _, want := range []string{"is damaged", "unencrypted file(s) in the working tree, e.g. link", "no commits yet", "git may change index.age when storing it (*.age is not marked binary)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("doctor output missing %q:\n%s", want, out)
 		}

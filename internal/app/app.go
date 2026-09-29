@@ -41,6 +41,9 @@ type GitOps interface {
 	Committed(repoRoot string) ([]check.Violation, error)
 	LastCommit(repoRoot string) (t time.Time, ok bool, err error)
 	Remote(repoRoot string) string
+	// Storage reports files salt wrote that git would ignore or change when
+	// storing them (see check.StorageProblems).
+	Storage(repoRoot string) (problems []check.StorageProblem, total int, err error)
 }
 
 // RealGit runs git through gitx (hooks disabled).
@@ -55,6 +58,9 @@ func (RealGit) Committed(root string) ([]check.Violation, error) {
 }
 func (RealGit) LastCommit(root string) (time.Time, bool, error) { return gitx.LastCommitTime(root) }
 func (RealGit) Remote(root string) string                       { return gitx.Remote(root) }
+func (RealGit) Storage(root string) ([]check.StorageProblem, int, error) {
+	return check.StorageProblems(root)
+}
 
 // HookSearchPath is where the pre-commit hook looks for salt: the caller's
 // PATH plus Homebrew's locations (see hook.Script).
@@ -93,6 +99,25 @@ func (a *App) Seal(src, repoRoot string, prune bool) error {
 	for _, s := range res.Skipped {
 		a.UI.Printf("salt: skipped %s (not a file or symlink)\n", s)
 	}
+	// Checked after sealing, not before: only now do the new objects exist,
+	// so git can say whether it would ignore them. Failing here stops the
+	// backup script before it commits.
+	if requireGitRepo(r.Root) != nil {
+		return nil // not a git repo, so nothing is pushed
+	}
+	return a.checkStorage(r.Root, "salt: the backup was sealed, but")
+}
+
+// checkStorage refuses when git would not store salt's files as written.
+func (a *App) checkStorage(root, lead string) error {
+	problems, total, err := a.Git.Storage(root)
+	if err != nil {
+		return fmt.Errorf("checking how git will store the backup: %w", err)
+	}
+	if total > 0 {
+		a.UI.Printf("%s", check.StorageReport(lead, problems, total))
+		return ErrReported
+	}
 	return nil
 }
 
@@ -109,7 +134,9 @@ func (a *App) Check(repoRoot string) error {
 		a.UI.Printf("%s", check.Report(vs))
 		return ErrReported
 	}
-	return nil
+	// Every tracked salt file, not only staged ones: a changed attribute also
+	// breaks objects committed earlier, on the next fresh clone.
+	return a.checkStorage(repoRoot, "salt check: refusing commit:")
 }
 
 // InstallHook installs the pre-commit hook in the repository at repoRoot.

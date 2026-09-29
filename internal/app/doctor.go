@@ -41,12 +41,18 @@ type report struct {
 }
 
 func (r *report) add(l level, format string, a ...any) {
+	r.addN(l, 1, format, a...)
+}
+
+// addN prints one line that stands for n problems or warnings, such as
+// "… and 5 more", so the summary counts all of them.
+func (r *report) addN(l level, n int, format string, a ...any) {
 	mark := map[level]string{ok: "✓", warn: "!", fail: "✗"}[l]
 	switch l {
 	case warn:
-		r.warns++
+		r.warns += n
 	case fail:
-		r.fails++
+		r.fails += n
 	}
 	r.ui.Printf("  %s %s\n", mark, fmt.Sprintf(format, a...))
 }
@@ -122,9 +128,7 @@ func (a *App) Doctor(repoRoot string) error {
 	} else {
 		r.add(warn, "no `origin` remote; backups are not leaving this machine")
 	}
-	if b, _ := os.ReadFile(filepath.Join(root, ".gitattributes")); !strings.Contains(string(b), "*.age binary") {
-		r.add(warn, ".gitattributes does not mark *.age as binary")
-	}
+	a.doctorStorage(r, root)
 
 	a.UI.Printf("\n  Tip: run `salt recovery test %s` now and then to make sure your written-down %s still works.\n",
 		repoRoot, recoveryNoun(rp))
@@ -186,6 +190,25 @@ func (a *App) doctorTrust(r *report, rp *repo.Repo) {
 			r.add(fail, "the repo's keys or settings changed since you approved them: %s", strings.Join(d, "; "))
 		} else {
 			r.add(ok, "keys and settings match what you approved")
+		}
+	}
+}
+
+// doctorStorage asks git whether the remote gets salt's files exactly as
+// written. The working tree can be fine while what git stores is not.
+func (a *App) doctorStorage(r *report, root string) {
+	problems, total, err := a.Git.Storage(root)
+	switch {
+	case err != nil:
+		r.add(warn, "could not ask git how it stores the backup: %v", err)
+	case total == 0:
+		r.add(ok, "git stores every salt file exactly as written")
+	default:
+		for _, p := range problems[:min(3, len(problems))] {
+			r.add(fail, "%s", p)
+		}
+		if total > 3 {
+			r.addN(fail, total-3, "… and %d more file(s) git would not store as written", total-3)
 		}
 	}
 }

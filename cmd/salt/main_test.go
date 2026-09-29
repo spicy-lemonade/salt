@@ -6,9 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"filippo.io/age"
 	"github.com/spicy-lemonade/salt/internal/app"
+	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/zalando/go-keyring"
@@ -16,10 +18,28 @@ import (
 
 // Two locks on the real keychain: salt's own file store, and go-keyring's
 // in-memory mock in case anything still reaches the keychain code.
+//
+// git is replaced too: unit tests must never start it.
 func TestMain(m *testing.M) {
 	os.Setenv("SALT_KEYSTORE", "file")
 	keyring.MockInit()
+	gitOps = testGit
 	os.Exit(m.Run())
+}
+
+// noGit answers salt's questions for git without starting it.
+type noGit struct{ storageCalls int }
+
+var testGit = &noGit{}
+
+func (*noGit) HookPath(string) (string, error)             { return "", errors.New("no git in unit tests") }
+func (*noGit) Staged(string) ([]check.Violation, error)    { return nil, nil }
+func (*noGit) Committed(string) ([]check.Violation, error) { return nil, nil }
+func (*noGit) LastCommit(string) (time.Time, bool, error)  { return time.Time{}, false, nil }
+func (*noGit) Remote(string) string                        { return "" }
+func (g *noGit) Storage(string) ([]check.StorageProblem, int, error) {
+	g.storageCalls++
+	return nil, 0, nil
 }
 
 // isolate points HOME and the config and cache dirs at a temp dir.
@@ -109,6 +129,8 @@ func TestRunSealVerifyRestore(t *testing.T) {
 	}
 	os.MkdirAll(filepath.Join(src, "memories"), 0o755)
 	os.WriteFile(filepath.Join(src, "memories", "USER.md"), []byte("hello"), 0o644)
+	// A git repo, so seal goes on to ask git (the fake) about storage.
+	os.MkdirAll(filepath.Join(root, ".git"), 0o755)
 
 	// A repo this machine hasn't approved is refused until `salt trust`.
 	if err := run("seal", []string{"--prune", src, root}); !errors.Is(err, app.ErrNotTrusted) {
@@ -120,8 +142,12 @@ func TestRunSealVerifyRestore(t *testing.T) {
 	if err := run("trust", []string{"--yes", root}); err != nil {
 		t.Fatalf("trust --yes: %v", err)
 	}
+	calls := testGit.storageCalls
 	if err := run("seal", []string{"--prune", src, root}); err != nil {
 		t.Fatalf("seal: %v", err)
+	}
+	if testGit.storageCalls != calls+1 {
+		t.Fatalf("seal asked git about storage %d time(s), want once", testGit.storageCalls-calls)
 	}
 	if err := run("verify", []string{root}); err != nil {
 		t.Fatalf("verify: %v", err)
