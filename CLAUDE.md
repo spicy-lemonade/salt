@@ -15,6 +15,7 @@
 - Use concurrency when processing data with an LLM API.
 - Read existing files before writing any output.
 - Do not re-read files unless they have been changed.
+- Use gitmoji when commiting, by running `gitmoji -c` and selecting an appropriate emoji.
 
 ## Project Overview
 
