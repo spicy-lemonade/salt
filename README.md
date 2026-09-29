@@ -22,7 +22,7 @@ Salt locks your files before they reach GitHub. Anyone who looks inside only see
 brew install spicy-lemonade/tap/salt
 ```
 
-Use the full name above. A plain `brew install salt` installs a different tool called SaltStack.
+Use the full name above. (A plain `brew install salt` installs a different tool called SaltStack, so don't do that!).
 
 You can also install Salt with Go.
 
@@ -40,7 +40,7 @@ salt init ~/my-backup-repo
 
 Salt creates your key and helps you save a way to get it back. It also adds a check that stops you from ever committing a file that isn't locked.
 
-Salt hides your file names by default. If you'd rather see your folders and file names on GitHub, set up with `salt init --plain-paths ~/my-backup-repo` instead. The contents stay locked either way.
+Salt hides your file names by default. If you'd rather see your folders and file names, e.g. `Memories/USER.md` on GitHub, set up with `salt init --plain-paths ~/my-backup-repo` instead. The file contents stay encrypted either way.
 
 Then lock your files into the repo whenever you back up.
 
@@ -52,7 +52,7 @@ Commit and push as normal. Files that haven't changed stay the same, so a backup
 
 ## ⏰ Daily backups
 
-Most people run Salt from a small script once a day. Here is an example for Hermes. Change the paths to match your setup.
+Most people run Salt from a small script once a day. Here is an example of a daily backup for Hermes. Just change the paths to match your setup.
 
 ```bash
 #!/bin/bash
@@ -96,10 +96,10 @@ Salt only prints messages when something goes wrong, so a successful backup is s
 
 When you set up Salt you pick one of two ways to recover your key if you lose your laptop.
 
-- **12 recovery words** (recommended). Write them down on paper and keep them safe. The words are your key, so nothing secret is stored in your repo.
+- **12 recovery words** (recommended). Write them down on paper and keep them safe. The words are your key, and nothing is stored in your repo. Write them down in at least two places, with one preferably being offline.
 - **A passphrase** you choose. Make it strong and keep it in a password manager like Bitwarden.
 
-On your own laptop, your key is already saved, so one command gets your files back.
+Your key is saved on the laptop where you set up Salt, so restoring there takes one command.
 
 ```bash
 salt restore ~/my-backup-repo --to ~/restored-files
