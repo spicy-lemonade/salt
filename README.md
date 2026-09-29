@@ -140,3 +140,9 @@ To start backing up from the new laptop, run `salt trust my-backup-repo` once. S
 - `salt verify` makes sure every file in your backup can be unlocked.
 - `salt recovery test` checks your recovery words or passphrase still work.
 - `salt trust` approves your backup repo's keys on this laptop. If someone else adds a key to your repo, Salt refuses to back up and tells you. Only run `salt trust` if you made the change yourself.
+
+## 🔧 Notes
+
+- Built using Claude Opus 5.5 and ten years of experience as a data and AI professional in medium to large enterprises.
+- Security audited using Cloudflare's [`security audit skill`](https://github.com/cloudflare/security-audit-skill).
+- If you love this project, please consider giving it a ⭐.
