@@ -99,14 +99,35 @@ These rules prevent that:
    the number of processes, and keeps the tests away from the real keychain.
 6. At most 4 files are worked on at once, with a 512 MB soft memory limit.
 
+## Databases
+
+Salt encrypts any file you give it, and that includes database files. Mnemosyne
+keeps its memory in a SQLite file (`mnemosyne.db`). Salt encrypts that file
+today, the same way it encrypts a Markdown file.
+
+A database must be backed up before it is encrypted. For now the user must do
+this themselves, using the database's own backup tool, before running
+`salt seal`:
+
+- SQLite (Mnemosyne, Hermes): `sqlite3 live.db ".backup 'copy.db'"`
+- Postgres (Honcho, Hindsight): `pg_dump`
+
+A plain `cp` of a database in use can give a broken copy with no warning.
+This is a problem because Salt encrypts the broken copy exactly as it is.
+Decrypting it later gives back the same broken database, and you only find
+out when you try to restore it. For safety, Salt will soon make these backups
+itself. Salt only encrypts the
+copies it gets from the databases.
+
 ## Out of scope
 
 Touch ID, and switching recovery method.
 
 ## Still to build
 
-- support for SQLite, Postgres (Honcho, Hindsight) and OpenViking data
+- Salt making safe copies of live databases by itself (SQLite and Postgres),
+  so a backup script no longer has to. Salt already encrypts database files.
+- OpenViking support. Its data format has not been checked yet.
 - a one-command `salt backup`
 - splitting files over GitHub's 100 MB limit
 - a signed index, to detect planted files
-- Homebrew tap and release

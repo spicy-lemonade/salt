@@ -78,6 +78,7 @@ cp -Rp ~/.hermes/skills "$STAGE/"
 
 # Copy databases safely, even while the agent is running
 sqlite3 ~/.hermes/state.db ".backup '$STAGE/state.db'"
+sqlite3 ~/.hermes/mnemosyne/data/mnemosyne.db ".backup '$STAGE/mnemosyne.db'"
 
 # Lock everything into the repo, then commit and push if anything changed
 salt seal --prune "$STAGE" "$REPO"
@@ -98,6 +99,16 @@ Save it as `~/backup.sh`, then run `crontab -e` and add this line to run it ever
 Make sure `git push` works without asking for a password. Running `gh auth setup-git` once is an easy way to do this.
 
 Salt only prints messages when something goes wrong, so a successful backup is silent.
+
+## 🗄️ Databases
+
+Salt encrypts database files too, such as Mnemosyne's memory database. It treats them like any other file.
+
+A database must be backed up before Salt encrypts it. For now you need to do this yourself. The script above uses `sqlite3 ... ".backup ..."` for SQLite. For Postgres databases, such as Honcho or Hindsight, use `pg_dump`.
+
+Don't copy a database with plain `cp` while the agent is using it. The copy can be broken with no warning. This is a problem because Salt encrypts the broken copy exactly as it is. Decrypting it later gives you back the same broken database, and you only find out when you try to restore it.
+
+For safety, Salt will soon make these backups for you.
 
 ## 🔑 Getting your files back
 
