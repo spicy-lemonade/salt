@@ -2,20 +2,49 @@
 package main
 
 import (
+	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 
+	"github.com/spicy-lemonade/salt/internal/app"
+	"github.com/spicy-lemonade/salt/internal/check"
+	"github.com/spicy-lemonade/salt/internal/gitx"
 	"github.com/spicy-lemonade/salt/internal/guard"
+	"github.com/spicy-lemonade/salt/internal/keys"
+	"github.com/spicy-lemonade/salt/internal/seal"
 )
 
 var version = "dev"
 
 const usage = `salt encrypts your agent's memory backups before they are pushed.
 
-Usage:
-  salt version
+Setup:
+  salt init REPO [--plain-paths] [--recovery phrase|passphrase] [--passphrase-file F]
+      Set up salt in a git backup repo: create your key, choose how to
+      recover it, and install the pre-commit hook.
 
-More commands are coming; see docs/design.md.
+Nightly (in your backup script):
+  salt seal [--prune] SRC REPO
+      Encrypt the snapshot directory SRC into REPO. Unchanged files are left
+      untouched. --prune removes anything in REPO that salt did not write.
+  salt check [REPO]
+      Pre-commit hook: refuse the commit if any staged file is not encrypted.
+
+Restoring:
+  salt restore REPO --to DIR [--force] [PATH...]
+      Decrypt the backup (or only PATHs) into DIR.
+  salt recovery test REPO
+      Check your recovery phrase or passphrase opens this backup.
+  salt recovery show REPO
+      Show the recovery phrase saved on this machine.
+
+Other:
+  salt hook install [REPO]
+  salt version
 `
 
 func main() {
@@ -27,13 +56,173 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
-	switch os.Args[1] {
+	err := run(os.Args[1], os.Args[2:])
+	var ue usageError
+	switch {
+	case err == nil:
+	case errors.Is(err, app.ErrCheckFailed):
+		os.Exit(1) // already reported
+	case errors.As(err, &ue):
+		fmt.Fprintf(os.Stderr, "salt: %v\n\n%s", err, usage)
+		os.Exit(2)
+	default:
+		fmt.Fprintln(os.Stderr, "salt:", err)
+		os.Exit(1)
+	}
+}
+
+type usageError struct{ msg string }
+
+func (u usageError) Error() string { return u.msg }
+
+func newApp() (*app.App, error) {
+	cache, err := seal.DefaultCacheDir()
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := os.UserConfigDir()
+	if err != nil {
+		return nil, err
+	}
+	ui := app.NewTerminal()
+	return &app.App{
+		UI: ui,
+		Store: keys.FallbackStore{
+			Primary:   keys.KeyringStore{},
+			Secondary: keys.FileStore{Dir: filepath.Join(cfg, "salt", "keys")},
+			Warn: func(err error) {
+				ui.Printf("salt: the system keychain is unavailable (%v); saving the key to a private file under %s instead\n",
+					err, filepath.Join(cfg, "salt", "keys"))
+			},
+		},
+		StoreName: storeName(),
+		CacheDir:  cache,
+		HookPath:  func(root string) (string, error) { return gitx.HookPath(root, "pre-commit") },
+		Staged:    check.Staged,
+	}, nil
+}
+
+func storeName() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "macOS Keychain"
+	case "windows":
+		return "Windows Credential Manager"
+	}
+	return "system keyring"
+}
+
+func run(cmd string, args []string) error {
+	switch cmd {
 	case "version", "--version":
 		fmt.Println("salt", version)
+		return nil
 	case "help", "-h", "--help":
 		fmt.Print(usage)
-	default:
-		fmt.Fprintf(os.Stderr, "salt: unknown command %q\n\n%s", os.Args[1], usage)
-		os.Exit(2)
+		return nil
 	}
+	a, err := newApp()
+	if err != nil {
+		return err
+	}
+	switch cmd {
+	case "init":
+		fs := newFlags("init")
+		plain := fs.Bool("plain-paths", false, "keep file names visible in the repo")
+		recovery := fs.String("recovery", "", "phrase or passphrase")
+		passFile := fs.String("passphrase-file", "", "read the passphrase from this file")
+		pos, err := parse(fs, args, 1, 1)
+		if err != nil {
+			return err
+		}
+		return a.Init(app.InitOptions{Repo: pos[0], PlainPaths: *plain, Recovery: *recovery, PassphraseFile: *passFile})
+	case "seal":
+		fs := newFlags("seal")
+		prune := fs.Bool("prune", false, "remove files in REPO that salt did not write")
+		pos, err := parse(fs, args, 2, 2)
+		if err != nil {
+			return err
+		}
+		return a.Seal(pos[0], pos[1], *prune)
+	case "check":
+		pos, err := parse(newFlags("check"), args, 0, 1)
+		if err != nil {
+			return err
+		}
+		return a.Check(orDot(pos))
+	case "restore":
+		fs := newFlags("restore")
+		to := fs.String("to", "", "directory to restore into")
+		force := fs.Bool("force", false, "restore over a non-empty directory (it is moved aside)")
+		pos, err := parse(fs, args, 1, -1)
+		if err != nil {
+			return err
+		}
+		if *to == "" {
+			return usageError{"restore needs --to DIR"}
+		}
+		return a.Restore(app.RestoreOptions{Repo: pos[0], To: *to, Paths: pos[1:], Force: *force})
+	case "recovery":
+		if len(args) == 0 {
+			return usageError{"recovery needs a subcommand: test or show"}
+		}
+		pos, err := parse(newFlags("recovery "+args[0]), args[1:], 1, 1)
+		if err != nil {
+			return err
+		}
+		switch args[0] {
+		case "test":
+			return a.RecoveryTest(pos[0])
+		case "show":
+			return a.RecoveryShow(pos[0])
+		}
+		return usageError{fmt.Sprintf("unknown recovery subcommand %q", args[0])}
+	case "hook":
+		if len(args) == 0 || args[0] != "install" {
+			return usageError{"usage: salt hook install [REPO]"}
+		}
+		pos, err := parse(newFlags("hook install"), args[1:], 0, 1)
+		if err != nil {
+			return err
+		}
+		p, err := a.InstallHook(orDot(pos))
+		if err == nil {
+			a.UI.Printf("✓ Installed %s\n", p)
+		}
+		return err
+	}
+	return usageError{fmt.Sprintf("unknown command %q", cmd)}
+}
+
+func newFlags(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	return fs
+}
+
+// parse accepts flags before, between and after positional arguments and
+// checks the positional count (max < 0 means unlimited).
+func parse(fs *flag.FlagSet, args []string, minN, maxN int) ([]string, error) {
+	var pos []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, usageError{fmt.Sprintf("%s: %v", fs.Name(), err)}
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		pos = append(pos, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+	if len(pos) < minN || (maxN >= 0 && len(pos) > maxN) {
+		return nil, usageError{fmt.Sprintf("%s: wrong number of arguments", fs.Name())}
+	}
+	return pos, nil
+}
+
+func orDot(pos []string) string {
+	if len(pos) == 0 {
+		return "."
+	}
+	return pos[0]
 }

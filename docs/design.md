@@ -141,11 +141,36 @@ whole suite recursively. Rules:
 6. **Runtime limits:** a soft memory limit (512 MiB unless `GOMEMLIMIT` is
    set), at most 4 workers.
 
+## Integrating with a backup script
+
+Replace the step that copies the snapshot into the repo with `salt seal`.
+For the Hermes nightly script:
+
+```diff
+-find "$REPO" -mindepth 1 -maxdepth 1 ! -name .git ! -name .gitignore -exec rm -rf {} + 2>>"$LOG"
+-cp -Rp "$STAGE"/. "$REPO"/ 2>>"$LOG" || die "copy into worktree failed"
++salt seal --prune "$STAGE" "$REPO" 2>>"$LOG" || die "salt seal failed"
+```
+
+`--prune` does what the removed `find … rm` line did, but keeps `.salt/`,
+`index.age` and the public files. salt writes nothing to stdout, so a
+`--no-agent` cron job stays silent on success.
+
+## Status
+
+- Keychain: macOS items are written through `security -i` (secret on stdin,
+  never argv). Touch ID gating is not implemented yet; items are readable
+  while the login keychain is unlocked. Linux falls back to a 0600 file when
+  no Secret Service is running.
+- Not yet built: `salt recovery change`, `salt verify`, `salt doctor`, the
+  SQLite/Postgres/OpenViking source adapters (`salt seal` works on any
+  directory, including a staged snapshot with `.backup` copies of SQLite).
+
 ## Phases
 
-0. Guardrails: guard, gitx, source-scan test, Makefile, Docker e2e, CI.
-1. Core: keys and recovery, seal, cache, check, file and SQLite sources,
-   Hermes preset.
+0. ✅ Guardrails: guard, gitx, source-scan test, Makefile, Docker e2e, CI.
+1. Core: ✅ keys and recovery onboarding, seal, cache, check, hook, restore;
+   remaining: SQLite source adapter and Hermes preset (`salt backup`).
 2. Restore: restore, cat, verify, doctor, textconv diffs, signed index,
    round-trip CI test.
 3. Postgres (Honcho, Hindsight), OpenViking.

@@ -201,3 +201,43 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	}
 	return os.Rename(tmp.Name(), path)
 }
+
+// FallbackStore uses Primary (the OS keychain) and falls back to Secondary
+// (a 0600 file) when the keychain is unavailable, e.g. on headless Linux.
+type FallbackStore struct {
+	Primary, Secondary Store
+	// Warn is told when Set had to use Secondary.
+	Warn func(error)
+}
+
+func (f FallbackStore) Get(recipient string) (Secret, error) {
+	s, err := f.Primary.Get(recipient)
+	if err == nil {
+		return s, nil
+	}
+	return f.Secondary.Get(recipient)
+}
+
+func (f FallbackStore) Set(recipient string, s Secret) error {
+	err := f.Primary.Set(recipient, s)
+	if err == nil {
+		return nil
+	}
+	if f.Warn != nil {
+		f.Warn(err)
+	}
+	return f.Secondary.Set(recipient, s)
+}
+
+func (f FallbackStore) Delete(recipient string) error {
+	err1 := f.Primary.Delete(recipient)
+	err2 := f.Secondary.Delete(recipient)
+	return errors.Join(err1, err2)
+}
+
+// Len reports how many secrets the store holds.
+func (m *MemStore) Len() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.m)
+}
