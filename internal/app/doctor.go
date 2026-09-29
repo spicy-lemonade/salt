@@ -318,10 +318,13 @@ func (a *App) Verify(repoRoot string) error {
 	for _, u := range res.Unreferenced {
 		a.UI.Printf("  ! %s is not in the index (the next `salt seal` removes it)\n", u)
 	}
-	if len(res.Problems) > 0 {
-		a.UI.Printf("✗ %d of %d files cannot be restored:\n", len(res.Problems), res.Files)
+	if res.ProblemCount > 0 {
+		a.UI.Printf("✗ %d of %d files cannot be restored:\n", res.ProblemCount, res.Files)
 		for _, p := range res.Problems {
 			a.UI.Printf("  %s\n", p)
+		}
+		if more := res.ProblemCount - len(res.Problems); more > 0 {
+			a.UI.Printf("  … and %d more\n", more)
 		}
 		return ErrReported
 	}

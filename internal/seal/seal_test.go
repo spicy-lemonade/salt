@@ -924,6 +924,50 @@ func TestCtxReader(t *testing.T) {
 	}
 }
 
+// A tampered index naming many missing files with long paths must not
+// flood the output: Verify counts every problem but describes at most
+// MaxProblems, each with its path shortened.
+func TestVerifyCapsProblems(t *testing.T) {
+	f := newFixture(t, true)
+	f.seal(false)
+	// Written in reverse, so the order of the list comes from the paths.
+	ix := &Index{Version: repo.FormatVersion}
+	for i := 199; i >= 0; i-- {
+		p := fmt.Sprintf("%03d/%s", i, strings.Repeat("a", maxIndexString-4))
+		ix.Entries = append(ix.Entries, Entry{Path: p, Object: fmt.Sprintf("objects/aa/missing%d.age", i), SHA256: strings.Repeat("0", 64), Size: 1})
+	}
+	b, _, err := ix.marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Verify(f.root, f.ids(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ProblemCount != 200 || len(res.Problems) != MaxProblems {
+		t.Fatalf("ProblemCount = %d, %d described; want 200 and %d", res.ProblemCount, len(res.Problems), MaxProblems)
+	}
+	for i, p := range res.Problems {
+		if len(p) > 200 || !strings.Contains(p, "is missing") {
+			t.Fatalf("problem is %d bytes: %.300s", len(p), p)
+		}
+		// The first 50 by path, in order: 000/… to 049/….
+		if want := fmt.Sprintf(`"%03d/aaa`, i); !strings.HasPrefix(p, want) {
+			t.Fatalf("problem %d = %.60s…, want it to start with %s", i, p, want)
+		}
+	}
+	// The same list on every run, whatever order the workers finish in.
+	for run := 0; run < 3; run++ {
+		again, err := Verify(f.root, f.ids(), 4)
+		if err != nil || !slices.Equal(again.Problems, res.Problems) {
+			t.Fatalf("run %d gave a different list: %v", run, err)
+		}
+	}
+}
+
 func TestEncryptToErrors(t *testing.T) {
 	f := newFixture(t, true)
 	dir := t.TempDir()

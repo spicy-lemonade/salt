@@ -161,7 +161,7 @@ func restoreFile(ctx context.Context, rt *os.Root, ids []age.Identity, tmp strin
 	}
 	r, closeFn, err := decryptStream(rt, e.Object, ids)
 	if err != nil {
-		return fmt.Errorf("%s: %w", e.Path, err)
+		return fmt.Errorf("%s: %w", clip(e.Path), err)
 	}
 	defer closeFn()
 	// Owner-only permissions, keeping the owner's execute bit.
@@ -176,10 +176,10 @@ func restoreFile(ctx context.Context, rt *os.Root, ids []age.Identity, tmp strin
 		err = cerr
 	}
 	if err != nil {
-		return fmt.Errorf("%s: %w", e.Path, err)
+		return fmt.Errorf("%s: %w", clip(e.Path), err)
 	}
 	if n != e.Size || sum(h) != e.SHA256 {
-		return fmt.Errorf("%s: restored content does not match the index (corrupted backup?)", e.Path)
+		return fmt.Errorf("%s: restored content does not match the index (corrupted backup?)", clip(e.Path))
 	}
 	return nil
 }
@@ -212,7 +212,7 @@ func safeParent(base, rel string) error {
 			return err
 		}
 		if fi.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%s: parent %s is a symlink; refusing to restore through it", rel, part)
+			return fmt.Errorf("%s: parent %s is a symlink; refusing to restore through it", clip(rel), clip(part))
 		}
 	}
 	return nil

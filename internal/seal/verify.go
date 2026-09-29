@@ -7,7 +7,8 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"sort"
+	"slices"
+	"strings"
 	"sync"
 
 	"filippo.io/age"
@@ -19,12 +20,20 @@ type VerifyResult struct {
 	Files    int
 	Symlinks int
 	Bytes    int64
-	// Problems are files that cannot be restored correctly.
-	Problems []string
+	// Problems describe files that cannot be restored correctly: the
+	// MaxProblems of them first by path, in path order, so the list is the
+	// same on every run. ProblemCount counts them all.
+	Problems     []string
+	ProblemCount int
 	// Unreferenced are ciphertext files the index does not mention. They do
 	// not affect a restore; the next `salt seal` removes them.
 	Unreferenced []string
 }
+
+// MaxProblems is how many problems Verify describes in full. A tampered
+// index can name 100,000 missing files, and listing them all would flood the
+// terminal or cron mail.
+const MaxProblems = 50
 
 // Verify proves every file in the backup can be restored: it decrypts each
 // object, discarding the plaintext, and checks it against the index. Nothing
@@ -56,6 +65,10 @@ func Verify(root string, ids []age.Identity, workerCount int) (*VerifyResult, er
 	}
 	res.Files = len(files)
 
+	// Only the first MaxProblems by path are kept, in order, so memory stays
+	// bounded however many files fail.
+	type problem struct{ path, msg string }
+	var kept []problem
 	var mu sync.Mutex
 	forEach(len(files), workers(workerCount), func(i int) error {
 		n, err := verifyEntry(rt, ids, files[i])
@@ -63,11 +76,19 @@ func Verify(root string, ids []age.Identity, workerCount int) (*VerifyResult, er
 		defer mu.Unlock()
 		res.Bytes += n
 		if err != nil {
-			res.Problems = append(res.Problems, err.Error())
+			res.ProblemCount++
+			p := problem{files[i].Path, err.Error()}
+			at, _ := slices.BinarySearchFunc(kept, p.path, func(k problem, path string) int { return strings.Compare(k.path, path) })
+			if at < MaxProblems {
+				kept = slices.Insert(kept, at, p)
+				kept = kept[:min(len(kept), MaxProblems)]
+			}
 		}
 		return nil // keep going: report everything
 	})
-	sort.Strings(res.Problems)
+	for _, p := range kept {
+		res.Problems = append(res.Problems, p.msg)
+	}
 
 	// Listing unreferenced files is informational, so a folder that can't be
 	// walked (CheckNoSymlinks has already refused a symlinked one) is skipped.
@@ -88,19 +109,19 @@ func Verify(root string, ids []age.Identity, workerCount int) (*VerifyResult, er
 func verifyEntry(rt *os.Root, ids []age.Identity, e Entry) (int64, error) {
 	r, closeFn, err := decryptStream(rt, e.Object, ids)
 	if errors.Is(err, fs.ErrNotExist) {
-		return 0, fmt.Errorf("%s: its encrypted file %s is missing", e.Path, e.Object)
+		return 0, fmt.Errorf("%s: its encrypted file %s is missing", clip(e.Path), clip(e.Object))
 	}
 	if err != nil {
-		return 0, fmt.Errorf("%s: %v", e.Path, err)
+		return 0, fmt.Errorf("%s: %v", clip(e.Path), err)
 	}
 	defer closeFn()
 	h := sha256.New()
 	n, err := io.Copy(h, r)
 	if err != nil {
-		return n, fmt.Errorf("%s: cannot be decrypted (%v)", e.Path, err)
+		return n, fmt.Errorf("%s: cannot be decrypted (%v)", clip(e.Path), err)
 	}
 	if n != e.Size || sum(h) != e.SHA256 {
-		return n, fmt.Errorf("%s: content does not match the index", e.Path)
+		return n, fmt.Errorf("%s: content does not match the index", clip(e.Path))
 	}
 	return n, nil
 }

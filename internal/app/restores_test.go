@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -132,5 +133,30 @@ func TestDoctorReportsLeftoverRestores(t *testing.T) {
 	e.app.Doctor(e.root)
 	if !strings.Contains(e.ui.out.String(), "could not read the list of restores in progress") {
 		t.Fatalf("corrupt list not reported:\n%s", e.ui.out.String())
+	}
+}
+
+func TestVerifyListsAtMostFiftyProblems(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	src := filepath.Join(t.TempDir(), "hermes")
+	os.MkdirAll(src, 0o755)
+	for i := 0; i < 60; i++ {
+		os.WriteFile(filepath.Join(src, fmt.Sprintf("f%02d.md", i)), []byte(fmt.Sprint(i)), 0o644)
+	}
+	if err := e.app.Seal(src, e.root, true); err != nil {
+		t.Fatal(err)
+	}
+	os.RemoveAll(filepath.Join(e.root, "objects"))
+	e.ui.out.Reset()
+	if err := e.app.Verify(e.root); !errors.Is(err, ErrReported) {
+		t.Fatalf("Verify: %v", err)
+	}
+	out := e.ui.out.String()
+	if !strings.Contains(out, "✗ 60 of 60 files cannot be restored:") || !strings.Contains(out, "  … and 10 more\n") {
+		t.Fatalf("verify output:\n%s", out)
+	}
+	if n := strings.Count(out, "is missing"); n != 50 {
+		t.Fatalf("%d problems listed, want 50", n)
 	}
 }
