@@ -39,6 +39,23 @@ brew uninstall spicy-lemonade/tap/salt
 brew untap spicy-lemonade/tap
 ```
 
+Uninstalling leaves your key and settings on this machine. To remove them too, first make sure you still have your recovery phrase or passphrase. Without it, your backups can never be unlocked again.
+
+```bash
+# macOS: remove the key from the Keychain (run it again for each extra key if you have more than one)
+security delete-generic-password -s salt
+
+# Linux: remove the key from the system keyring
+secret-tool clear service salt
+
+# Remove approved keys, the key file (if you used SALT_KEYSTORE=file) and the cache
+rm -rf ~/Library/Application\ Support/salt ~/Library/Caches/salt   # macOS
+rm -rf ~/.config/salt ~/.cache/salt                                 # Linux
+
+# In each backup repo, remove the check. Otherwise every commit will be refused
+rm ~/my-backup-repo/.git/hooks/pre-commit
+```
+
 ## 🚀 Get started
 
 Set up Salt in your backup repo. This is any git repo you push your backups to.
