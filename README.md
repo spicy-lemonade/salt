@@ -39,7 +39,7 @@ brew uninstall spicy-lemonade/tap/salt
 brew untap spicy-lemonade/tap
 ```
 
-Uninstalling leaves your key and settings on this machine. To remove them too, first make sure you still have your recovery phrase or passphrase. Without it, your backups can never be unlocked again.
+Uninstalling leaves your key and settings on your machine. To remove them too, first make sure you still have your recovery phrase or passphrase. Without it, your backups can never be unlocked again.
 
 ```bash
 # macOS: remove the key from the Keychain (run it again for each extra key if you have more than one)
