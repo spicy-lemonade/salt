@@ -31,7 +31,7 @@ type VerifyResult struct {
 // is written to disk. Unlike Restore it reports every problem rather than
 // stopping at the first.
 func Verify(root string, ids []age.Identity, workerCount int) (*VerifyResult, error) {
-	if err := checkNoSymlinks(root); err != nil {
+	if err := CheckNoSymlinks(root); err != nil {
 		return nil, err
 	}
 	ix, err := ReadIndex(root, ids)
@@ -69,8 +69,10 @@ func Verify(root string, ids []age.Identity, workerCount int) (*VerifyResult, er
 	})
 	sort.Strings(res.Problems)
 
+	// Listing unreferenced files is informational, so a folder that can't be
+	// walked (CheckNoSymlinks has already refused a symlinked one) is skipped.
 	for _, dir := range []string{repo.ObjectsDir, repo.FilesDir} {
-		fs.WalkDir(rt.FS(), dir, func(rel string, d fs.DirEntry, err error) error {
+		walkRepoDir(rt, dir, func(rel string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return nil
 			}

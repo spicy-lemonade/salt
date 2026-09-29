@@ -12,6 +12,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
+	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/trust"
 )
 
@@ -58,6 +59,12 @@ func (a *App) Init(o InitOptions) error {
 		return err
 	}
 	if err := requireGitRepo(root); err != nil {
+		return err
+	}
+	// A symlink committed by someone else could send what init writes into
+	// another folder or file. Refuse before asking anything, so nobody writes
+	// down a phrase or saves a key for a repo init then refuses.
+	if err := seal.CheckNoSymlinks(root, ".gitattributes"); err != nil {
 		return err
 	}
 	if _, err := repo.Open(root); err == nil {
@@ -120,10 +127,7 @@ func (a *App) Init(o InitOptions) error {
 		return fmt.Errorf("saving your key: %w", err)
 	}
 	if keyFile != nil {
-		if err := os.MkdirAll(filepath.Join(root, repo.Dir), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(root, repo.KeyFile), keyFile, 0o644); err != nil {
+		if err := writeKeyFile(root, keyFile); err != nil {
 			return err
 		}
 	}
@@ -277,11 +281,31 @@ func (a *App) newPassphrase(file string) (string, error) {
 	}
 }
 
+// writeKeyFile saves the passphrase-wrapped key through os.Root, so a symlink
+// in the repo can't lead it outside.
+func writeKeyFile(root string, keyFile []byte) error {
+	rt, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+	if err := rt.MkdirAll(repo.Dir, 0o755); err != nil {
+		return err
+	}
+	return rt.WriteFile(repo.KeyFile, keyFile, 0o644)
+}
+
 // ensureGitattributes marks ciphertext as binary so git never tries to diff
-// or merge it as text.
+// or merge it as text. It works through os.Root, so a symlink can't lead it
+// to a file outside the repo.
 func ensureGitattributes(root string) error {
-	p := filepath.Join(root, ".gitattributes")
-	b, err := os.ReadFile(p)
+	rt, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+	const p = ".gitattributes"
+	b, err := rt.ReadFile(p)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -291,5 +315,5 @@ func ensureGitattributes(root string) error {
 	if len(b) > 0 && !bytes.HasSuffix(b, []byte("\n")) {
 		b = append(b, '\n')
 	}
-	return os.WriteFile(p, append(b, "*.age binary\n"...), 0o644)
+	return rt.WriteFile(p, append(b, "*.age binary\n"...), 0o644)
 }

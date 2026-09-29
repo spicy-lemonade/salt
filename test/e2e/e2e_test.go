@@ -384,3 +384,38 @@ func TestSealRefusesAPushedSymlink(t *testing.T) {
 		t.Fatalf("verify: exit %d\n%s", code, out)
 	}
 }
+
+// Someone who can push before the owner sets up salt commits .salt as a link
+// to a folder outside the repo. Init in a fresh clone must refuse and write
+// nothing there.
+func TestInitRefusesASymlinkedSaltFolder(t *testing.T) {
+	e := newEnv(t)
+	base := t.TempDir()
+	remote := filepath.Join(base, "remote.git")
+	theirs := filepath.Join(base, "theirs")
+	mine := filepath.Join(base, "mine")
+	outside := filepath.Join(base, "outside")
+	os.MkdirAll(outside, 0o755)
+	e.must(base, "git", "init", "-q", "--bare", "-b", "main", remote)
+	e.must(base, "git", "clone", "-q", remote, theirs)
+	if err := os.Symlink("../outside", filepath.Join(theirs, ".salt")); err != nil {
+		t.Fatal(err)
+	}
+	e.must(theirs, "git", "add", ".salt")
+	e.must(theirs, "git", "commit", "-q", "-m", "set things up")
+	e.must(theirs, "git", "push", "-q", "origin", "main")
+
+	e.must(base, "git", "clone", "-q", remote, mine)
+	if fi, err := os.Lstat(filepath.Join(mine, ".salt")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("clone has no .salt symlink: %v", err)
+	}
+	passFile := filepath.Join(base, "pass")
+	write(t, passFile, "correct horse battery staple\n")
+	out, code := e.run(base, "salt", "init", mine, "--recovery", "passphrase", "--passphrase-file", passFile)
+	if code == 0 || !strings.Contains(out, "symlink salt did not create at .salt") {
+		t.Fatalf("init with a symlinked .salt: exit %d\n%s", code, out)
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+		t.Fatalf("init wrote outside the repo: %v", entries)
+	}
+}

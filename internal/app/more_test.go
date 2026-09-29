@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
+	"github.com/spicy-lemonade/salt/internal/seal"
 )
 
 func TestTerminal(t *testing.T) {
@@ -138,6 +140,112 @@ func TestInitKeepsForeignHookAndAttributes(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(e.root, ".gitattributes"))
 	if string(b) != "*.png binary\n*.age binary\n" {
 		t.Fatalf(".gitattributes = %q", b)
+	}
+}
+
+// treeSnapshot records every path and file's contents under p, without
+// following symlinks, so a test can tell whether anything changed there.
+func treeSnapshot(t *testing.T, p string) string {
+	t.Helper()
+	var b strings.Builder
+	err := filepath.WalkDir(p, func(q string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(p, q)
+		b.WriteString(rel + "\n")
+		if d.Type().IsRegular() {
+			c, err := os.ReadFile(q)
+			if err != nil {
+				return err
+			}
+			b.Write(c)
+			b.WriteString("\n")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
+}
+
+// Someone who can push before the owner sets up salt commits a symlink where
+// init writes. Init must refuse before asking anything or saving anything,
+// and nothing may change where the link points: outside the repo, where
+// os.Root would also stop the write, or inside it, where only the up-front
+// check does.
+func TestInitRefusesForeignSymlinks(t *testing.T) {
+	for _, tt := range []struct{ link, target string }{
+		{".salt", "../outside"},
+		{".salt/format.json", "../../outside/victim.txt"},
+		{".salt/key.age", "../../outside/victim.txt"},
+		{"index.age", "../outside/victim.txt"},
+		{"objects", "../outside"},
+		{"files", "../outside"},
+		{".gitattributes", "../outside/victim.txt"},
+		{".gitattributes", ".git/config"},
+		{"objects", ".git"},
+		{".salt", ".git"},
+	} {
+		// Asked in a terminal, init's first step would be a prompt. With a
+		// passphrase file it would go straight to writing files.
+		for mode, opts := range map[string]func(e *testEnv) InitOptions{
+			"prompted": func(e *testEnv) InitOptions { return InitOptions{Repo: e.root} },
+			"scripted": func(e *testEnv) InitOptions {
+				passFile := filepath.Join(filepath.Dir(e.root), "pass")
+				os.WriteFile(passFile, []byte("correct horse battery staple\n"), 0o600)
+				return InitOptions{Repo: e.root, Recovery: repo.RecoveryPassphrase, PassphraseFile: passFile}
+			},
+		} {
+			t.Run(mode+" "+tt.link+" -> "+tt.target, func(t *testing.T) {
+				e := newEnv(t)
+				outside := filepath.Join(filepath.Dir(e.root), "outside")
+				if err := os.MkdirAll(outside, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				os.WriteFile(filepath.Join(outside, "victim.txt"), []byte("do not touch\n"), 0o644)
+				os.WriteFile(filepath.Join(e.root, ".git", "config"), []byte("[core]\n\tbare = false\n"), 0o644)
+				link := filepath.Join(e.root, filepath.FromSlash(tt.link))
+				os.MkdirAll(filepath.Dir(link), 0o755)
+				if err := os.Symlink(tt.target, link); err != nil {
+					t.Fatal(err)
+				}
+				beforeOutside, beforeGit := treeSnapshot(t, outside), treeSnapshot(t, filepath.Join(e.root, ".git"))
+				config, _ := os.ReadFile(filepath.Join(e.root, ".git", "config"))
+
+				// Any prompt ends init, so a regression fails here rather than
+				// looping through the phrase check.
+				asked := 0
+				e.ui.answer = func(p, out string) (string, error) {
+					asked++
+					return "", io.EOF
+				}
+				err := e.app.Init(opts(e))
+				if !errors.Is(err, seal.ErrForeignSymlink) || !strings.Contains(err.Error(), "at "+tt.link) {
+					t.Fatalf("Init error = %v, want a foreign symlink at %s", err, tt.link)
+				}
+
+				if asked != 0 || strings.Contains(e.ui.out.String(), "How do you want to recover") {
+					t.Fatalf("Init asked %d questions before refusing:\n%s", asked, e.ui.out.String())
+				}
+				if e.store.Len() != 0 {
+					t.Fatal("a key was saved")
+				}
+				if entries, _ := os.ReadDir(e.app.TrustDir); len(entries) != 0 {
+					t.Fatalf("approved keys saved: %v", entries)
+				}
+				if treeSnapshot(t, outside) != beforeOutside {
+					t.Fatal("something changed outside the repo")
+				}
+				if treeSnapshot(t, filepath.Join(e.root, ".git")) != beforeGit {
+					t.Fatal("something changed in .git")
+				}
+				if after, _ := os.ReadFile(filepath.Join(e.root, ".git", "config")); !bytes.Equal(after, config) {
+					t.Fatalf(".git/config changed to %q", after)
+				}
+			})
+		}
 	}
 }
 

@@ -70,7 +70,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	if err := checkDisjoint(src, r.Root); err != nil {
 		return nil, err
 	}
-	if err := checkNoSymlinks(r.Root); err != nil {
+	if err := CheckNoSymlinks(r.Root); err != nil {
 		return nil, err
 	}
 	exclude := opt.Exclude
@@ -298,7 +298,7 @@ func removeStale(rt *os.Root, keep map[string]bool, prune bool) ([]string, error
 		case name == ".git" || name == repo.Dir || name == repo.IndexFile || repo.Public[name]:
 			continue
 		case name == repo.ObjectsDir || name == repo.FilesDir:
-			err := fs.WalkDir(rfs, name, func(rel string, d fs.DirEntry, err error) error {
+			err := walkRepoDir(rt, name, func(rel string, d fs.DirEntry, err error) error {
 				if err != nil || d.IsDir() {
 					return err
 				}

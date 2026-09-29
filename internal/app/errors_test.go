@@ -133,6 +133,24 @@ func TestEnsureGitattributesIsIdempotent(t *testing.T) {
 	}
 }
 
+// ensureGitattributes works through os.Root, so even without init's
+// up-front check a link can't lead it to a file outside the repo.
+func TestEnsureGitattributesRefusesALinkOutside(t *testing.T) {
+	base := t.TempDir()
+	root, victim := filepath.Join(base, "repo"), filepath.Join(base, "victim.txt")
+	os.MkdirAll(root, 0o755)
+	os.WriteFile(victim, []byte("do not touch\n"), 0o644)
+	if err := os.Symlink("../victim.txt", filepath.Join(root, ".gitattributes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureGitattributes(root); err == nil {
+		t.Fatal("ensureGitattributes followed a link outside the repo")
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "do not touch\n" {
+		t.Fatalf("file outside the repo changed to %q", b)
+	}
+}
+
 func TestRecoveryAndRestoreFailures(t *testing.T) {
 	e := newEnv(t)
 	phrase := healthyRepo(t, e)

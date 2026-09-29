@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -790,6 +791,70 @@ func TestDecodeErrors(t *testing.T) {
 	}
 	if decodeErr(nil) != nil {
 		t.Fatal("nil error became non-nil")
+	}
+}
+
+// removeStale deletes files under objects/, so it must not walk into a
+// symlinked objects/ even if it is ever called without CheckNoSymlinks first.
+func TestRemoveStaleRefusesSymlinkedFolder(t *testing.T) {
+	for _, prune := range []bool{false, true} {
+		t.Run(fmt.Sprintf("prune=%v", prune), func(t *testing.T) {
+			f := newFixture(t, true)
+			git := filepath.Join(f.root, ".git")
+			os.MkdirAll(filepath.Join(git, "refs", "heads"), 0o755)
+			os.WriteFile(filepath.Join(git, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+			os.WriteFile(filepath.Join(git, "refs", "heads", "main"), []byte("0123\n"), 0o644)
+			if err := os.Symlink(".git", filepath.Join(f.root, repo.ObjectsDir)); err != nil {
+				t.Fatal(err)
+			}
+			before := snapshot(t, git)
+
+			removed, err := removeStale(openRoot(t, f.root), map[string]bool{}, prune)
+			if !errors.Is(err, ErrForeignSymlink) || !strings.Contains(err.Error(), "at objects") {
+				t.Fatalf("removeStale error = %v, want a foreign symlink at objects", err)
+			}
+			if len(removed) != 0 {
+				t.Fatalf("removeStale removed %v", removed)
+			}
+			if after := snapshot(t, git); !maps.Equal(before, after) {
+				t.Fatalf(".git changed: before %v, after %v", before, after)
+			}
+		})
+	}
+}
+
+func TestWalkRepoDir(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "objects", "aa"), 0o755)
+	os.WriteFile(filepath.Join(root, "objects", "aa", "b.age"), []byte("x"), 0o644)
+	os.MkdirAll(filepath.Join(root, "elsewhere"), 0o755)
+	os.WriteFile(filepath.Join(root, "elsewhere", "c.age"), []byte("x"), 0o644)
+	os.Symlink("elsewhere", filepath.Join(root, "files"))
+	rt := openRoot(t, root)
+
+	walk := func(dir string) ([]string, error) {
+		var seen []string
+		err := walkRepoDir(rt, dir, func(rel string, d fs.DirEntry, err error) error {
+			if err == nil && !d.IsDir() {
+				seen = append(seen, rel)
+			}
+			return err
+		})
+		return seen, err
+	}
+	if seen, err := walk("objects"); err != nil || !slices.Equal(seen, []string{"objects/aa/b.age"}) {
+		t.Fatalf("real folder: %v, %v", seen, err)
+	}
+	if seen, err := walk("missing"); err != nil || len(seen) != 0 {
+		t.Fatalf("missing folder: %v, %v", seen, err)
+	}
+	if seen, err := walk("files"); !errors.Is(err, ErrForeignSymlink) || len(seen) != 0 {
+		t.Fatalf("symlinked folder: %v, %v", seen, err)
+	}
+	os.Chmod(root, 0o000)
+	defer os.Chmod(root, 0o755)
+	if _, err := walk("objects"); err == nil || errors.Is(err, ErrForeignSymlink) {
+		t.Fatalf("unreadable repo: %v", err)
 	}
 }
 

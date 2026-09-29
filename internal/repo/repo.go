@@ -109,21 +109,30 @@ func Open(root string) (*Repo, error) {
 	return r, nil
 }
 
-// Write creates .salt/format.json and .salt/recipients.txt.
+// Write creates .salt/format.json and .salt/recipients.txt. It writes through
+// os.Root, so a symlink in the repo can't lead the files outside it.
 func Write(root string, f Format, recipients []string) error {
-	if err := os.MkdirAll(filepath.Join(root, Dir), 0o755); err != nil {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return err
+	}
+	rt, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+	if err := rt.MkdirAll(Dir, 0o755); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(root, FormatFile), append(b, '\n'), 0o644); err != nil {
+	if err := rt.WriteFile(FormatFile, append(b, '\n'), 0o644); err != nil {
 		return err
 	}
 	body := "# age public keys. Every file in this repo is encrypted to all of them.\n" +
 		strings.Join(recipients, "\n") + "\n"
-	return os.WriteFile(filepath.Join(root, RecipientsFile), []byte(body), 0o644)
+	return rt.WriteFile(RecipientsFile, []byte(body), 0o644)
 }
 
 // CleanPath validates a relative slash path from an index and returns it

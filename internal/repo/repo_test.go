@@ -87,3 +87,23 @@ func TestCleanPath(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+// Write works through os.Root, so a .salt link can't lead the files outside
+// the repo.
+func TestWriteRefusesALinkOutside(t *testing.T) {
+	base := t.TempDir()
+	root, outside := filepath.Join(base, "repo"), filepath.Join(base, "outside")
+	os.MkdirAll(root, 0o755)
+	os.MkdirAll(outside, 0o755)
+	if err := os.Symlink("../outside", filepath.Join(root, Dir)); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := age.GenerateX25519Identity()
+	f := Format{Version: FormatVersion, EncryptPaths: true, Recovery: RecoveryPhrase}
+	if err := Write(root, f, []string{id.Recipient().String()}); err == nil {
+		t.Fatal("Write followed a link outside the repo")
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+		t.Fatalf("files written outside the repo: %v", entries)
+	}
+}
