@@ -1,0 +1,59 @@
+name: release
+
+# Push a tag like v0.1.0 to release. This runs the tests, creates the GitHub
+# release, and updates the Homebrew formula in spicy-lemonade/homebrew-tap.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write # create the GitHub release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: make vet
+      - run: make test
+      - run: make e2e
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+
+      - name: Work out version and checksum
+        id: meta
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          sha=$(curl -fsSL --retry 5 --retry-delay 3 "$url" | sha256sum | cut -d' ' -f1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the tap
+        uses: actions/checkout@v5
+        with:
+          repository: spicy-lemonade/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Update the formula
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          SHA: ${{ steps.meta.outputs.sha }}
+        run: |
+          mkdir -p tap/Formula
+          sed -e "s/__VERSION__/${VERSION}/g" -e "s/__SHA256__/${SHA}/g" \
+            -e '1,2d' packaging/homebrew/salt.rb > tap/Formula/salt.rb
+          cd tap
+          git config user.name "salt release"
+          git config user.email "salt-release@users.noreply.github.com"
+          git add Formula/salt.rb
+          git commit -m "salt ${VERSION}"
+          git push
