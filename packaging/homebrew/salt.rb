@@ -11,7 +11,7 @@ class Salt < Formula
 
   def install
     ENV["CGO_ENABLED"] = "0"
-    system "go", "build", *std_go_args(ldflags: "-s -w -X main.version=#{version}"), "./cmd/salt"
+    system "go", "build", *std_go_args(ldflags: "-X main.version=#{version}"), "./cmd/salt"
   end
 
   test do

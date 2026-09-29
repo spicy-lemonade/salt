@@ -33,7 +33,7 @@ go install github.com/spicy-lemonade/salt/cmd/salt@latest
 To uninstall Salt, run these two commands. The second one is optional and tells Homebrew to forget the Salt tap.
 
 ```bash
-brew uninstall salt
+brew uninstall spicy-lemonade/tap/salt
 brew untap spicy-lemonade/tap
 ```
 
