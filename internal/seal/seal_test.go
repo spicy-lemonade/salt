@@ -3,6 +3,7 @@ package seal
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -855,6 +856,71 @@ func TestWalkRepoDir(t *testing.T) {
 	defer os.Chmod(root, 0o755)
 	if _, err := walk("objects"); err == nil || errors.Is(err, ErrForeignSymlink) {
 		t.Fatalf("unreadable repo: %v", err)
+	}
+}
+
+// An interrupted restore removes its partly restored files, never touches
+// dest, and reports its temporary folder gone exactly once.
+func TestRestoreCancelledCleansUp(t *testing.T) {
+	f := newFixture(t, true)
+	f.seal(false)
+	parent := t.TempDir()
+	dest := filepath.Join(parent, "out")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var tracked string
+	doneCalls := 0
+	track := func(tmp string) func() {
+		tracked = tmp
+		cancel() // interrupted as soon as the restore starts writing
+		return func() { doneCalls++ }
+	}
+	_, err := Restore(f.root, f.ids(), dest, RestoreOptions{Context: ctx, Track: track})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Restore error = %v, want context.Canceled", err)
+	}
+	if tracked == "" || filepath.Dir(tracked) != parent {
+		t.Fatalf("tracked %q, want a folder in %s", tracked, parent)
+	}
+	if entries, _ := os.ReadDir(parent); len(entries) != 0 {
+		t.Fatalf("left behind: %v", entries)
+	}
+	if doneCalls != 1 {
+		t.Fatalf("done called %d times, want 1", doneCalls)
+	}
+}
+
+func TestRestoreTracksUntilInPlace(t *testing.T) {
+	f := newFixture(t, true)
+	f.seal(false)
+	dest := filepath.Join(t.TempDir(), "out")
+	var tracked string
+	doneCalls := 0
+	track := func(tmp string) func() {
+		tracked = tmp
+		return func() { doneCalls++ }
+	}
+	if _, err := Restore(f.root, f.ids(), dest, RestoreOptions{Track: track}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(tracked); !os.IsNotExist(err) || doneCalls != 1 {
+		t.Fatalf("temporary folder %s: %v, done called %d times", tracked, err, doneCalls)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dest, "SOUL.md")); string(b) != "be kind\n" {
+		t.Fatalf("restored SOUL.md = %q", b)
+	}
+}
+
+func TestCtxReader(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r := ctxReader{ctx, strings.NewReader("abcdef")}
+	buf := make([]byte, 3)
+	if n, err := r.Read(buf); n != 3 || err != nil {
+		t.Fatalf("Read = %d, %v", n, err)
+	}
+	cancel()
+	if n, err := r.Read(buf); n != 0 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Read after cancel = %d, %v", n, err)
 	}
 }
 

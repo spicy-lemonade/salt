@@ -2,13 +2,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/spicy-lemonade/salt/internal/app"
@@ -80,6 +83,9 @@ func main() {
 	case err == nil:
 	case errors.Is(err, app.ErrReported):
 		os.Exit(1) // already reported
+	case errors.Is(err, app.ErrInterrupted):
+		fmt.Fprintln(os.Stderr, "salt:", err)
+		os.Exit(130)
 	case errors.As(err, &ue):
 		fmt.Fprintf(os.Stderr, "salt: %v\n\n%s", err, usage)
 		os.Exit(2)
@@ -189,7 +195,15 @@ func run(cmd string, args []string) error {
 		if *to == "" {
 			return usageError{"restore needs --to DIR"}
 		}
-		return a.Restore(app.RestoreOptions{Repo: pos[0], To: *to, Paths: pos[1:], Force: *force})
+		// Ctrl-C or SIGTERM stops the restore and removes the partly
+		// restored files. A second signal quits at once.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		go func() {
+			<-ctx.Done()
+			stop()
+		}()
+		return a.Restore(app.RestoreOptions{Repo: pos[0], To: *to, Paths: pos[1:], Force: *force, Context: ctx})
 	case "recovery":
 		if len(args) == 0 {
 			return usageError{"recovery needs a subcommand: test or show"}

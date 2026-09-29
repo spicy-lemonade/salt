@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -78,6 +79,8 @@ type RestoreOptions struct {
 	To    string
 	Paths []string
 	Force bool
+	// Context stops the restore when cancelled (see seal.RestoreOptions).
+	Context context.Context
 }
 
 // Restore decrypts a backup into o.To.
@@ -90,7 +93,13 @@ func (a *App) Restore(o RestoreOptions) error {
 	if err != nil {
 		return err
 	}
-	res, err := seal.Restore(r.Root, ids, o.To, seal.RestoreOptions{Paths: o.Paths, Force: o.Force})
+	a.warnLeftoverRestores(o.To)
+	res, err := seal.Restore(r.Root, ids, o.To, seal.RestoreOptions{
+		Paths: o.Paths, Force: o.Force, Context: o.Context, Track: a.trackRestore,
+	})
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("%w: the partly restored files were removed and %s was not changed", ErrInterrupted, o.To)
+	}
 	if err != nil {
 		return err
 	}

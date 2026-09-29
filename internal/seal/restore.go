@@ -1,10 +1,12 @@
 package seal
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +24,14 @@ type RestoreOptions struct {
 	// destination is moved aside, never deleted.
 	Force   bool
 	Workers int
+	// Context stops the restore when it is cancelled, and the partly
+	// restored files are removed. Nil runs the restore to the end.
+	Context context.Context
+	// Track, if set, is told the temporary directory as soon as it exists.
+	// It returns a function Restore calls once that directory is gone, either
+	// removed or moved into place. A directory that could not be removed is
+	// never reported gone, so the caller can tell the person about it.
+	Track func(tmp string) (done func())
 }
 
 // RestoreResult summarises a restore.
@@ -70,12 +80,23 @@ func Restore(root string, ids []age.Identity, dest string, opt RestoreOptions) (
 	if err != nil {
 		return nil, err
 	}
+	done := func() {}
+	if opt.Track != nil {
+		done = opt.Track(tmp)
+	}
 	ok := false
 	defer func() {
 		if !ok {
 			os.RemoveAll(tmp)
 		}
+		if _, err := os.Lstat(tmp); errors.Is(err, fs.ErrNotExist) {
+			done()
+		}
 	}()
+	ctx := opt.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	res := &RestoreResult{}
 	var files, links []Entry
@@ -87,7 +108,10 @@ func Restore(root string, ids []age.Identity, dest string, opt RestoreOptions) (
 		}
 	}
 	err = forEach(len(files), workers(opt.Workers), func(i int) error {
-		return restoreFile(rt, ids, tmp, files[i])
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return restoreFile(ctx, rt, ids, tmp, files[i])
 	})
 	if err != nil {
 		return nil, err
@@ -106,6 +130,9 @@ func Restore(root string, ids []age.Identity, dest string, opt RestoreOptions) (
 		}
 	}
 	res.Files, res.Symlinks = len(files), len(links)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	if existing {
 		res.MovedAside = fmt.Sprintf("%s.salt-old-%s", dest, time.Now().Format("20060102-150405"))
@@ -124,7 +151,7 @@ func Restore(root string, ids []age.Identity, dest string, opt RestoreOptions) (
 	return res, nil
 }
 
-func restoreFile(rt *os.Root, ids []age.Identity, tmp string, e Entry) error {
+func restoreFile(ctx context.Context, rt *os.Root, ids []age.Identity, tmp string, e Entry) error {
 	if err := safeParent(tmp, e.Path); err != nil {
 		return err
 	}
@@ -144,7 +171,7 @@ func restoreFile(rt *os.Root, ids []age.Identity, tmp string, e Entry) error {
 		return err
 	}
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), r)
+	n, err := io.Copy(io.MultiWriter(f, h), ctxReader{ctx, r})
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
@@ -155,6 +182,20 @@ func restoreFile(rt *os.Root, ids []age.Identity, tmp string, e Entry) error {
 		return fmt.Errorf("%s: restored content does not match the index (corrupted backup?)", e.Path)
 	}
 	return nil
+}
+
+// ctxReader stops reading once ctx is cancelled, so a large file does not
+// have to finish before an interrupted restore cleans up.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
 }
 
 // safeParent refuses to write below a symlink inside the restore directory.

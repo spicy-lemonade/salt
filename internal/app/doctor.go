@@ -85,6 +85,8 @@ func (a *App) Doctor(repoRoot string) error {
 		r.add(fail, "git not found on PATH")
 	}
 
+	a.doctorRestores(r)
+
 	if err := requireGitRepo(root); err != nil {
 		r.add(fail, "%v", err)
 		return ErrReported
