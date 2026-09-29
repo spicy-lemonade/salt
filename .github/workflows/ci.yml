@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write # lets the Codecov upload sign in without a token secret
 
 # A newer push to the same branch cancels the older run.
 concurrency:
@@ -31,14 +30,12 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: make vet
       - run: make test
-      # Signs in to Codecov with GitHub's OIDC identity, so no token secret
-      # is needed.
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v5
         with:
           files: coverage.out
-          use_oidc: true
+          token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
 
   e2e:
