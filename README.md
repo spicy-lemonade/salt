@@ -14,7 +14,7 @@ Salt encrypts your agent's files and database memories before they leave your ma
 
 AI agents remember things about you. They keep notes like `USER.md`, `MEMORY.md` and `SOUL.md`, plus memory databases like SQLite or Postgres. If you back these up to GitHub, anyone who gets into that repo can read them.
 
-Salt locks your files before they reach GitHub. Anyone who looks inside only sees scrambled data. Even the file names are hidden.
+Salt encrypts your files before they reach GitHub. Anyone who looks inside only sees scrambled data. Even the file names are hidden.
 
 ## 📦 Install
 
