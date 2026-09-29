@@ -48,8 +48,21 @@ func Staged(dir string) ([]Violation, error) {
 	if err != nil {
 		return nil, err
 	}
+	return classifyBlobs(dir, "", paths)
+}
+
+// Committed checks every file in the last commit of the repository at dir.
+func Committed(dir string) ([]Violation, error) {
+	paths, err := gitx.TreePaths(dir, "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	return classifyBlobs(dir, "HEAD", paths)
+}
+
+func classifyBlobs(dir, rev string, paths []string) ([]Violation, error) {
 	var out []Violation
-	err = gitx.StagedHeads(dir, paths, HeadSize, func(p string, head []byte, ok bool) error {
+	err := gitx.BlobHeads(dir, rev, paths, HeadSize, func(p string, head []byte, ok bool) error {
 		if v := Classify(p, head, ok); v != nil {
 			out = append(out, *v)
 		}

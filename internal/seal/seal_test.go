@@ -419,3 +419,51 @@ func TestLargeFileStreams(t *testing.T) {
 		t.Fatal("large file differs after restore")
 	}
 }
+
+func TestVerify(t *testing.T) {
+	f := newFixture(t, true)
+	f.seal(false)
+	res, err := Verify(f.root, f.ids(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Files != 5 || res.Symlinks != 1 || len(res.Problems) != 0 || len(res.Unreferenced) != 0 {
+		t.Fatalf("healthy verify: %+v", res)
+	}
+
+	var objs []string
+	for rel := range snapshot(t, f.root) {
+		if strings.HasPrefix(rel, "objects/") {
+			objs = append(objs, rel)
+		}
+	}
+	// Tamper with one object, delete another, add a stray one.
+	p := filepath.Join(f.root, objs[0])
+	b, _ := os.ReadFile(p)
+	b[len(b)-5] ^= 0xff
+	os.WriteFile(p, b, 0o644)
+	os.Remove(filepath.Join(f.root, objs[1]))
+	stray := filepath.Join(f.root, "objects", "zz", "stray.age")
+	os.MkdirAll(filepath.Dir(stray), 0o755)
+	os.WriteFile(stray, []byte("age-encryption.org/v1\n"), 0o644)
+
+	res, err = Verify(f.root, f.ids(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Problems) != 2 {
+		t.Fatalf("problems = %v, want 2", res.Problems)
+	}
+	joined := strings.Join(res.Problems, "\n")
+	if !strings.Contains(joined, "is missing") || !strings.Contains(joined, "cannot be decrypted") {
+		t.Fatalf("problems = %v", res.Problems)
+	}
+	if len(res.Unreferenced) != 1 || res.Unreferenced[0] != "objects/zz/stray.age" {
+		t.Fatalf("unreferenced = %v", res.Unreferenced)
+	}
+
+	other, _ := age.GenerateX25519Identity()
+	if _, err := Verify(f.root, []age.Identity{other}, 0); err == nil {
+		t.Fatal("verify with the wrong key succeeded")
+	}
+}

@@ -138,6 +138,14 @@ func TestBackupFlow(t *testing.T) {
 		t.Fatalf("plaintext found in commit: %s", grep)
 	}
 
+	// doctor and verify are happy with a real repo.
+	if out := e.must(base, "salt", "doctor", repoDir); !strings.Contains(out, "✓ last commit contains no unencrypted files") {
+		t.Fatalf("doctor:\n%s", out)
+	}
+	if out := e.must(base, "salt", "verify", repoDir); !strings.Contains(out, "All 2 files") {
+		t.Fatalf("verify:\n%s", out)
+	}
+
 	// An unchanged snapshot produces no changes to commit.
 	e.must(base, "salt", "seal", "--prune", src, repoDir)
 	if st := e.must(repoDir, "git", "status", "--porcelain"); st != "" {
@@ -152,6 +160,10 @@ func TestBackupFlow(t *testing.T) {
 		t.Fatalf("plaintext commit: exit %d\n%s", code, out)
 	}
 	e.must(repoDir, "git", "reset", "-q", "HEAD", "leak.md")
+	// doctor spots the plaintext left in the working tree.
+	if out, code := e.run(base, "salt", "doctor", repoDir); code != 1 || !strings.Contains(out, "leak.md") {
+		t.Fatalf("doctor with plaintext: exit %d\n%s", code, out)
+	}
 	os.Remove(filepath.Join(repoDir, "leak.md"))
 
 	// Restore from a fresh clone on a "new machine": no saved key, so salt

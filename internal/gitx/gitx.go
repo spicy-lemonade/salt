@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // noHooks is prepended to every git command salt runs.
@@ -59,11 +60,12 @@ func StagedPaths(dir string) ([]string, error) {
 	return paths, nil
 }
 
-// StagedHeads calls fn with the first n bytes of each path's staged blob. It
-// streams every blob through a single `git cat-file --batch`, so memory use
-// stays bounded however large the files are. Paths containing a newline
-// cannot be passed to cat-file and are reported with ok=false.
-func StagedHeads(dir string, paths []string, n int, fn func(path string, head []byte, ok bool) error) error {
+// BlobHeads calls fn with the first n bytes of each path's blob at rev ("" for
+// the index, "HEAD" for the last commit). It streams every blob through a
+// single `git cat-file --batch`, so memory use stays bounded however large
+// the files are. Paths containing a newline cannot be passed to cat-file and
+// are reported with ok=false.
+func BlobHeads(dir, rev string, paths []string, n int, fn func(path string, head []byte, ok bool) error) error {
 	var batch []string
 	for _, p := range paths {
 		if strings.ContainsAny(p, "\n\r") {
@@ -94,7 +96,7 @@ func StagedHeads(dir string, paths []string, n int, fn func(path string, head []
 	go func() {
 		w := bufio.NewWriter(stdin)
 		for _, p := range batch {
-			fmt.Fprintf(w, ":%s\n", p)
+			fmt.Fprintf(w, "%s:%s\n", rev, p)
 		}
 		w.Flush()
 		stdin.Close()
@@ -160,4 +162,51 @@ func HookPath(dir, name string) (string, error) {
 		p = filepath.Join(dir, p)
 	}
 	return p, nil
+}
+
+// TreePaths lists every file in the commit rev. It returns no paths and no
+// error when rev does not exist yet (a repository with no commits).
+func TreePaths(dir, rev string) ([]string, error) {
+	if _, err := Run(dir, "rev-parse", "--verify", "-q", rev+"^{commit}"); err != nil {
+		return nil, nil
+	}
+	cmd := exec.Command("git", Args(dir, "ls-tree", "-r", "-z", "--name-only", rev)...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("git ls-tree: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	var paths []string
+	for _, p := range strings.Split(stdout.String(), "\x00") {
+		if p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths, nil
+}
+
+// LastCommitTime returns when HEAD was committed; ok is false with no commits.
+func LastCommitTime(dir string) (t time.Time, ok bool, err error) {
+	if _, err := Run(dir, "rev-parse", "--verify", "-q", "HEAD^{commit}"); err != nil {
+		return time.Time{}, false, nil
+	}
+	out, err := Run(dir, "log", "-1", "--format=%ct")
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	sec, err := strconv.ParseInt(out, 10, 64)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("git log: unexpected %q", out)
+	}
+	return time.Unix(sec, 0), true, nil
+}
+
+// Remote returns the URL of origin, or "" if there is none.
+func Remote(dir string) string {
+	out, err := Run(dir, "remote", "get-url", "origin")
+	if err != nil {
+		return ""
+	}
+	return out
 }

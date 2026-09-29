@@ -24,8 +24,8 @@ OpenViking, and the Markdown files around them) before they are pushed to Git.
 One age X25519 key pair per user.
 
 - Public key: in `salt.toml`, used by the nightly seal.
-- Private key: kept in the OS keychain for everyday decrypts (Touch ID on
-  macOS). Optional extra recipients: YubiKey (`age-plugin-yubikey`), password
+- Private key: kept in the OS keychain for everyday decrypts. Touch ID gating
+  is deliberately out of scope: it needs cgo for little gain. Optional extra recipients: YubiKey (`age-plugin-yubikey`), password
   manager, second machine.
 
 At `salt init` the user chooses a recovery method.
@@ -67,8 +67,8 @@ If you lose them and this laptop, your backups cannot be recovered.
   words back. If they are wrong, onboarding restarts at the phrase display.
   Nothing (keychain entry, config, repo files) is written until the test
   passes, so an aborted init leaves no key behind.
-- `salt recovery show` re-displays the phrase after Touch ID, for when the
-  laptop still works but the written copy is lost.
+- `salt recovery show` re-displays the phrase (after a confirmation prompt),
+  for when the laptop still works but the written copy is lost.
 
 ### Passphrase
 
@@ -77,9 +77,13 @@ If you lose them and this laptop, your backups cannot be recovered.
 - Weak passphrases are rejected (strength estimate plus minimum length).
 - Scripted installs read it from stdin or a file, never from argv.
 
-### Changing method
+### Changing method (deferred, not in v1)
 
-Possible, but the recovery method is tied to the key. Before switching, salt
+The cases that matter are covered without it: a lost phrase is re-shown with
+`salt recovery show`; a user who wants a different method can `salt init` a
+fresh backup repo. If demand appears, build `salt recovery change-passphrase`
+first (same key, re-wraps key.age, no re-encryption), and full switching
+later. When it is built, the method is tied to the key. Before switching, salt
 must warn explicitly:
 
 ```
@@ -159,20 +163,24 @@ For the Hermes nightly script:
 ## Status
 
 - Keychain: macOS items are written through `security -i` (secret on stdin,
-  never argv). Touch ID gating is not implemented yet; items are readable
-  while the login keychain is unlocked. Linux falls back to a 0600 file when
-  no Secret Service is running.
-- Not yet built: `salt recovery change`, `salt verify`, `salt doctor`, the
-  SQLite/Postgres/OpenViking source adapters (`salt seal` works on any
-  directory, including a staged snapshot with `.backup` copies of SQLite).
+  never argv) and are readable while the login keychain is unlocked. Linux
+  falls back to a 0600 file when no Secret Service is running.
+- `salt verify REPO` decrypts every object to /dev/null and checks hashes;
+  it needs the key, so it is a manual/periodic check, not part of the nightly
+  job. `salt doctor [REPO]` needs no key: hook, salt on the hook's PATH, key
+  location, plaintext in the working tree or last commit, backup age,
+  remote, files near GitHub's 100 MB limit.
+- Not yet built: the SQLite/Postgres/OpenViking source adapters (`salt seal`
+  works on any directory, including a staged snapshot with `.backup` copies
+  of SQLite).
 
 ## Phases
 
 0. ✅ Guardrails: guard, gitx, source-scan test, Makefile, Docker e2e, CI.
 1. Core: ✅ keys and recovery onboarding, seal, cache, check, hook, restore;
    remaining: SQLite source adapter and Hermes preset (`salt backup`).
-2. Restore: restore, cat, verify, doctor, textconv diffs, signed index,
-   round-trip CI test.
+2. Restore: ✅ restore, verify, doctor, round-trip e2e test; remaining: cat,
+   textconv diffs, signed index.
 3. Postgres (Honcho, Hindsight), OpenViking.
 4. Size: splitting, prune, maybe content-defined chunking.
 5. Release: GoReleaser, `spicy-lemonade/homebrew-tap`, public launch.

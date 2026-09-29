@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spicy-lemonade/salt/internal/check"
+	"github.com/spicy-lemonade/salt/internal/gitx"
 	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
@@ -23,10 +25,52 @@ type App struct {
 	// StoreName names where keys are kept, for messages ("macOS Keychain").
 	StoreName string
 	CacheDir  string
-	// HookPath resolves a repo's pre-commit hook path (gitx.HookPath).
-	HookPath func(repoRoot string) (string, error)
-	// Staged checks a repo's staged files (check.Staged).
-	Staged func(repoRoot string) ([]check.Violation, error)
+	Git       GitOps
+	// LookPath finds an executable the way the pre-commit hook would.
+	LookPath func(name string) (string, bool)
+	Now      func() time.Time
+	Version  string
+}
+
+// GitOps is what salt asks of git. RealGit implements it; tests use a fake.
+type GitOps interface {
+	HookPath(repoRoot string) (string, error)
+	Staged(repoRoot string) ([]check.Violation, error)
+	Committed(repoRoot string) ([]check.Violation, error)
+	LastCommit(repoRoot string) (t time.Time, ok bool, err error)
+	Remote(repoRoot string) string
+}
+
+// RealGit runs git through gitx (hooks disabled).
+type RealGit struct{}
+
+func (RealGit) HookPath(root string) (string, error) { return gitx.HookPath(root, "pre-commit") }
+func (RealGit) Staged(root string) ([]check.Violation, error) {
+	return check.Staged(root)
+}
+func (RealGit) Committed(root string) ([]check.Violation, error) {
+	return check.Committed(root)
+}
+func (RealGit) LastCommit(root string) (time.Time, bool, error) { return gitx.LastCommitTime(root) }
+func (RealGit) Remote(root string) string                       { return gitx.Remote(root) }
+
+// HookSearchPath is where the pre-commit hook looks for salt: the caller's
+// PATH plus Homebrew's locations (see hook.Script).
+var HookSearchPath = []string{"/opt/homebrew/bin", "/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin"}
+
+// LookPath finds an executable on $PATH or HookSearchPath without running it.
+func LookPath(name string) (string, bool) {
+	dirs := append(filepath.SplitList(os.Getenv("PATH")), HookSearchPath...)
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		p := filepath.Join(d, name)
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0 {
+			return p, true
+		}
+	}
+	return "", false
 }
 
 // Seal encrypts src into the salt repository at repoRoot.
@@ -47,25 +91,25 @@ func (a *App) Seal(src, repoRoot string, prune bool) error {
 	return nil
 }
 
-// ErrCheckFailed is returned when staged files are not encrypted.
-var ErrCheckFailed = errors.New("plaintext staged")
+// ErrReported means the command failed and has already told the person why.
+var ErrReported = errors.New("problems reported")
 
 // Check refuses plaintext staged in the repository at repoRoot.
 func (a *App) Check(repoRoot string) error {
-	vs, err := a.Staged(repoRoot)
+	vs, err := a.Git.Staged(repoRoot)
 	if err != nil {
 		return fmt.Errorf("salt check could not inspect the commit, refusing it: %w", err)
 	}
 	if len(vs) > 0 {
 		a.UI.Printf("%s", check.Report(vs))
-		return ErrCheckFailed
+		return ErrReported
 	}
 	return nil
 }
 
 // InstallHook installs the pre-commit hook in the repository at repoRoot.
 func (a *App) InstallHook(repoRoot string) (string, error) {
-	p, err := a.HookPath(repoRoot)
+	p, err := a.Git.HookPath(repoRoot)
 	if err != nil {
 		return "", err
 	}

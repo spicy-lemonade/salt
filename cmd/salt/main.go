@@ -9,10 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/spicy-lemonade/salt/internal/app"
-	"github.com/spicy-lemonade/salt/internal/check"
-	"github.com/spicy-lemonade/salt/internal/gitx"
 	"github.com/spicy-lemonade/salt/internal/guard"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/seal"
@@ -42,6 +41,13 @@ Restoring:
   salt recovery show REPO
       Show the recovery phrase saved on this machine.
 
+Checking:
+  salt verify REPO
+      Decrypt every file (nothing is written to disk) and check it against
+      the index. Needs your key.
+  salt doctor [REPO]
+      Check salt, the hook, the key and the repo are healthy. Needs no key.
+
 Other:
   salt hook install [REPO]
   salt version
@@ -60,7 +66,7 @@ func main() {
 	var ue usageError
 	switch {
 	case err == nil:
-	case errors.Is(err, app.ErrCheckFailed):
+	case errors.Is(err, app.ErrReported):
 		os.Exit(1) // already reported
 	case errors.As(err, &ue):
 		fmt.Fprintf(os.Stderr, "salt: %v\n\n%s", err, usage)
@@ -97,8 +103,10 @@ func newApp() (*app.App, error) {
 		},
 		StoreName: storeName(),
 		CacheDir:  cache,
-		HookPath:  func(root string) (string, error) { return gitx.HookPath(root, "pre-commit") },
-		Staged:    check.Staged,
+		Git:       app.RealGit{},
+		LookPath:  app.LookPath,
+		Now:       time.Now,
+		Version:   version,
 	}, nil
 }
 
@@ -177,6 +185,18 @@ func run(cmd string, args []string) error {
 			return a.RecoveryShow(pos[0])
 		}
 		return usageError{fmt.Sprintf("unknown recovery subcommand %q", args[0])}
+	case "verify":
+		pos, err := parse(newFlags("verify"), args, 1, 1)
+		if err != nil {
+			return err
+		}
+		return a.Verify(pos[0])
+	case "doctor":
+		pos, err := parse(newFlags("doctor"), args, 0, 1)
+		if err != nil {
+			return err
+		}
+		return a.Doctor(orDot(pos))
 	case "hook":
 		if len(args) == 0 || args[0] != "install" {
 			return usageError{"usage: salt hook install [REPO]"}

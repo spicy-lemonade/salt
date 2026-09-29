@@ -179,3 +179,26 @@ func roundTrip(t *testing.T, id *age.X25519Identity) {
 		t.Fatalf("round trip = %q", out.String())
 	}
 }
+
+func TestFallbackStore(t *testing.T) {
+	broken := brokenStore{}
+	file := FileStore{Dir: t.TempDir()}
+	var warned error
+	fs := FallbackStore{Primary: broken, Secondary: file, Warn: func(err error) { warned = err }}
+	id, _ := age.GenerateX25519Identity()
+	if err := fs.Set("age1x", IdentitySecret(id)); err != nil || warned == nil {
+		t.Fatalf("Set: %v, warned %v", err, warned)
+	}
+	if _, err := fs.Get("age1x"); err != nil {
+		t.Fatal(err)
+	}
+	if loc := fs.Location("age1x"); !strings.HasPrefix(loc, "private file ") {
+		t.Fatalf("Location = %q", loc)
+	}
+}
+
+type brokenStore struct{}
+
+func (brokenStore) Get(string) (Secret, error) { return Secret{}, errors.New("no keychain") }
+func (brokenStore) Set(string, Secret) error   { return errors.New("no keychain") }
+func (brokenStore) Delete(string) error        { return errors.New("no keychain") }

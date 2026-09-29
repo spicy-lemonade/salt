@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/keys"
@@ -43,7 +45,29 @@ type testEnv struct {
 	store *keys.MemStore
 	root  string
 	hook  string
+	now   time.Time
+	git   *fakeGit
 }
+
+type fakeGit struct {
+	hook      string
+	staged    []check.Violation
+	stagedErr error
+	committed []check.Violation
+	last      time.Time
+	hasLast   bool
+	remote    string
+}
+
+func (f *fakeGit) HookPath(string) (string, error) { return f.hook, nil }
+func (f *fakeGit) Staged(string) ([]check.Violation, error) {
+	return f.staged, f.stagedErr
+}
+func (f *fakeGit) Committed(string) ([]check.Violation, error) { return f.committed, nil }
+func (f *fakeGit) LastCommit(string) (time.Time, bool, error) {
+	return f.last, f.hasLast, nil
+}
+func (f *fakeGit) Remote(string) string { return f.remote }
 
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()
@@ -53,14 +77,18 @@ func newEnv(t *testing.T) *testEnv {
 		t.Fatal(err)
 	}
 	e := &testEnv{t: t, ui: &scriptUI{interactive: true}, store: &keys.MemStore{}, root: root,
-		hook: filepath.Join(root, ".git", "hooks", "pre-commit")}
+		hook: filepath.Join(root, ".git", "hooks", "pre-commit"),
+		now:  time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)}
+	e.git = &fakeGit{hook: e.hook, last: e.now.Add(-6 * time.Hour), hasLast: true, remote: "https://github.com/me/backup.git"}
 	e.app = &App{
 		UI:        e.ui,
 		Store:     e.store,
 		StoreName: "test store",
 		CacheDir:  filepath.Join(base, "cache"),
-		HookPath:  func(string) (string, error) { return e.hook, nil },
-		Staged:    func(string) ([]check.Violation, error) { return nil, nil },
+		Git:       e.git,
+		LookPath:  func(name string) (string, bool) { return "/usr/local/bin/" + name, true },
+		Now:       func() time.Time { return e.now },
+		Version:   "test",
 	}
 	return e
 }
@@ -345,17 +373,126 @@ func TestRecoveryTestAndShow(t *testing.T) {
 
 func TestCheckReportsViolations(t *testing.T) {
 	e := newEnv(t)
-	e.app.Staged = func(string) ([]check.Violation, error) {
-		return []check.Violation{{Path: "memories/USER.md", Reason: "not encrypted"}}, nil
-	}
-	if err := e.app.Check(e.root); !errors.Is(err, ErrCheckFailed) {
+	e.git.staged = []check.Violation{{Path: "memories/USER.md", Reason: "not encrypted"}}
+	if err := e.app.Check(e.root); !errors.Is(err, ErrReported) {
 		t.Fatalf("Check = %v", err)
 	}
 	if !strings.Contains(e.ui.out.String(), "memories/USER.md") {
 		t.Fatal("violation not reported")
 	}
-	e.app.Staged = func(string) ([]check.Violation, error) { return nil, errors.New("git broke") }
+	e.git.staged, e.git.stagedErr = nil, errors.New("git broke")
 	if err := e.app.Check(e.root); err == nil {
 		t.Fatal("Check passed although inspection failed (must fail closed)")
+	}
+}
+
+// healthyRepo inits with a phrase, seals one file and returns the phrase.
+func healthyRepo(t *testing.T, e *testEnv) string {
+	t.Helper()
+	e.ui.answer = phraseAnswers(0)
+	if err := e.app.Init(InitOptions{Repo: e.root}); err != nil {
+		t.Fatal(err)
+	}
+	phrase := lastPhrase(e.ui.out.String())
+	src := filepath.Join(t.TempDir(), "hermes")
+	os.MkdirAll(src, 0o755)
+	os.WriteFile(filepath.Join(src, "USER.md"), []byte("hello"), 0o644)
+	if err := e.app.Seal(src, e.root, true); err != nil {
+		t.Fatal(err)
+	}
+	e.ui.out.Reset()
+	return phrase
+}
+
+func TestDoctorHealthy(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	if err := e.app.Doctor(e.root); err != nil {
+		t.Fatalf("Doctor: %v\n%s", err, e.ui.out.String())
+	}
+	out := e.ui.out.String()
+	for _, want := range []string{"Everything looks healthy", "key for this backup is saved", "pre-commit hook runs `salt check`",
+		"working tree contains only encrypted files", "salt recovery test"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestDoctorProblems(t *testing.T) {
+	tests := []struct {
+		name   string
+		break_ func(e *testEnv)
+		want   string
+		fails  bool
+	}{
+		{"no hook", func(e *testEnv) { os.Remove(e.hook) }, "no pre-commit hook", true},
+		{"foreign hook", func(e *testEnv) { os.WriteFile(e.hook, []byte("#!/bin/sh\nnpm test\n"), 0o755) }, "does not run `salt check`", true},
+		{"salt missing", func(e *testEnv) {
+			e.app.LookPath = func(n string) (string, bool) { return "/usr/bin/" + n, n != "salt" }
+		}, "hook will refuse every commit", true},
+		{"plaintext in tree", func(e *testEnv) { os.WriteFile(filepath.Join(e.root, "USER.md"), []byte("hi"), 0o644) }, "1 unencrypted file(s) in the working tree", true},
+		{"plaintext committed", func(e *testEnv) { e.git.committed = []check.Violation{{Path: "USER.md"}} }, "last commit contains 1 unencrypted", true},
+		{"no key here", func(e *testEnv) { e.app.Store = &keys.MemStore{} }, "no key for this backup on this machine", false},
+		{"stale", func(e *testEnv) { e.git.last = e.now.Add(-5 * 24 * time.Hour) }, "is the nightly backup still running?", false},
+		{"no remote", func(e *testEnv) { e.git.remote = "" }, "backups are not leaving this machine", false},
+		{"not salt", func(e *testEnv) { os.RemoveAll(filepath.Join(e.root, repo.Dir)) }, "not a salt repository", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			healthyRepo(t, e)
+			tt.break_(e)
+			err := e.app.Doctor(e.root)
+			out := e.ui.out.String()
+			if !strings.Contains(out, tt.want) {
+				t.Errorf("output missing %q:\n%s", tt.want, out)
+			}
+			if tt.fails != errors.Is(err, ErrReported) {
+				t.Errorf("err = %v, want failure=%v\n%s", err, tt.fails, out)
+			}
+		})
+	}
+}
+
+func TestDoctorPassphraseKeyFile(t *testing.T) {
+	e := newEnv(t)
+	e.ui.interactive = false
+	pf := filepath.Join(t.TempDir(), "pass")
+	os.WriteFile(pf, []byte("correct horse battery staple\n"), 0o600)
+	if err := e.app.Init(InitOptions{Repo: e.root, Recovery: repo.RecoveryPassphrase, PassphraseFile: pf}); err != nil {
+		t.Fatal(err)
+	}
+	e.ui.out.Reset()
+	e.app.Doctor(e.root)
+	if !strings.Contains(e.ui.out.String(), "key.age present") {
+		t.Fatalf("doctor:\n%s", e.ui.out.String())
+	}
+	os.Remove(filepath.Join(e.root, repo.KeyFile))
+	e.ui.out.Reset()
+	if err := e.app.Doctor(e.root); !errors.Is(err, ErrReported) || !strings.Contains(e.ui.out.String(), "key.age is missing") {
+		t.Fatalf("doctor without key.age: %v\n%s", err, e.ui.out.String())
+	}
+}
+
+func TestVerifyCommand(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	if err := e.app.Verify(e.root); err != nil {
+		t.Fatalf("Verify: %v\n%s", err, e.ui.out.String())
+	}
+	if !strings.Contains(e.ui.out.String(), "All 1 files") {
+		t.Fatalf("verify output:\n%s", e.ui.out.String())
+	}
+	// Corrupt every object.
+	filepath.WalkDir(filepath.Join(e.root, repo.ObjectsDir), func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			os.WriteFile(p, []byte("age-encryption.org/v1\ngarbage"), 0o644)
+		}
+		return nil
+	})
+	e.ui.out.Reset()
+	if err := e.app.Verify(e.root); !errors.Is(err, ErrReported) || !strings.Contains(e.ui.out.String(), "1 of 1 files cannot be restored") {
+		t.Fatalf("verify corrupted: %v\n%s", err, e.ui.out.String())
 	}
 }

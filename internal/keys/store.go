@@ -241,3 +241,15 @@ func (m *MemStore) Len() int {
 	defer m.mu.Unlock()
 	return len(m.m)
 }
+
+// Location describes where the secret for recipient is kept: "" for Primary,
+// or a description of the fallback file.
+func (f FallbackStore) Location(recipient string) string {
+	if _, err := f.Primary.Get(recipient); err == nil {
+		return ""
+	}
+	if fs, ok := f.Secondary.(FileStore); ok {
+		return "private file " + fs.path(recipient)
+	}
+	return "fallback store"
+}
