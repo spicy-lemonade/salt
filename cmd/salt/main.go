@@ -108,20 +108,22 @@ func newApp() (*app.App, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Without a home folder, paths are simply shown in full.
+	home, _ := os.UserHomeDir()
 	ui := app.NewTerminal()
 	keyDir := filepath.Join(cfg, "salt", "keys")
 	var store keys.Store = keys.FallbackStore{
 		Primary:   keys.KeyringStore{},
 		Secondary: keys.FileStore{Dir: keyDir},
 		Warn: func(err error) {
-			ui.Printf("salt: the system keychain is unavailable (%v); saving the key to a private file under %s instead\n", err, keyDir)
+			ui.Printf("salt: the system keychain is unavailable (%v); saving the key to a private file under %s instead\n", err, app.ShortPath(keyDir, home))
 		},
 	}
 	name := storeName()
 	// SALT_KEYSTORE=file skips the keychain: for headless machines, and for
 	// the e2e tests, which must never touch the real keychain.
 	if os.Getenv("SALT_KEYSTORE") == "file" {
-		store, name = keys.FileStore{Dir: keyDir}, "private key file under "+keyDir
+		store, name = keys.FileStore{Dir: keyDir}, "private key file under "+app.ShortPath(keyDir, home)
 	}
 	return &app.App{
 		UI:        ui,
@@ -133,6 +135,7 @@ func newApp() (*app.App, error) {
 		LookPath:  app.LookPath,
 		Now:       time.Now,
 		Version:   version,
+		Home:      home,
 	}, nil
 }
 
@@ -249,7 +252,7 @@ func run(cmd string, args []string) error {
 		}
 		p, err := a.InstallHook(orDot(pos))
 		if err == nil {
-			a.UI.Printf("✓ Installed %s\n", p)
+			a.UI.Printf("✓ Installed %s\n", app.ShortPath(p, a.Home))
 		}
 		return err
 	}

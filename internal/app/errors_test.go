@@ -259,16 +259,19 @@ func TestPromptIdentityOddRepos(t *testing.T) {
 }
 
 // A store that reports where keys live.
-type locatedStore struct{ *keys.MemStore }
+type locatedStore struct {
+	*keys.MemStore
+	loc string
+}
 
-func (locatedStore) Location(string) string { return "private file /somewhere" }
+func (l locatedStore) Location(string) string { return l.loc }
 
 func TestDoctorSmallBranches(t *testing.T) {
 	e := newEnv(t)
 	healthyRepo(t, e)
 	r, _ := repo.Open(e.root)
 	s, _ := e.store.Get(r.RecipientStrings[0])
-	ls := locatedStore{&keys.MemStore{}}
+	ls := locatedStore{&keys.MemStore{}, "/somewhere"}
 	ls.Set(r.RecipientStrings[0], s)
 	e.app.Store = ls
 	os.WriteFile(filepath.Join(e.root, ".salt-tmp-123"), []byte("partial"), 0o644)

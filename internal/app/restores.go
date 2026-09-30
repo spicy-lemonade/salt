@@ -90,7 +90,7 @@ func (l restoreLog) leftovers() ([]string, error) {
 func (a *App) trackRestore(tmp string) func() {
 	log := a.restoreLog()
 	if err := log.add(tmp); err != nil {
-		a.UI.Printf("salt: could not record the restore in progress (%v); if it is interrupted, delete %s yourself\n", err, tmp)
+		a.UI.Printf("salt: could not record the restore in progress (%v); if it is interrupted, delete %s yourself\n", err, a.short(tmp))
 		return func() {}
 	}
 	return func() { log.remove(tmp) }
@@ -105,7 +105,7 @@ func (a *App) warnLeftoverRestores(dest string) {
 	}
 	found, _ := filepath.Glob(filepath.Join(filepath.Dir(abs), ".salt-restore-*"))
 	for _, d := range found {
-		a.UI.Printf("salt: %s was left by a restore that did not finish and may hold decrypted files; delete it once you have checked it\n", d)
+		a.UI.Printf("salt: %s was left by a restore that did not finish and may hold decrypted files; delete it once you have checked it\n", a.short(d))
 	}
 }
 
@@ -115,6 +115,6 @@ func (a *App) doctorRestores(r *report) {
 		r.add(warn, "could not read the list of restores in progress: %v", err)
 	}
 	for _, d := range dirs {
-		r.add(warn, "%s was left by a restore that did not finish and may hold decrypted files; delete it once you have checked it", d)
+		r.add(warn, "%s was left by a restore that did not finish and may hold decrypted files; delete it once you have checked it", a.short(d))
 	}
 }
