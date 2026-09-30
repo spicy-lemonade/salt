@@ -202,17 +202,18 @@ copies it gets from the databases.
 
 Salt records the last-modified date of the file it is given, and a
 `.backup` copy is dated when the copy was made. The backup script therefore
-copies the database's own date onto the copy with `touch -r`. SQLite has two
-common journal modes, and the script must handle both:
+copies the database file's own date onto the copy with `touch -r` (`copy_db`
+in the README, which the e2e tests run). It reads the date before the backup,
+because the backup can change it: after a crash, `sqlite3` moves a leftover
+`-wal` file's changes into the database file when it closes. Salt takes that
+date as it is, in either SQLite journal mode:
 
 - Rollback journal (`delete`, `truncate`, the default): every change is
   written into the database file, so its date is the date of the last change.
 - WAL (`wal`, used by Hermes and Mnemosyne): changes go to `live.db-wal`
   first and reach `live.db` only at a checkpoint, so `live.db` can be older
-  than the last change. The script uses the `-wal` file's date when that file
-  exists and is newer.
-
-`copy_db` in the README's backup script does this, and the e2e tests run it.
+  than the last change. This is a property of the database, and Salt does
+  not try to work around it.
 
 ## Out of scope
 
