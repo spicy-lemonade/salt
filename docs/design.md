@@ -200,6 +200,20 @@ out when you try to restore it. For safety, Salt will soon make these backups
 itself. Salt only encrypts the
 copies it gets from the databases.
 
+Salt records the last-modified date of the file it is given, and a
+`.backup` copy is dated when the copy was made. The backup script therefore
+copies the database's own date onto the copy with `touch -r`. SQLite has two
+common journal modes, and the script must handle both:
+
+- Rollback journal (`delete`, `truncate`, the default): every change is
+  written into the database file, so its date is the date of the last change.
+- WAL (`wal`, used by Hermes and Mnemosyne): changes go to `live.db-wal`
+  first and reach `live.db` only at a checkpoint, so `live.db` can be older
+  than the last change. The script uses the `-wal` file's date when that file
+  exists and is newer.
+
+`copy_db` in the README's backup script does this, and the e2e tests run it.
+
 ## Out of scope
 
 Touch ID, and switching recovery method.
