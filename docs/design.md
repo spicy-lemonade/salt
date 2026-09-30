@@ -79,11 +79,12 @@ If you lose them and this laptop, your backups cannot be recovered.
 
 - `salt restore` decrypts into a temporary folder, checks every file, then
   moves it into place. An existing folder is moved aside, never overwritten.
-  Each file gets back the last-modified date recorded when it was sealed. A
-  file whose content has not changed keeps the date it was first sealed with,
-  so a fresh copy of an unchanged file (such as `sqlite3 .backup`) makes no
-  commit. Backups made before salt recorded dates restore with the time of
-  the restore.
+  Each file gets back the last-modified date it had when it was sealed. Seal
+  records the date of the file it is given, so a backup script must keep the
+  original dates when it copies files (`cp -p`, and `touch -r` after
+  `sqlite3 .backup`). A file whose only change is its date keeps its
+  ciphertext; only `index.age` is rewritten. Backups made before salt recorded
+  dates restore with the time of the restore.
 - `salt verify` decrypts everything without writing it to disk, and reports
   any file that cannot be restored. It needs the key.
 - `salt doctor` checks the hook, the key, the repo and the last backup. It

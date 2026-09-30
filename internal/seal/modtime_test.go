@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spicy-lemonade/salt/internal/repo"
 )
 
 // setModTime gives a source file a fixed last-modified date.
@@ -96,68 +98,33 @@ func TestRestoreKeepsModTimes(t *testing.T) {
 	}
 }
 
-// A copy that only gets a new date, such as sqlite3 .backup of an unchanged
-// database, must not change the repo, so the date recorded with the content
-// is kept. Changed content takes the new date.
-func TestUnchangedContentKeepsItsDate(t *testing.T) {
+// The index always holds each file's current date. A file whose date
+// changed but whose content did not keeps its ciphertext; only the index is
+// rewritten, and a restore gives the new date.
+func TestDateOnlyChangeRecordsNewDate(t *testing.T) {
 	f := newFixture(t, true)
-	first := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
-	f.setModTime("mnemosyne/data/mnemosyne.db", first)
+	f.setModTime("mnemosyne/data/mnemosyne.db", time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC))
 	f.seal(false)
 	before := snapshot(t, f.root)
 
-	f.setModTime("mnemosyne/data/mnemosyne.db", time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC))
+	touched := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
+	f.setModTime("mnemosyne/data/mnemosyne.db", touched)
 	res := f.seal(false)
-	if res.Encrypted != 0 || res.IndexNew {
+	if res.Encrypted != 0 || res.Reused != 5 || !res.IndexNew {
 		t.Fatalf("seal after a date-only change: %+v", res)
 	}
 	for k, v := range snapshot(t, f.root) {
-		if before[k] != v {
+		if k != repo.IndexFile && before[k] != v {
 			t.Errorf("%s changed although only a date did", k)
 		}
 	}
-	if got := f.restoredModTime("mnemosyne/data/mnemosyne.db"); !got.Equal(first) {
-		t.Fatalf("last-modified after a date-only change = %v, want %v", got, first)
+	if got := f.restoredModTime("mnemosyne/data/mnemosyne.db"); !got.Equal(touched) {
+		t.Fatalf("last-modified after a date-only change = %v, want %v", got, touched)
 	}
 
-	changed := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
-	f.write("mnemosyne/data/mnemosyne.db", "SQLite format 3\x00new")
-	f.setModTime("mnemosyne/data/mnemosyne.db", changed)
-	if res := f.seal(false); res.Encrypted != 1 || !res.IndexNew {
-		t.Fatalf("seal after a content change: %+v", res)
-	}
-	if got := f.restoredModTime("mnemosyne/data/mnemosyne.db"); !got.Equal(changed) {
-		t.Fatalf("last-modified after a content change = %v, want %v", got, changed)
-	}
-}
-
-// A cache written before salt kept dates has none, so seal takes each
-// unchanged file's current date instead of recording nothing.
-func TestCacheWithoutDatesUsesFileDates(t *testing.T) {
-	f := newFixture(t, true)
-	at := time.Date(2023, 5, 6, 7, 8, 9, 0, time.UTC)
-	f.setModTime("SOUL.md", at)
-	f.seal(false)
-	cPath, err := cachePath(f.cache, f.root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := loadCache(cPath, cacheKey(f.repo.RecipientStrings, true))
-	for k, ce := range c.Files {
-		ce.MTime = 0
-		c.Files[k] = ce
-	}
-	if err := c.save(cPath); err != nil {
-		t.Fatal(err)
-	}
-	if res := f.seal(false); res.Reused != 5 {
-		t.Fatalf("seal with an old cache: %+v", res)
-	}
-	if got := f.restoredModTime("SOUL.md"); !got.Equal(at) {
-		t.Fatalf("last-modified = %v, want %v", got, at)
-	}
-	if c := loadCache(cPath, cacheKey(f.repo.RecipientStrings, true)); c.Files["SOUL.md"].MTime != at.UnixNano() {
-		t.Fatalf("cache date = %d, want %d", c.Files["SOUL.md"].MTime, at.UnixNano())
+	// With neither content nor dates changed, nothing is rewritten.
+	if res := f.seal(false); res.Encrypted != 0 || res.IndexNew {
+		t.Fatalf("seal with nothing changed: %+v", res)
 	}
 }
 

@@ -128,16 +128,9 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		if err != nil {
 			return err
 		}
-		mtime := unixNano(it.modTime)
+		e.MTime = unixNano(it.modTime)
 		if prev, ok := c.Files[it.rel]; ok && prev.SHA256 == sha && objectIntact(rt, prev) {
-			// Unchanged content keeps the date recorded with it, so a copy
-			// that only got a new date (such as sqlite3 .backup) changes
-			// nothing in the repo.
-			if prev.MTime != 0 {
-				mtime = prev.MTime
-			}
-			prev.MTime = mtime
-			e.Object, e.SHA256, e.Size, e.MTime = prev.Object, sha, size, mtime
+			e.Object, e.SHA256, e.Size = prev.Object, sha, size
 			entries[i], newCache[i] = e, prev
 			reused.Add(1)
 			return nil
@@ -150,8 +143,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		if err != nil {
 			return fmt.Errorf("%s: %w", it.rel, err)
 		}
-		ce.MTime = mtime
-		e.Object, e.SHA256, e.Size, e.MTime = obj, ce.SHA256, n, mtime
+		e.Object, e.SHA256, e.Size = obj, ce.SHA256, n
 		entries[i], newCache[i] = e, ce
 		encrypted.Add(1)
 		return nil

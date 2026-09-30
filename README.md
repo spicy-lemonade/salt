@@ -50,7 +50,7 @@ Then lock your files into the repo whenever you back up.
 salt seal --prune ~/agent-files ~/my-backup-repo
 ```
 
-Commit and push as normal. Your backup always matches your files: unchanged files stay the same, deleted files are removed, and a backup with no changes makes no commit. `--prune` also clears out anything Salt didn't put there. Older versions stay in your git history, so you can check out an older commit and run `salt restore` on it.
+Commit and push as normal. Your backup always matches your files: unchanged files stay the same, deleted files are removed, and a backup with no changes makes no commit. Each file's last-modified date is saved too, and `salt restore` puts it back. `--prune` also clears out anything Salt didn't put there. Older versions stay in your git history, so you can check out an older commit and run `salt restore` on it.
 
 ## ⏰ Daily backups
 
@@ -74,6 +74,10 @@ cp -Rp ~/.hermes/skills "$STAGE/"
 # Copy databases safely, even while the agent is running
 sqlite3 ~/.hermes/state.db ".backup '$STAGE/state.db'"
 sqlite3 ~/.hermes/mnemosyne/data/mnemosyne.db ".backup '$STAGE/mnemosyne.db'"
+
+# Keep each database's real last-modified date on its copy
+touch -r ~/.hermes/state.db "$STAGE/state.db"
+touch -r ~/.hermes/mnemosyne/data/mnemosyne.db "$STAGE/mnemosyne.db"
 
 # Lock everything into the repo, then commit and push if anything changed
 salt seal --prune "$STAGE" "$REPO"

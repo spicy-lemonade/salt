@@ -27,9 +27,6 @@ type cacheEntry struct {
 	SHA256     string `json:"sha256"`
 	Object     string `json:"object"`
 	CipherSize int64  `json:"cipher_size"`
-	// MTime is the last-modified time recorded in the index for this
-	// content, kept while the content is unchanged (see Entry.MTime).
-	MTime int64 `json:"mtime,omitempty"`
 }
 
 func cacheKey(recipients []string, encryptPaths bool) string {
