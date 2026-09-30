@@ -32,6 +32,9 @@ type App struct {
 	LookPath func(name string) (string, bool)
 	Now      func() time.Time
 	Version  string
+	// Home is the user's home folder. Messages show paths inside it as "~/…";
+	// empty means paths are shown in full.
+	Home string
 }
 
 // GitOps is what salt asks of git. RealGit implements it; tests use a fake.
@@ -102,7 +105,7 @@ func (a *App) Seal(src, repoRoot string, prune bool) error {
 	// Checked after sealing, not before: only now do the new objects exist,
 	// so git can say whether it would ignore them. Failing here stops the
 	// backup script before it commits.
-	if requireGitRepo(r.Root) != nil {
+	if a.requireGitRepo(r.Root) != nil {
 		return nil // not a git repo, so nothing is pushed
 	}
 	return a.checkStorage(r.Root, "salt: the backup was sealed, but")
@@ -148,9 +151,9 @@ func (a *App) InstallHook(repoRoot string) (string, error) {
 	return p, hook.Install(p)
 }
 
-func requireGitRepo(root string) error {
+func (a *App) requireGitRepo(root string) error {
 	if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
-		return fmt.Errorf("%s is not a git repository; clone or create your backup repo first", root)
+		return fmt.Errorf("%s is not a git repository; clone or create your backup repo first", a.short(root))
 	}
 	return nil
 }

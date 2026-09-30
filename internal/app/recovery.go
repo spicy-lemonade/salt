@@ -98,14 +98,14 @@ func (a *App) Restore(o RestoreOptions) error {
 		Paths: o.Paths, Force: o.Force, Context: o.Context, Track: a.trackRestore,
 	})
 	if errors.Is(err, context.Canceled) {
-		return fmt.Errorf("%w: the partly restored files were removed and %s was not changed", ErrInterrupted, o.To)
+		return fmt.Errorf("%w: the partly restored files were removed and %s was not changed", ErrInterrupted, a.short(o.To))
 	}
 	if err != nil {
 		return err
 	}
-	a.UI.Printf("✓ Restored %d files and %d symlinks to %s\n", res.Files, res.Symlinks, o.To)
+	a.UI.Printf("✓ Restored %d files and %d symlinks to %s\n", res.Files, res.Symlinks, a.short(o.To))
 	if res.MovedAside != "" {
-		a.UI.Printf("  The previous contents were moved to %s\n", res.MovedAside)
+		a.UI.Printf("  The previous contents were moved to %s\n", a.short(res.MovedAside))
 	}
 	return nil
 }

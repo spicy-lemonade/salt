@@ -65,7 +65,7 @@ func (a *App) Doctor(repoRoot string) error {
 		return err
 	}
 	r := &report{ui: a.UI}
-	a.UI.Printf("salt doctor: %s\n\n", root)
+	a.UI.Printf("salt doctor: %s\n\n", a.short(root))
 	defer func() {
 		a.UI.Printf("\n")
 		switch {
@@ -80,14 +80,14 @@ func (a *App) Doctor(repoRoot string) error {
 
 	r.add(ok, "salt %s", a.Version)
 	if p, found := a.LookPath("git"); found {
-		r.add(ok, "git found (%s)", p)
+		r.add(ok, "git found (%s)", a.short(p))
 	} else {
 		r.add(fail, "git not found on PATH")
 	}
 
 	a.doctorRestores(r)
 
-	if err := requireGitRepo(root); err != nil {
+	if err := a.requireGitRepo(root); err != nil {
 		r.add(fail, "%v", err)
 		return ErrReported
 	}
@@ -223,9 +223,9 @@ func (a *App) doctorHook(r *report, root string) {
 	}
 	switch _, statErr := os.Stat(p); {
 	case hook.Installed(p):
-		r.add(ok, "pre-commit hook runs `salt check` (%s)", p)
+		r.add(ok, "pre-commit hook runs `salt check` (%s)", a.short(p))
 	case statErr == nil:
-		r.add(fail, "pre-commit hook at %s does not run `salt check`; add it so plaintext commits are refused", p)
+		r.add(fail, "pre-commit hook at %s does not run `salt check`; add it so plaintext commits are refused", a.short(p))
 	default:
 		r.add(fail, "no pre-commit hook; run `salt hook install %s`", root)
 	}

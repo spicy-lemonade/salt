@@ -22,7 +22,7 @@ func (a *App) checkTrusted(r *repo.Repo) error {
 	approved, err := a.trustStore().Load(r.Root)
 	if errors.Is(err, trust.ErrNotApproved) {
 		return fmt.Errorf("%w: this machine has not approved the keys in %s yet. Check them and run `salt trust %s`",
-			ErrNotTrusted, r.Root, r.Root)
+			ErrNotTrusted, a.short(r.Root), r.Root)
 	}
 	if err != nil {
 		return err
@@ -30,7 +30,7 @@ func (a *App) checkTrusted(r *repo.Repo) error {
 	if d := trust.Diff(approved, trust.For(r)); len(d) > 0 {
 		return fmt.Errorf("%w: the keys or settings in %s changed since you approved them:\n  %s\n"+
 			"If you made this change, run `salt trust %s`. If you didn't, someone else changed your backup repo. Don't back up until you've checked it",
-			ErrNotTrusted, r.Root, strings.Join(d, "\n  "), r.Root)
+			ErrNotTrusted, a.short(r.Root), strings.Join(d, "\n  "), r.Root)
 	}
 	return nil
 }
@@ -43,7 +43,7 @@ func (a *App) Trust(repoRoot string, yes bool) error {
 		return err
 	}
 	pin := trust.For(r)
-	a.UI.Printf("Backups to %s will be encrypted to these keys:\n", r.Root)
+	a.UI.Printf("Backups to %s will be encrypted to these keys:\n", a.short(r.Root))
 	unknown := 0
 	for _, rcpt := range pin.Recipients {
 		mark := "  (your key on this machine)"
