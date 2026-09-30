@@ -58,7 +58,7 @@ func (a *App) Init(o InitOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := requireGitRepo(root); err != nil {
+	if err := a.requireGitRepo(root); err != nil {
 		return err
 	}
 	// A symlink committed by someone else could send what init writes into
@@ -68,7 +68,7 @@ func (a *App) Init(o InitOptions) error {
 		return err
 	}
 	if _, err := repo.Open(root); err == nil {
-		return fmt.Errorf("%s is already set up for salt; use `salt recovery test` to check your recovery phrase or passphrase", root)
+		return fmt.Errorf("%s is already set up for salt; use `salt recovery test` to check your recovery phrase or passphrase", a.short(root))
 	} else if !errors.Is(err, repo.ErrNotInitialised) {
 		return err
 	}
@@ -162,8 +162,8 @@ Next:
        salt seal --prune "$STAGE" %q
   3. After the first backup, check you can restore:
        salt restore %q --to /tmp/salt-restore-test
-`, root, a.StoreName, map[bool]string{true: "encrypted", false: "visible (--plain-paths)"}[f.EncryptPaths],
-		hookPath, root, root, root, root)
+`, a.short(root), a.StoreName, map[bool]string{true: "encrypted", false: "visible (--plain-paths)"}[f.EncryptPaths],
+		a.short(hookPath), root, root, root, root)
 	return nil
 }
 

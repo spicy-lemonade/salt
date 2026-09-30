@@ -1384,3 +1384,16 @@ func TestClip(t *testing.T) {
 		t.Errorf("clip = %q", long)
 	}
 }
+
+// Paths in messages go through Show when set and are unchanged otherwise.
+func TestShowPathsInMessages(t *testing.T) {
+	dir := t.TempDir()
+	inner := filepath.Join(dir, "src")
+	if err := checkDisjoint(inner, dir, nil); err == nil || !strings.Contains(err.Error(), "source "+inner+" and repository "+dir) {
+		t.Fatalf("without Show: %v", err)
+	}
+	mark := func(p string) string { return "<" + filepath.Base(p) + ">" }
+	if err := checkDisjoint(inner, dir, mark); err == nil || !strings.Contains(err.Error(), "source <src> and repository <"+filepath.Base(dir)+">") {
+		t.Fatalf("with Show: %v", err)
+	}
+}

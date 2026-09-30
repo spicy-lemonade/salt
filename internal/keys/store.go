@@ -242,14 +242,14 @@ func (m *MemStore) Len() int {
 	return len(m.m)
 }
 
-// Location describes where the secret for recipient is kept: "" for Primary,
-// or a description of the fallback file.
+// Location is the path of the fallback file holding the secret for recipient,
+// or "" when it is in Primary or the fallback is not a file.
 func (f FallbackStore) Location(recipient string) string {
 	if _, err := f.Primary.Get(recipient); err == nil {
 		return ""
 	}
 	if fs, ok := f.Secondary.(FileStore); ok {
-		return "private file " + fs.path(recipient)
+		return fs.path(recipient)
 	}
-	return "fallback store"
+	return ""
 }

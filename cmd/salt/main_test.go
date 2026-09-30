@@ -170,3 +170,53 @@ func TestRunSealVerifyRestore(t *testing.T) {
 		t.Fatalf("seal into a non-salt dir: %v", err)
 	}
 }
+
+// The keychain-fallback warning and the file store's name show the key folder
+// inside home as ~/….
+func TestNewAppShowsKeyDirAsHomePath(t *testing.T) {
+	isolate(t)
+	cfg, _ := os.UserConfigDir() // ~/.config on Linux, ~/Library/Application Support on macOS
+	want := app.ShortPath(filepath.Join(cfg, "salt", "keys"), os.Getenv("HOME"))
+	if !strings.HasPrefix(want, "~") {
+		t.Fatalf("config dir %q is not inside the test home", cfg)
+	}
+	a, err := newApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.StoreName != "private key file under "+want {
+		t.Errorf("StoreName = %q", a.StoreName)
+	}
+
+	t.Setenv("SALT_KEYSTORE", "")
+	errFile, err := os.Create(filepath.Join(t.TempDir(), "stderr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr := os.Stderr
+	os.Stderr = errFile // newApp's terminal writes here
+	t.Cleanup(func() { os.Stderr = stderr })
+	if a, err = newApp(); err != nil {
+		t.Fatal(err)
+	}
+	fs, ok := a.Store.(keys.FallbackStore)
+	if !ok {
+		t.Fatalf("store is %T, want keys.FallbackStore", a.Store)
+	}
+	fs.Warn(errors.New("locked"))
+	out, _ := os.ReadFile(errFile.Name())
+	if !strings.Contains(string(out), "saving the key to a private file under "+want+" instead") {
+		t.Errorf("warning = %q", out)
+	}
+}
+
+// Without a home folder or config folder, newApp refuses instead of guessing.
+// On Linux this fails on the config folder; macOS fails on the cache folder.
+func TestNewAppWithoutHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	if _, err := newApp(); err == nil {
+		t.Fatal("newApp without a home folder succeeded")
+	}
+}

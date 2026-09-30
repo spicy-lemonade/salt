@@ -196,7 +196,7 @@ func TestFallbackStore(t *testing.T) {
 	if _, err := fs.Get("age1x"); err != nil {
 		t.Fatal(err)
 	}
-	if loc := fs.Location("age1x"); !strings.HasPrefix(loc, "private file ") {
+	if loc := fs.Location("age1x"); !filepath.IsAbs(loc) || filepath.Base(loc) != "age1x.json" {
 		t.Fatalf("Location = %q", loc)
 	}
 }
@@ -292,7 +292,7 @@ func TestFallbackStoreMore(t *testing.T) {
 		t.Error("primary secret reported a fallback location")
 	}
 	fs2 := FallbackStore{Primary: brokenStore{}, Secondary: &MemStore{}}
-	if loc := fs2.Location("age1x"); loc != "fallback store" {
+	if loc := fs2.Location("age1x"); loc != "" {
 		t.Errorf("Location = %q", loc)
 	}
 	if err := fs.Delete("age1x"); err != nil {

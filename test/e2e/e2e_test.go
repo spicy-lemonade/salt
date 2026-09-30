@@ -523,3 +523,14 @@ func TestPushedAttributeStopsTheBackup(t *testing.T) {
 		t.Fatalf("doctor: exit %d\n%s", code, out)
 	}
 }
+
+// hook install shows a hook inside the home folder as ~/….
+func TestHookInstallShowsHomePath(t *testing.T) {
+	e := newEnv(t)
+	repoDir := filepath.Join(e.home, "backup")
+	e.must(e.home, "git", "init", "-q", "-b", "main", repoDir)
+	out := e.must(e.home, "salt", "hook", "install", repoDir)
+	if want := "✓ Installed ~/backup/.git/hooks/pre-commit"; !strings.Contains(out, want) {
+		t.Fatalf("hook install: want %q in:\n%s", want, out)
+	}
+}

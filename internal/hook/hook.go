@@ -3,7 +3,6 @@ package hook
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,10 +30,11 @@ exec salt check
 var ErrForeign = errors.New("a pre-commit hook already exists")
 
 // Install writes the hook to path. It refuses to replace a hook salt did not
-// write; the caller should tell the user to add `salt check` to it.
+// write, returning ErrForeign; the caller should say where it is and tell the
+// user to add `salt check` to it.
 func Install(path string) error {
 	if b, err := os.ReadFile(path); err == nil && !strings.Contains(string(b), Marker) {
-		return fmt.Errorf("%w at %s; add `salt check` to it so plaintext commits are refused", ErrForeign, path)
+		return ErrForeign
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

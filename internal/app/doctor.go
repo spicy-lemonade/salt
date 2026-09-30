@@ -65,7 +65,7 @@ func (a *App) Doctor(repoRoot string) error {
 		return err
 	}
 	r := &report{ui: a.UI}
-	a.UI.Printf("salt doctor: %s\n\n", root)
+	a.UI.Printf("salt doctor: %s\n\n", a.short(root))
 	defer func() {
 		a.UI.Printf("\n")
 		switch {
@@ -80,14 +80,14 @@ func (a *App) Doctor(repoRoot string) error {
 
 	r.add(ok, "salt %s", a.Version)
 	if p, found := a.LookPath("git"); found {
-		r.add(ok, "git found (%s)", p)
+		r.add(ok, "git found (%s)", a.short(p))
 	} else {
 		r.add(fail, "git not found on PATH")
 	}
 
 	a.doctorRestores(r)
 
-	if err := requireGitRepo(root); err != nil {
+	if err := a.requireGitRepo(root); err != nil {
 		r.add(fail, "%v", err)
 		return ErrReported
 	}
@@ -132,7 +132,7 @@ func (a *App) Doctor(repoRoot string) error {
 	}
 	a.doctorStorage(r, root)
 
-	a.UI.Printf("\n  Tip: run `salt recovery test %s` now and then to make sure your written-down %s still works.\n",
+	a.UI.Printf("\n  Tip: run `salt recovery test %q` now and then to make sure your written-down %s still works.\n",
 		repoRoot, recoveryNoun(rp))
 	if r.fails > 0 {
 		return ErrReported
@@ -170,7 +170,7 @@ func (a *App) doctorKeys(r *report, rp *repo.Repo) {
 		where := "the " + a.StoreName
 		if l, isLocator := a.Store.(interface{ Location(string) string }); isLocator {
 			if loc := l.Location(rcpt); loc != "" {
-				where = loc
+				where = "private file " + a.short(loc)
 			}
 		}
 		r.add(ok, "key for this backup is saved in %s", where)
@@ -184,7 +184,7 @@ func (a *App) doctorTrust(r *report, rp *repo.Repo) {
 	approved, err := a.trustStore().Load(rp.Root)
 	switch {
 	case errors.Is(err, trust.ErrNotApproved):
-		r.add(warn, "this machine has not approved the repo's keys yet, so `salt seal` will refuse; run `salt trust %s`", rp.Root)
+		r.add(warn, "this machine has not approved the repo's keys yet, so `salt seal` will refuse; run `salt trust %q`", rp.Root)
 	case err != nil:
 		r.add(warn, "could not read the approved keys: %v", err)
 	default:
@@ -223,11 +223,11 @@ func (a *App) doctorHook(r *report, root string) {
 	}
 	switch _, statErr := os.Stat(p); {
 	case hook.Installed(p):
-		r.add(ok, "pre-commit hook runs `salt check` (%s)", p)
+		r.add(ok, "pre-commit hook runs `salt check` (%s)", a.short(p))
 	case statErr == nil:
-		r.add(fail, "pre-commit hook at %s does not run `salt check`; add it so plaintext commits are refused", p)
+		r.add(fail, "pre-commit hook at %s does not run `salt check`; add it so plaintext commits are refused", a.short(p))
 	default:
-		r.add(fail, "no pre-commit hook; run `salt hook install %s`", root)
+		r.add(fail, "no pre-commit hook; run `salt hook install %q`", root)
 	}
 	if sp, found := a.LookPath("salt"); found {
 		r.add(ok, "the hook can find salt (%s)", sp)
