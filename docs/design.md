@@ -84,7 +84,8 @@ If you lose them and this laptop, your backups cannot be recovered.
   original dates when it copies files (`cp -p`, and `touch -r` after
   `sqlite3 .backup`). A file whose only change is its date keeps its
   ciphertext; only `index.age` is rewritten. Backups made before salt recorded
-  dates restore with the time of the restore.
+  dates restore with the time of the restore, and the first seal with a salt
+  that records dates rewrites `index.age` once to add them.
 - `salt verify` decrypts everything without writing it to disk, and reports
   any file that cannot be restored. It needs the key.
 - `salt doctor` checks the hook, the key, the repo and the last backup. It
@@ -149,7 +150,9 @@ things about them:
   many files there are and how long their names are.
 - **What changed, and when.** An unchanged file keeps its encrypted object, so
   an unchanged backup makes no commit. A changed file's old object is removed
-  and a new one added in the same commit. From the history, a reader can see
+  and a new one added in the same commit. A commit that changes only
+  `index.age` shows that a file's last-modified date or permissions changed
+  but no file's contents did. From the history, a reader can see
   when backups ran, how many files changed each time, and, by matching sizes,
   how one file such as a growing database changes over time.
 - **How many keys can decrypt the backups.** `.salt/recipients.txt` is public,

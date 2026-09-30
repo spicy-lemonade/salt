@@ -167,6 +167,9 @@ func validEntry(e *Entry) error {
 		if e.Object != "" || e.SHA256 != "" {
 			return fmt.Errorf("symlink %s must not have an object or hash", clip(p))
 		}
+		if e.MTime != 0 {
+			return fmt.Errorf("symlink %s must not have a last-modified date", clip(p))
+		}
 		return nil
 	}
 	if _, err := repo.CleanPath(e.Object); err != nil {

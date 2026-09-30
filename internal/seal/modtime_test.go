@@ -2,7 +2,10 @@ package seal
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,19 +23,31 @@ func (f *fixture) setModTime(rel string, at time.Time) {
 	}
 }
 
+// restore restores the backup with opt into a new folder and returns it.
+func (f *fixture) restore(opt RestoreOptions) string {
+	f.t.Helper()
+	dest := filepath.Join(f.t.TempDir(), "r")
+	if _, err := Restore(f.root, f.ids(), dest, opt); err != nil {
+		f.t.Fatal(err)
+	}
+	return dest
+}
+
+// modTime returns the last-modified date of rel under dir.
+func modTime(t *testing.T, dir, rel string) time.Time {
+	t.Helper()
+	fi, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi.ModTime()
+}
+
 // restoredModTime restores the whole backup and returns the last-modified
 // date of one restored file.
 func (f *fixture) restoredModTime(rel string) time.Time {
 	f.t.Helper()
-	dest := filepath.Join(f.t.TempDir(), "r")
-	if _, err := Restore(f.root, f.ids(), dest, RestoreOptions{}); err != nil {
-		f.t.Fatal(err)
-	}
-	fi, err := os.Stat(filepath.Join(dest, filepath.FromSlash(rel)))
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	return fi.ModTime()
+	return modTime(f.t, f.restore(RestoreOptions{}), rel)
 }
 
 // rewriteIndex applies fn to every entry in the repo's index.
@@ -172,9 +187,147 @@ func TestUnixNano(t *testing.T) {
 		"year 1":      {time.Time{}, 0},
 		"year 1600":   {time.Date(1600, 1, 1, 0, 0, 0, 0, time.UTC), 0},
 		"year 3000":   {time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC), 0},
+		"earliest":    {minUnixNano, math.MinInt64},
+		"latest":      {maxUnixNano, math.MaxInt64},
+		"too early":   {minUnixNano.Add(-1), 0},
+		"too late":    {maxUnixNano.Add(1), 0},
 	} {
 		if got := unixNano(tc.in); got != tc.want {
 			t.Errorf("%s: unixNano = %d, want %d", name, got, tc.want)
 		}
 	}
+}
+
+// The index records each regular file's date to the nanosecond, and none for
+// symlinks.
+func TestIndexRecordsDates(t *testing.T) {
+	f := newFixture(t, true)
+	f.seal(false)
+	ix, err := ReadIndex(f.root, f.ids())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ix.Entries {
+		if e.Symlink != "" {
+			if e.MTime != 0 {
+				t.Errorf("symlink %s has a date", e.Path)
+			}
+			continue
+		}
+		if want := modTime(t, f.src, e.Path).UnixNano(); e.MTime != want {
+			t.Errorf("%s date = %d, want %d", e.Path, e.MTime, want)
+		}
+	}
+}
+
+// A backup sealed before salt kept dates gains them on the next seal: only
+// the index is rewritten, no file is encrypted again, and the seal after
+// that changes nothing.
+func TestSealAddsDatesToAnOlderBackup(t *testing.T) {
+	f := newFixture(t, true)
+	at := time.Date(2024, 2, 29, 12, 0, 0, 0, time.UTC)
+	f.setModTime("memories/USER.md", at)
+	f.seal(false)
+	b := f.rewriteIndex(func(e *Entry) { e.MTime = 0 })
+
+	// Point the cache at the dateless index, as the older salt left it.
+	cPath, err := cachePath(f.cache, f.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := loadCache(cPath, cacheKey(f.repo.RecipientStrings, true))
+	c.IndexSHA = hex.EncodeToString(sha256Of(b))
+	fi, err := os.Stat(filepath.Join(f.root, repo.IndexFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.IndexSize = fi.Size()
+	if err := c.save(cPath); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshot(t, f.root)
+
+	res := f.seal(false)
+	if res.Encrypted != 0 || res.Reused != 5 || !res.IndexNew {
+		t.Fatalf("first seal after upgrading: %+v", res)
+	}
+	for k, v := range snapshot(t, f.root) {
+		if k != repo.IndexFile && before[k] != v {
+			t.Errorf("%s changed although only dates were added", k)
+		}
+	}
+	if got := f.restoredModTime("memories/USER.md"); !got.Equal(at) {
+		t.Fatalf("last-modified = %v, want %v", got, at)
+	}
+	if res := f.seal(false); res.IndexNew {
+		t.Fatalf("second seal after upgrading: %+v", res)
+	}
+}
+
+// One seal with every kind of change: new content, a date-only change, a
+// new file and a deleted file. Only changed and new files are encrypted,
+// and every restored file has the date it had when sealed.
+func TestMixedChangesKeepEveryDate(t *testing.T) {
+	f := newFixture(t, true)
+	f.seal(false)
+
+	f.write("memories/USER.md", "The user moved to Cork.\n")
+	f.setModTime("memories/USER.md", time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC))
+	f.setModTime("SOUL.md", time.Date(2026, 1, 2, 8, 0, 0, 0, time.UTC))
+	f.write("memories/NEW.md", "new\n")
+	f.setModTime("memories/NEW.md", time.Date(2026, 1, 3, 8, 0, 0, 0, time.UTC))
+	if err := os.Remove(filepath.Join(f.src, "memories/MEMORY.md")); err != nil {
+		t.Fatal(err)
+	}
+	res := f.seal(false)
+	if res.Encrypted != 2 || res.Reused != 3 || len(res.Removed) != 2 || !res.IndexNew {
+		t.Fatalf("seal with mixed changes: %+v", res)
+	}
+	assertTreesEqual(t, f.src, f.restore(RestoreOptions{}))
+}
+
+// Losing the cache re-encrypts everything, and the dates are still recorded.
+func TestCacheLossKeepsDates(t *testing.T) {
+	f := newFixture(t, true)
+	f.setModTime("SOUL.md", time.Date(2022, 10, 10, 10, 10, 10, 0, time.UTC))
+	f.seal(false)
+	if err := os.RemoveAll(f.cache); err != nil {
+		t.Fatal(err)
+	}
+	if res := f.seal(false); res.Encrypted != 5 {
+		t.Fatalf("seal without a cache: %+v", res)
+	}
+	assertTreesEqual(t, f.src, f.restore(RestoreOptions{}))
+}
+
+// A partial restore and a restore over an existing folder keep dates too.
+func TestPartialAndForcedRestoreKeepDates(t *testing.T) {
+	f := newFixture(t, true)
+	at := time.Date(2021, 6, 7, 8, 9, 10, 11, time.UTC)
+	f.setModTime("memories/USER.md", at)
+	f.seal(false)
+
+	dest := f.restore(RestoreOptions{Paths: []string{"memories"}})
+	if got := modTime(t, dest, "memories/USER.md"); !got.Equal(at) {
+		t.Errorf("partial restore: last-modified = %v, want %v", got, at)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "SOUL.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("partial restore wrote SOUL.md: %v", err)
+	}
+
+	res, err := Restore(f.root, f.ids(), dest, RestoreOptions{Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := modTime(t, dest, "memories/USER.md"); !got.Equal(at) {
+		t.Errorf("forced restore: last-modified = %v, want %v", got, at)
+	}
+	if got := modTime(t, res.MovedAside, "memories/USER.md"); !got.Equal(at) {
+		t.Errorf("moved-aside copy: last-modified = %v, want %v", got, at)
+	}
+}
+
+func sha256Of(b []byte) []byte {
+	s := sha256.Sum256(b)
+	return s[:]
 }

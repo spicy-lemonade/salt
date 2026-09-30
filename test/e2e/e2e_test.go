@@ -181,6 +181,41 @@ func TestBackupFlow(t *testing.T) {
 	}
 	e.must(repoDir, "git", "commit", "-q", "-am", "backup 2")
 
+	// A content change replaces that file's object and rewrites the index,
+	// and nothing else. The restore has the new content and its new date.
+	write(t, userMD, "The user moved to Cork.\n")
+	edited := time.Date(2025, 9, 10, 11, 12, 13, 0, time.UTC)
+	if err := os.Chtimes(userMD, time.Time{}, edited); err != nil {
+		t.Fatal(err)
+	}
+	e.must(base, "salt", "seal", "--prune", src, repoDir)
+	e.must(repoDir, "git", "add", "-A")
+	var added, deleted, other []string
+	for _, line := range strings.Split(strings.TrimSpace(e.must(repoDir, "git", "diff", "--cached", "--name-status")), "\n") {
+		status, name, _ := strings.Cut(line, "\t")
+		switch {
+		case status == "A" && strings.HasPrefix(name, "objects/"):
+			added = append(added, name)
+		case status == "D" && strings.HasPrefix(name, "objects/"):
+			deleted = append(deleted, name)
+		case status != "M" || name != "index.age":
+			other = append(other, line)
+		}
+	}
+	if len(added) != 1 || len(deleted) != 1 || len(other) != 0 {
+		t.Fatalf("a content change should replace one object and the index: added %v, deleted %v, other %v", added, deleted, other)
+	}
+	e.must(repoDir, "git", "commit", "-q", "-m", "backup 3")
+	edits := filepath.Join(base, "edits")
+	e.must(base, "salt", "restore", repoDir, "--to", edits)
+	restored := filepath.Join(edits, "memories", "USER.md")
+	if b, err := os.ReadFile(restored); err != nil || string(b) != "The user moved to Cork.\n" {
+		t.Fatalf("restored USER.md = %q, %v", b, err)
+	}
+	if fi, err := os.Stat(restored); err != nil || !fi.ModTime().Equal(edited) {
+		t.Fatalf("restored USER.md: %v, want last-modified %v", err, edited)
+	}
+
 	// The hook refuses plaintext.
 	write(t, filepath.Join(repoDir, "leak.md"), "The user is called Ciaran.\n")
 	e.must(repoDir, "git", "add", "leak.md")
