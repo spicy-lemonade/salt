@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMain(m *testing.M) {
@@ -129,6 +130,10 @@ func TestBackupFlow(t *testing.T) {
 
 	write(t, filepath.Join(src, "memories", "USER.md"), "The user is called Ciaran.\n")
 	write(t, filepath.Join(src, "skills", "tax-return-2026", "SKILL.md"), "# Tax\n")
+	userMD := filepath.Join(src, "memories", "USER.md")
+	if err := os.Chtimes(userMD, time.Time{}, time.Date(2025, 4, 5, 6, 7, 8, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
 	e.must(base, "salt", "seal", "--prune", src, repoDir)
 	e.must(repoDir, "git", "add", "-A")
 	e.must(repoDir, "git", "commit", "-q", "-m", "backup 1")
@@ -156,6 +161,59 @@ func TestBackupFlow(t *testing.T) {
 	e.must(base, "salt", "seal", "--prune", src, repoDir)
 	if st := e.must(repoDir, "git", "status", "--porcelain"); st != "" {
 		t.Fatalf("unchanged snapshot changed the repo:\n%s", st)
+	}
+	// A file whose only change is its last-modified date keeps its
+	// ciphertext; only the index records the new date.
+	touched := time.Date(2025, 8, 9, 10, 11, 12, 0, time.UTC)
+	if err := os.Chtimes(userMD, time.Time{}, touched); err != nil {
+		t.Fatal(err)
+	}
+	e.must(base, "salt", "seal", "--prune", src, repoDir)
+	if st := e.must(repoDir, "git", "status", "--porcelain"); strings.TrimSpace(st) != "M index.age" {
+		t.Fatalf("a date-only change should rewrite only the index:\n%s", st)
+	}
+
+	// Restoring with the saved key keeps each file's last-modified date.
+	kept := filepath.Join(base, "kept")
+	e.must(base, "salt", "restore", repoDir, "--to", kept)
+	if fi, err := os.Stat(filepath.Join(kept, "memories", "USER.md")); err != nil || !fi.ModTime().Equal(touched) {
+		t.Fatalf("restored USER.md: %v, want last-modified %v", err, touched)
+	}
+	e.must(repoDir, "git", "commit", "-q", "-am", "backup 2")
+
+	// A content change replaces that file's object and rewrites the index,
+	// and nothing else. The restore has the new content and its new date.
+	write(t, userMD, "The user moved to Cork.\n")
+	edited := time.Date(2025, 9, 10, 11, 12, 13, 0, time.UTC)
+	if err := os.Chtimes(userMD, time.Time{}, edited); err != nil {
+		t.Fatal(err)
+	}
+	e.must(base, "salt", "seal", "--prune", src, repoDir)
+	e.must(repoDir, "git", "add", "-A")
+	var added, deleted, other []string
+	for _, line := range strings.Split(strings.TrimSpace(e.must(repoDir, "git", "diff", "--cached", "--name-status")), "\n") {
+		status, name, _ := strings.Cut(line, "\t")
+		switch {
+		case status == "A" && strings.HasPrefix(name, "objects/"):
+			added = append(added, name)
+		case status == "D" && strings.HasPrefix(name, "objects/"):
+			deleted = append(deleted, name)
+		case status != "M" || name != "index.age":
+			other = append(other, line)
+		}
+	}
+	if len(added) != 1 || len(deleted) != 1 || len(other) != 0 {
+		t.Fatalf("a content change should replace one object and the index: added %v, deleted %v, other %v", added, deleted, other)
+	}
+	e.must(repoDir, "git", "commit", "-q", "-m", "backup 3")
+	edits := filepath.Join(base, "edits")
+	e.must(base, "salt", "restore", repoDir, "--to", edits)
+	restored := filepath.Join(edits, "memories", "USER.md")
+	if b, err := os.ReadFile(restored); err != nil || string(b) != "The user moved to Cork.\n" {
+		t.Fatalf("restored USER.md = %q, %v", b, err)
+	}
+	if fi, err := os.Stat(restored); err != nil || !fi.ModTime().Equal(edited) {
+		t.Fatalf("restored USER.md: %v, want last-modified %v", err, edited)
 	}
 
 	// The hook refuses plaintext.

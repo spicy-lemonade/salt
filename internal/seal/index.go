@@ -31,6 +31,10 @@ type Entry struct {
 	Size    int64  `json:"size"`
 	Mode    uint32 `json:"mode"`              // permission bits
 	Symlink string `json:"symlink,omitempty"` // target, symlinks only
+	// MTime is the last-modified time in Unix nanoseconds, regular files
+	// only. Zero means it was not recorded, as in backups made before salt
+	// kept it, and restore then leaves the time of the restore.
+	MTime int64 `json:"mtime,omitempty"`
 }
 
 // Limits on a decrypted index. A tampered index is only a few KB once
@@ -162,6 +166,9 @@ func validEntry(e *Entry) error {
 	if e.Symlink != "" {
 		if e.Object != "" || e.SHA256 != "" {
 			return fmt.Errorf("symlink %s must not have an object or hash", clip(p))
+		}
+		if e.MTime != 0 {
+			return fmt.Errorf("symlink %s must not have a last-modified date", clip(p))
 		}
 		return nil
 	}

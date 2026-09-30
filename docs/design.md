@@ -35,7 +35,7 @@ nothing to stdout, so a Hermes `--no-agent` job stays silent on success.
 | `.salt/format.json` | settings (public) |
 | `.salt/recipients.txt` | public keys every file is encrypted to |
 | `.salt/key.age` | passphrase-locked private key (passphrase recovery only) |
-| `index.age` | encrypted list of real file names, sizes and hashes |
+| `index.age` | encrypted list of real file names, sizes, hashes and last-modified dates |
 | `objects/…` | encrypted files under random names (default) |
 | `files/…` | encrypted files under real names (`--plain-paths`) |
 
@@ -79,6 +79,13 @@ If you lose them and this laptop, your backups cannot be recovered.
 
 - `salt restore` decrypts into a temporary folder, checks every file, then
   moves it into place. An existing folder is moved aside, never overwritten.
+  Each file gets back the last-modified date it had when it was sealed. Seal
+  records the date of the file it is given, so a backup script must keep the
+  original dates when it copies files (`cp -p`, and `touch -r` after
+  `sqlite3 .backup`). A file whose only change is its date keeps its
+  ciphertext; only `index.age` is rewritten. Backups made before salt recorded
+  dates restore with the time of the restore, and the first seal with a salt
+  that records dates rewrites `index.age` once to add them.
 - `salt verify` decrypts everything without writing it to disk, and reports
   any file that cannot be restored. It needs the key.
 - `salt doctor` checks the hook, the key, the repo and the last backup. It
@@ -143,7 +150,9 @@ things about them:
   many files there are and how long their names are.
 - **What changed, and when.** An unchanged file keeps its encrypted object, so
   an unchanged backup makes no commit. A changed file's old object is removed
-  and a new one added in the same commit. From the history, a reader can see
+  and a new one added in the same commit. A commit that changes only
+  `index.age` shows that a file's last-modified date or permissions changed
+  but no file's contents did. From the history, a reader can see
   when backups ran, how many files changed each time, and, by matching sizes,
   how one file such as a growing database changes over time.
 - **How many keys can decrypt the backups.** `.salt/recipients.txt` is public,
@@ -190,6 +199,21 @@ Decrypting it later gives back the same broken database, and you only find
 out when you try to restore it. For safety, Salt will soon make these backups
 itself. Salt only encrypts the
 copies it gets from the databases.
+
+Salt records the last-modified date of the file it is given, and a
+`.backup` copy is dated when the copy was made. The backup script therefore
+copies the database file's own date onto the copy with `touch -r` (`copy_db`
+in the README, which the e2e tests run). It reads the date before the backup,
+because the backup can change it: after a crash, `sqlite3` moves a leftover
+`-wal` file's changes into the database file when it closes. Salt takes that
+date as it is, in either SQLite journal mode:
+
+- Rollback journal (`delete`, `truncate`, the default): every change is
+  written into the database file, so its date is the date of the last change.
+- WAL (`wal`, used by Hermes and Mnemosyne): changes go to `live.db-wal`
+  first and reach `live.db` only at a checkpoint, so `live.db` can be older
+  than the last change. This is a property of the database, and Salt does
+  not try to work around it.
 
 ## Out of scope
 

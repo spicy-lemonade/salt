@@ -154,6 +154,9 @@ func assertTreesEqual(t *testing.T, want, got string) {
 		if fi != nil && fi.Mode().Perm()&0o077 != 0 {
 			t.Errorf("%s restored with mode %v, want owner-only", rel, fi.Mode().Perm())
 		}
+		if wi, _ := os.Stat(p); fi != nil && wi != nil && !fi.ModTime().Equal(wi.ModTime()) {
+			t.Errorf("%s restored with last-modified %v, want %v", rel, fi.ModTime(), wi.ModTime())
+		}
 		count++
 		return nil
 	})
@@ -1354,6 +1357,11 @@ func TestIndexEntryChecks(t *testing.T) {
 		"negative size":      {`{"path":"a","object":"objects/aa/b.age","sha256":"` + sha + `","size":-1}`, "size for a is negative"},
 		"symlink with hash":  {`{"path":"a","symlink":"b","sha256":"` + sha + `"}`, "must not have an object or hash"},
 		"symlink w/ object":  {`{"path":"a","symlink":"b","object":"objects/aa/b.age"}`, "must not have an object or hash"},
+		"symlink with date":  {`{"path":"a","symlink":"b","mtime":1}`, "symlink a must not have a last-modified date"},
+		"date as string":     {`{"path":"a","object":"objects/aa/b.age","sha256":"` + sha + `","size":1,"mtime":"2025-01-01"}`, "cannot unmarshal string"},
+		"fractional date":    {`{"path":"a","object":"objects/aa/b.age","sha256":"` + sha + `","size":1,"mtime":1.5}`, "cannot unmarshal number 1.5"},
+		"date past int64":    {`{"path":"a","object":"objects/aa/b.age","sha256":"` + sha + `","size":1,"mtime":9223372036854775808}`, "cannot unmarshal number"},
+		"very long date":     {`{"path":"a","object":"objects/aa/b.age","sha256":"` + sha + `","size":1,"mtime":` + strings.Repeat("9", 100) + `}`, "value longer than 64 bytes"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t, true)
@@ -1366,9 +1374,13 @@ func TestIndexEntryChecks(t *testing.T) {
 			}
 		})
 	}
-	// A normal file and a normal symlink are accepted.
+	// A normal file, with or without a date (before 1970 is negative), and a
+	// normal symlink are accepted.
 	f := newFixture(t, true)
-	ok := `{"version":1,"entries":[{"path":"a","object":"objects/aa/b.age","sha256":"` + sha + `","size":1},{"path":"l","symlink":"a"}]}`
+	ok := `{"version":1,"entries":[{"path":"a","object":"objects/aa/b.age","sha256":"` + sha + `","size":1},` +
+		`{"path":"b","object":"objects/aa/c.age","sha256":"` + sha + `","size":1,"mtime":-9223372036854775808},` +
+		`{"path":"c","object":"objects/aa/d.age","sha256":"` + sha + `","size":1,"mtime":1759233600000000000},` +
+		`{"path":"l","symlink":"a"}]}`
 	writeIndex(f.root, []byte(ok), f.repo.Recipients)
 	if _, err := ReadIndex(f.root, f.ids()); err != nil {
 		t.Fatalf("valid index refused: %v", err)

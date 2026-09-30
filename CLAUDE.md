@@ -2,6 +2,8 @@
 
 ## Important Rules
 
+- **Source data is always the truth.** Salt must never modify, repair or convert the files it backs up; it encrypts them and restores them exactly as they were given (contents, dates and permissions).
+- **Build for any agent memory, not one tool.** Hermes, Mnemosyne, Honcho, Hindsight and the others are examples. Salt's code, messages and defaults must work for any files, SQLite or Postgres database, whatever tool made them, with no tool-specific paths, names or special cases.
 - *Never* run git commands without asking for user permission, even if 'auto-accept' is selected during a Claude Command session.
 - *Never* run files which use an LLM API without asking for user permission,  even if 'auto-accept' is selected during a Claude Command session.
 - *Never* attempt to re-engineer the code or alter data without asking for user permission.
@@ -49,7 +51,7 @@ Salt is an open-source Go CLI that encrypts AI-agent memory backups before they 
 - `.salt/format.json`: public; layout version, `encrypt_paths`, recovery method
 - `.salt/recipients.txt`: public; the age public keys every file is encrypted to
 - `.salt/key.age`: passphrase-wrapped private key (passphrase recovery only)
-- `index.age`: encrypted JSON index holding real paths, SHA-256 of the plaintext, sizes, modes and symlinks
+- `index.age`: encrypted JSON index holding real paths, SHA-256 of the plaintext, sizes, modes, last-modified times and symlinks
 - `objects/xx/<random>.age`: file contents when paths are encrypted (the default)
 - `files/<path>.age`: file contents with `--plain-paths`
 - `README.md`, `LICENSE`, `.gitignore`, `.gitattributes`: the only other files allowed unencrypted
@@ -63,7 +65,7 @@ Salt is an open-source Go CLI that encrypts AI-agent memory backups before they 
 
 **Approved keys:** `salt init` saves the repo's keys and file-name setting to the OS config dir (`salt/trusted/<hash>.json`, 0600). `salt seal` refuses if the repo's `.salt/recipients.txt` or `format.json` differ, because anyone who can push could otherwise add their own key. `salt trust` approves a change. All repo reads and writes go through `os.Root` so symlinks can't lead outside the repo.
 
-**Change detection:** age output is randomised, so a local cache (the OS cache dir, `seal-<hash>.json`, 0600, never committed) maps plaintext hashes to existing ciphertext. Unchanged files keep their ciphertext, and an unchanged snapshot produces no commit.
+**Change detection:** age output is randomised, so a local cache (the OS cache dir, `seal-<hash>.json`, 0600, never committed) maps plaintext hashes to existing ciphertext. Unchanged files keep their ciphertext, and an unchanged snapshot (same contents, permissions and last-modified dates) produces no commit.
 
 **Restore:** decrypts into a temp directory, verifies every file against the index, then moves the result into place with owner-only permissions. An existing destination is moved aside, never overwritten.
 
