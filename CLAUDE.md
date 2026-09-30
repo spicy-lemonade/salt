@@ -3,6 +3,7 @@
 ## Important Rules
 
 - **Source data is always the truth.** Salt must never modify, repair or convert the files it backs up; it encrypts them and restores them exactly as they were given (contents, dates and permissions).
+- **Build for any agent memory, not one tool.** Hermes, Mnemosyne, Honcho, Hindsight and the others are examples. Salt's code, messages and defaults must work for any files, SQLite or Postgres database, whatever tool made them, with no tool-specific paths, names or special cases.
 - *Never* run git commands without asking for user permission, even if 'auto-accept' is selected during a Claude Command session.
 - *Never* run files which use an LLM API without asking for user permission,  even if 'auto-accept' is selected during a Claude Command session.
 - *Never* attempt to re-engineer the code or alter data without asking for user permission.
