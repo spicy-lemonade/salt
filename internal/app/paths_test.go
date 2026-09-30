@@ -2,9 +2,14 @@ package app
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spicy-lemonade/salt/internal/hook"
+	"github.com/spicy-lemonade/salt/internal/keys"
+	"github.com/spicy-lemonade/salt/internal/repo"
 )
 
 func TestShortPath(t *testing.T) {
@@ -166,5 +171,67 @@ func TestRestoreShowsHomePaths(t *testing.T) {
 	}
 	if !strings.Contains(e.ui.out.String(), "previous contents were moved to ~/restored") {
 		t.Errorf("moved-aside path not shortened:\n%s", e.ui.out.String())
+	}
+}
+
+func TestDoctorShowsKeyFileAsHomePath(t *testing.T) {
+	e := homeEnv(t)
+	healthyRepo(t, e)
+	r, _ := repo.Open(e.root)
+	s, _ := e.store.Get(r.RecipientStrings[0])
+	ls := locatedStore{&keys.MemStore{}, filepath.Join(e.app.Home, ".config", "salt", "keys", "k.json")}
+	ls.Set(r.RecipientStrings[0], s)
+	e.app.Store = ls
+	e.ui.out.Reset()
+	e.app.Doctor(e.root)
+	if !strings.Contains(e.ui.out.String(), "saved in private file ~/.config/salt/keys/k.json") {
+		t.Errorf("key file not shortened:\n%s", e.ui.out.String())
+	}
+}
+
+func TestForeignHookShowsHomePath(t *testing.T) {
+	e := homeEnv(t)
+	os.MkdirAll(filepath.Dir(e.hook), 0o755)
+	os.WriteFile(e.hook, []byte("#!/bin/sh\nexit 0\n"), 0o755)
+	_, err := e.app.InstallHook(e.root)
+	want := "a pre-commit hook already exists at ~/backup/.git/hooks/pre-commit; add `salt check` to it"
+	if !errors.Is(err, hook.ErrForeign) || !strings.Contains(err.Error(), want) {
+		t.Fatalf("InstallHook over a foreign hook: %v", err)
+	}
+	e.ui.answer = phraseAnswers(0)
+	if err := e.app.Init(InitOptions{Repo: e.root}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if !strings.Contains(e.ui.out.String(), "Note: "+want) {
+		t.Errorf("init note not shortened:\n%s", e.ui.out.String())
+	}
+}
+
+func TestRestoreRefusalShowsHomePath(t *testing.T) {
+	e := homeEnv(t)
+	healthyRepo(t, e)
+	dest := filepath.Join(e.app.Home, "restored")
+	os.MkdirAll(dest, 0o755)
+	os.WriteFile(filepath.Join(dest, "x"), []byte("x"), 0o644)
+	err := e.app.Restore(RestoreOptions{Repo: e.root, To: dest})
+	if err == nil || !strings.HasPrefix(err.Error(), "~/restored already exists and is not empty") {
+		t.Fatalf("restore over a non-empty folder: %v", err)
+	}
+}
+
+func TestSealRefusalsShowHomePaths(t *testing.T) {
+	e := homeEnv(t)
+	healthyRepo(t, e)
+	inside := filepath.Join(e.root, "src")
+	os.MkdirAll(inside, 0o755)
+	err := e.app.Seal(inside, e.root, false)
+	if err == nil || !strings.Contains(err.Error(), "source ~/backup/src and repository ~/backup must not contain each other") {
+		t.Fatalf("seal from inside the repo: %v", err)
+	}
+	file := filepath.Join(e.app.Home, "notes.md")
+	os.WriteFile(file, []byte("x"), 0o644)
+	err = e.app.Seal(file, e.root, false)
+	if err == nil || !strings.Contains(err.Error(), "~/notes.md is not a directory") {
+		t.Fatalf("seal from a file: %v", err)
 	}
 }

@@ -170,7 +170,7 @@ func (a *App) doctorKeys(r *report, rp *repo.Repo) {
 		where := "the " + a.StoreName
 		if l, isLocator := a.Store.(interface{ Location(string) string }); isLocator {
 			if loc := l.Location(rcpt); loc != "" {
-				where = loc
+				where = "private file " + a.short(loc)
 			}
 		}
 		r.add(ok, "key for this backup is saved in %s", where)

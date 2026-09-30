@@ -32,6 +32,8 @@ type RestoreOptions struct {
 	// removed or moved into place. A directory that could not be removed is
 	// never reported gone, so the caller can tell the person about it.
 	Track func(tmp string) (done func())
+	// Show, if set, is how paths are written in messages, such as "~/…".
+	Show func(path string) string
 }
 
 // RestoreResult summarises a restore.
@@ -71,7 +73,7 @@ func Restore(root string, ids []age.Identity, dest string, opt RestoreOptions) (
 		return nil, err
 	}
 	if existing && !opt.Force {
-		return nil, fmt.Errorf("%s already exists and is not empty; choose an empty destination or pass --force (the existing directory is moved aside, not deleted)", dest)
+		return nil, fmt.Errorf("%s already exists and is not empty; choose an empty destination or pass --force (the existing directory is moved aside, not deleted)", show(opt.Show, dest))
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 		return nil, err

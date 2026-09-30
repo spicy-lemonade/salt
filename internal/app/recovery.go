@@ -95,7 +95,7 @@ func (a *App) Restore(o RestoreOptions) error {
 	}
 	a.warnLeftoverRestores(o.To)
 	res, err := seal.Restore(r.Root, ids, o.To, seal.RestoreOptions{
-		Paths: o.Paths, Force: o.Force, Context: o.Context, Track: a.trackRestore,
+		Paths: o.Paths, Force: o.Force, Context: o.Context, Track: a.trackRestore, Show: a.short,
 	})
 	if errors.Is(err, context.Canceled) {
 		return fmt.Errorf("%w: the partly restored files were removed and %s was not changed", ErrInterrupted, a.short(o.To))

@@ -34,6 +34,16 @@ type Options struct {
 	Exclude []string
 	// Workers overrides the worker count (1..MaxWorkers).
 	Workers int
+	// Show, if set, is how paths are written in messages, such as "~/…".
+	Show func(path string) string
+}
+
+// show writes p for a message through fn, or unchanged when fn is nil.
+func show(fn func(string) string, p string) string {
+	if fn == nil {
+		return p
+	}
+	return fn(p)
 }
 
 // DefaultExclude is skipped unless Options.Exclude is set.
@@ -67,7 +77,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	if opt.CacheDir == "" {
 		return nil, errors.New("seal: no cache directory")
 	}
-	if err := checkDisjoint(src, r.Root); err != nil {
+	if err := checkDisjoint(src, r.Root, opt.Show); err != nil {
 		return nil, err
 	}
 	if err := CheckNoSymlinks(r.Root); err != nil {
@@ -78,12 +88,12 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		exclude = DefaultExclude
 	}
 	res := &Result{}
-	items, err := walkSource(src, exclude, res)
+	items, err := walkSource(src, exclude, res, opt.Show)
 	if err != nil {
 		return nil, err
 	}
 	if len(items) > MaxIndexEntries {
-		return nil, fmt.Errorf("%s has %d files; salt supports at most %d per backup", src, len(items), MaxIndexEntries)
+		return nil, fmt.Errorf("%s has %d files; salt supports at most %d per backup", show(opt.Show, src), len(items), MaxIndexEntries)
 	}
 
 	// All repo writes go through rt, which refuses paths that lead outside
@@ -228,13 +238,13 @@ func sizeIs(rt *os.Root, rel string, n int64) bool {
 	return err == nil && fi.Mode().IsRegular() && fi.Size() == n
 }
 
-func walkSource(src string, exclude []string, res *Result) ([]item, error) {
+func walkSource(src string, exclude []string, res *Result, fn func(string) string) ([]item, error) {
 	fi, err := os.Stat(src)
 	if err != nil {
 		return nil, err
 	}
 	if !fi.IsDir() {
-		return nil, fmt.Errorf("%s is not a directory", src)
+		return nil, fmt.Errorf("%s is not a directory", show(fn, src))
 	}
 	skip := map[string]bool{}
 	for _, e := range exclude {
@@ -337,7 +347,7 @@ func removeEmptyDirs(rt *os.Root, dir string) {
 
 // checkDisjoint refuses a source inside the repo or a repo inside the source:
 // either would seal ciphertext into itself or leak plaintext into the repo.
-func checkDisjoint(src, root string) error {
+func checkDisjoint(src, root string, fn func(string) string) error {
 	a, err := filepath.Abs(src)
 	if err != nil {
 		return err
@@ -347,7 +357,7 @@ func checkDisjoint(src, root string) error {
 		return err
 	}
 	if within(a, b) || within(b, a) {
-		return fmt.Errorf("source %s and repository %s must not contain each other", a, b)
+		return fmt.Errorf("source %s and repository %s must not contain each other", show(fn, a), show(fn, b))
 	}
 	return nil
 }

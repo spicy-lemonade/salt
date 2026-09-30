@@ -93,7 +93,7 @@ func (a *App) Seal(src, repoRoot string, prune bool) error {
 	if err := a.checkTrusted(r); err != nil {
 		return err
 	}
-	res, err := seal.Seal(src, r, seal.Options{CacheDir: a.CacheDir, Prune: prune})
+	res, err := seal.Seal(src, r, seal.Options{CacheDir: a.CacheDir, Prune: prune, Show: a.short})
 	if err != nil {
 		return err
 	}
@@ -148,7 +148,11 @@ func (a *App) InstallHook(repoRoot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return p, hook.Install(p)
+	err = hook.Install(p)
+	if errors.Is(err, hook.ErrForeign) {
+		err = fmt.Errorf("%w at %s; add `salt check` to it so plaintext commits are refused", err, a.short(p))
+	}
+	return p, err
 }
 
 func (a *App) requireGitRepo(root string) error {
