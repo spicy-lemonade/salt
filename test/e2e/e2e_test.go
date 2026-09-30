@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMain(m *testing.M) {
@@ -129,6 +130,11 @@ func TestBackupFlow(t *testing.T) {
 
 	write(t, filepath.Join(src, "memories", "USER.md"), "The user is called Ciaran.\n")
 	write(t, filepath.Join(src, "skills", "tax-return-2026", "SKILL.md"), "# Tax\n")
+	userMD := filepath.Join(src, "memories", "USER.md")
+	written := time.Date(2025, 4, 5, 6, 7, 8, 0, time.UTC)
+	if err := os.Chtimes(userMD, time.Time{}, written); err != nil {
+		t.Fatal(err)
+	}
 	e.must(base, "salt", "seal", "--prune", src, repoDir)
 	e.must(repoDir, "git", "add", "-A")
 	e.must(repoDir, "git", "commit", "-q", "-m", "backup 1")
@@ -156,6 +162,21 @@ func TestBackupFlow(t *testing.T) {
 	e.must(base, "salt", "seal", "--prune", src, repoDir)
 	if st := e.must(repoDir, "git", "status", "--porcelain"); st != "" {
 		t.Fatalf("unchanged snapshot changed the repo:\n%s", st)
+	}
+	// Nor does a copy whose only change is its last-modified date.
+	if err := os.Chtimes(userMD, time.Time{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	e.must(base, "salt", "seal", "--prune", src, repoDir)
+	if st := e.must(repoDir, "git", "status", "--porcelain"); st != "" {
+		t.Fatalf("a date-only change changed the repo:\n%s", st)
+	}
+
+	// Restoring with the saved key keeps each file's last-modified date.
+	kept := filepath.Join(base, "kept")
+	e.must(base, "salt", "restore", repoDir, "--to", kept)
+	if fi, err := os.Stat(filepath.Join(kept, "memories", "USER.md")); err != nil || !fi.ModTime().Equal(written) {
+		t.Fatalf("restored USER.md: %v, want last-modified %v", err, written)
 	}
 
 	// The hook refuses plaintext.

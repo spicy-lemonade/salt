@@ -154,6 +154,9 @@ func assertTreesEqual(t *testing.T, want, got string) {
 		if fi != nil && fi.Mode().Perm()&0o077 != 0 {
 			t.Errorf("%s restored with mode %v, want owner-only", rel, fi.Mode().Perm())
 		}
+		if wi, _ := os.Stat(p); fi != nil && wi != nil && !fi.ModTime().Equal(wi.ModTime()) {
+			t.Errorf("%s restored with last-modified %v, want %v", rel, fi.ModTime(), wi.ModTime())
+		}
 		count++
 		return nil
 	})

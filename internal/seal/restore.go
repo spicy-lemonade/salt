@@ -183,6 +183,22 @@ func restoreFile(ctx context.Context, rt *os.Root, ids []age.Identity, tmp strin
 	if n != e.Size || sum(h) != e.SHA256 {
 		return fmt.Errorf("%s: restored content does not match the index (corrupted backup?)", clip(e.Path))
 	}
+	return restoreModTime(dst, e)
+}
+
+// chtimes is os.Chtimes, replaced in tests to make it fail.
+var chtimes = os.Chtimes
+
+// restoreModTime gives a restored file its recorded last-modified date. An
+// entry without one (an older backup) keeps the time of the restore. The
+// access time is left alone.
+func restoreModTime(dst string, e Entry) error {
+	if e.MTime == 0 {
+		return nil
+	}
+	if err := chtimes(dst, time.Time{}, time.Unix(0, e.MTime)); err != nil {
+		return fmt.Errorf("%s: setting its last-modified date: %w", clip(e.Path), err)
+	}
 	return nil
 }
 

@@ -49,7 +49,7 @@ Salt is an open-source Go CLI that encrypts AI-agent memory backups before they 
 - `.salt/format.json`: public; layout version, `encrypt_paths`, recovery method
 - `.salt/recipients.txt`: public; the age public keys every file is encrypted to
 - `.salt/key.age`: passphrase-wrapped private key (passphrase recovery only)
-- `index.age`: encrypted JSON index holding real paths, SHA-256 of the plaintext, sizes, modes and symlinks
+- `index.age`: encrypted JSON index holding real paths, SHA-256 of the plaintext, sizes, modes, last-modified times and symlinks
 - `objects/xx/<random>.age`: file contents when paths are encrypted (the default)
 - `files/<path>.age`: file contents with `--plain-paths`
 - `README.md`, `LICENSE`, `.gitignore`, `.gitattributes`: the only other files allowed unencrypted

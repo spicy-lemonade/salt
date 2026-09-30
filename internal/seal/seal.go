@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/spicy-lemonade/salt/internal/repo"
 )
@@ -64,6 +66,7 @@ type item struct {
 	rel     string // slash path relative to src
 	abs     string
 	mode    fs.FileMode
+	modTime time.Time
 	symlink string
 	isLink  bool
 }
@@ -125,8 +128,16 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		if err != nil {
 			return err
 		}
+		mtime := unixNano(it.modTime)
 		if prev, ok := c.Files[it.rel]; ok && prev.SHA256 == sha && objectIntact(rt, prev) {
-			e.Object, e.SHA256, e.Size = prev.Object, sha, size
+			// Unchanged content keeps the date recorded with it, so a copy
+			// that only got a new date (such as sqlite3 .backup) changes
+			// nothing in the repo.
+			if prev.MTime != 0 {
+				mtime = prev.MTime
+			}
+			prev.MTime = mtime
+			e.Object, e.SHA256, e.Size, e.MTime = prev.Object, sha, size, mtime
 			entries[i], newCache[i] = e, prev
 			reused.Add(1)
 			return nil
@@ -139,7 +150,8 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		if err != nil {
 			return fmt.Errorf("%s: %w", it.rel, err)
 		}
-		e.Object, e.SHA256, e.Size = obj, ce.SHA256, n
+		ce.MTime = mtime
+		e.Object, e.SHA256, e.Size, e.MTime = obj, ce.SHA256, n, mtime
 		entries[i], newCache[i] = e, ce
 		encrypted.Add(1)
 		return nil
@@ -228,6 +240,20 @@ func objectName(encryptPaths bool, rel string) (string, error) {
 	return path.Join(repo.ObjectsDir, h[:2], h[2:]+".age"), nil
 }
 
+// Unix nanoseconds cover the years 1678 to 2262. unixNano returns 0 (not
+// recorded) for a time outside them, where time.UnixNano is undefined.
+var (
+	minUnixNano = time.Unix(0, math.MinInt64)
+	maxUnixNano = time.Unix(0, math.MaxInt64)
+)
+
+func unixNano(t time.Time) int64 {
+	if t.Before(minUnixNano) || t.After(maxUnixNano) {
+		return 0
+	}
+	return t.UnixNano()
+}
+
 func objectIntact(rt *os.Root, ce cacheEntry) bool {
 	return ce.Object != "" && sizeIs(rt, ce.Object, ce.CipherSize)
 }
@@ -283,7 +309,7 @@ func walkSource(src string, exclude []string, res *Result, fn func(string) strin
 			if err != nil {
 				return err
 			}
-			items = append(items, item{rel: rel, abs: p, mode: info.Mode()})
+			items = append(items, item{rel: rel, abs: p, mode: info.Mode(), modTime: info.ModTime()})
 		default:
 			res.Skipped = append(res.Skipped, rel)
 		}
