@@ -95,9 +95,9 @@ go test ./internal/seal -run TestRoundTrip
 - Never touch the real keychain in tests, use `keys.MemStore` in unit tests and `SALT_KEYSTORE=file` in e2e.
 - `internal/keys` pins the phrase-to-key derivation (`TestIdentityFromEntropyPinned`). Changing `deriveSalt` or `deriveInfo` would make every existing recovery phrase useless.
 - User-facing onboarding and warning copy is agreed wording (see `docs/design.md`, "Onboarding copy"). Do not reword it without asking.
-- Salt prints to stderr only. A Hermes `--no-agent` cron job forwards any stdout as a message, so success must be silent on stdout.
+- Salt prints to stderr only. Scheduled jobs (cron, agent schedulers) often send any stdout on as an email or message, so success must be silent on stdout.
 - Decided out of scope is Touch ID gating, and switching recovery method from the 12 word passphrase to the user chosen passphrase or vice versa.
-- Salt already encrypts database files, including Mnemosyne's SQLite file. What is not built yet is Salt making a *safe copy* of a live database by itself. Today the backup script does that first (`sqlite3 ... ".backup ..."` for SQLite, `pg_dump` for Postgres), then runs `salt seal` on the copy. See `docs/design.md`, "Databases".
+- Salt already encrypts database files, including SQLite files. What is not built yet is Salt making a *safe copy* of a live database by itself. Today the backup script does that first (`sqlite3 ... ".backup ..."` for SQLite, `pg_dump` for Postgres), then runs `salt seal` on the copy. See `docs/design.md`, "Databases".
 - Not yet built: Salt making safe database copies by itself (SQLite, Postgres), OpenViking support, a `salt backup` preset, splitting files over 100 MB, and the signed index.
 
 ### Agent contributing rules
