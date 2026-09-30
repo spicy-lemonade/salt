@@ -50,7 +50,7 @@ secret-tool clear service salt
 
 # Remove approved keys, the key file (if you used SALT_KEYSTORE=file) and the cache
 rm -rf ~/Library/Application\ Support/salt ~/Library/Caches/salt   # macOS
-rm -rf ~/.config/salt ~/.cache/salt                                 # Linux
+rm -rf ~/.config/salt ~/.cache/salt                                # Linux
 
 # In each backup repo, remove the check. Otherwise every commit will be refused
 rm ~/my-backup-repo/.git/hooks/pre-commit
@@ -164,4 +164,4 @@ To start backing up from the new laptop, run `salt trust my-backup-repo` once. S
 
 - Built using Claude Opus 5.5 and ten years of experience as a data and AI professional in medium to large enterprises.
 - Security audited using Cloudflare's [`security audit skill`](https://github.com/cloudflare/security-audit-skill).
-- If you love this project, please consider giving it a ⭐.
+- If you like this project, please consider giving it a ⭐.
