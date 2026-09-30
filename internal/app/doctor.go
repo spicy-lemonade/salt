@@ -132,7 +132,7 @@ func (a *App) Doctor(repoRoot string) error {
 	}
 	a.doctorStorage(r, root)
 
-	a.UI.Printf("\n  Tip: run `salt recovery test %s` now and then to make sure your written-down %s still works.\n",
+	a.UI.Printf("\n  Tip: run `salt recovery test %q` now and then to make sure your written-down %s still works.\n",
 		repoRoot, recoveryNoun(rp))
 	if r.fails > 0 {
 		return ErrReported
@@ -184,7 +184,7 @@ func (a *App) doctorTrust(r *report, rp *repo.Repo) {
 	approved, err := a.trustStore().Load(rp.Root)
 	switch {
 	case errors.Is(err, trust.ErrNotApproved):
-		r.add(warn, "this machine has not approved the repo's keys yet, so `salt seal` will refuse; run `salt trust %s`", rp.Root)
+		r.add(warn, "this machine has not approved the repo's keys yet, so `salt seal` will refuse; run `salt trust %q`", rp.Root)
 	case err != nil:
 		r.add(warn, "could not read the approved keys: %v", err)
 	default:
@@ -227,7 +227,7 @@ func (a *App) doctorHook(r *report, root string) {
 	case statErr == nil:
 		r.add(fail, "pre-commit hook at %s does not run `salt check`; add it so plaintext commits are refused", a.short(p))
 	default:
-		r.add(fail, "no pre-commit hook; run `salt hook install %s`", root)
+		r.add(fail, "no pre-commit hook; run `salt hook install %q`", root)
 	}
 	if sp, found := a.LookPath("salt"); found {
 		r.add(ok, "the hook can find salt (%s)", sp)

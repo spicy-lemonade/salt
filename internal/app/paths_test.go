@@ -114,7 +114,7 @@ func TestDoctorShowsHomePaths(t *testing.T) {
 	if !strings.Contains(out, "(~/backup/.git/hooks/pre-commit)") {
 		t.Errorf("hook path not shortened:\n%s", out)
 	}
-	if !strings.Contains(out, "salt recovery test "+e.root+"` now") {
+	if !strings.Contains(out, "salt recovery test \""+e.root+"\"` now") {
 		t.Errorf("suggested command changed:\n%s", out)
 	}
 
@@ -132,7 +132,7 @@ func TestTrustMessagesShowHomePathsButKeepCommands(t *testing.T) {
 	err := e.app.Seal(t.TempDir(), e.root, false)
 	if !errors.Is(err, ErrNotTrusted) ||
 		!strings.Contains(err.Error(), "the keys in ~/backup yet") ||
-		!strings.Contains(err.Error(), "`salt trust "+e.root+"`") {
+		!strings.Contains(err.Error(), "`salt trust \""+e.root+"\"`") {
 		t.Fatalf("seal on a new machine: %v", err)
 	}
 
@@ -148,7 +148,7 @@ func TestTrustMessagesShowHomePathsButKeepCommands(t *testing.T) {
 	err = e.app.Seal(t.TempDir(), e.root, false)
 	if !errors.Is(err, ErrNotTrusted) ||
 		!strings.Contains(err.Error(), "keys or settings in ~/backup changed") ||
-		!strings.Contains(err.Error(), "`salt trust "+e.root+"`") {
+		!strings.Contains(err.Error(), "`salt trust \""+e.root+"\"`") {
 		t.Fatalf("seal after tampering: %v", err)
 	}
 }
@@ -233,5 +233,25 @@ func TestSealRefusalsShowHomePaths(t *testing.T) {
 	err = e.app.Seal(file, e.root, false)
 	if err == nil || !strings.Contains(err.Error(), "~/notes.md is not a directory") {
 		t.Fatalf("seal from a file: %v", err)
+	}
+}
+
+// A path with a space still works when a suggested command is pasted.
+func TestSuggestedCommandsQuotePaths(t *testing.T) {
+	e := newEnv(t)
+	e.root = filepath.Join(filepath.Dir(e.root), "my backup")
+	os.MkdirAll(filepath.Join(e.root, ".git"), 0o755)
+	healthyRepo(t, e)
+	os.Remove(e.hook) // the hook fakeGit reports is outside this repo
+	e.app.TrustDir = filepath.Join(t.TempDir(), "fresh")
+	quoted := `"` + e.root + `"`
+	e.app.Doctor(e.root)
+	for _, want := range []string{"salt trust " + quoted, "salt hook install " + quoted, "salt recovery test " + quoted} {
+		if !strings.Contains(e.ui.out.String(), "`"+want+"`") {
+			t.Errorf("doctor missing `%s`:\n%s", want, e.ui.out.String())
+		}
+	}
+	if err := e.app.Seal(t.TempDir(), e.root, false); err == nil || !strings.Contains(err.Error(), "`salt trust "+quoted+"`") {
+		t.Fatalf("seal on a new machine: %v", err)
 	}
 }

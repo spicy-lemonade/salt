@@ -21,7 +21,7 @@ var ErrNotTrusted = errors.New("backup repo not approved")
 func (a *App) checkTrusted(r *repo.Repo) error {
 	approved, err := a.trustStore().Load(r.Root)
 	if errors.Is(err, trust.ErrNotApproved) {
-		return fmt.Errorf("%w: this machine has not approved the keys in %s yet. Check them and run `salt trust %s`",
+		return fmt.Errorf("%w: this machine has not approved the keys in %s yet. Check them and run `salt trust %q`",
 			ErrNotTrusted, a.short(r.Root), r.Root)
 	}
 	if err != nil {
@@ -29,7 +29,7 @@ func (a *App) checkTrusted(r *repo.Repo) error {
 	}
 	if d := trust.Diff(approved, trust.For(r)); len(d) > 0 {
 		return fmt.Errorf("%w: the keys or settings in %s changed since you approved them:\n  %s\n"+
-			"If you made this change, run `salt trust %s`. If you didn't, someone else changed your backup repo. Don't back up until you've checked it",
+			"If you made this change, run `salt trust %q`. If you didn't, someone else changed your backup repo. Don't back up until you've checked it",
 			ErrNotTrusted, a.short(r.Root), strings.Join(d, "\n  "), r.Root)
 	}
 	return nil
