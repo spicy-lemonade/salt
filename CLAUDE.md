@@ -2,6 +2,7 @@
 
 ## Important Rules
 
+- **Source data is always the truth.** Salt must never modify, repair or convert the files it backs up; it encrypts them and restores them exactly as they were given (contents, dates and permissions).
 - *Never* run git commands without asking for user permission, even if 'auto-accept' is selected during a Claude Command session.
 - *Never* run files which use an LLM API without asking for user permission,  even if 'auto-accept' is selected during a Claude Command session.
 - *Never* attempt to re-engineer the code or alter data without asking for user permission.
