@@ -14,9 +14,9 @@ Salt encrypts your agent's files and database memories before they leave your ma
 
 AI agents remember things about you. They keep notes like `USER.md`, `MEMORY.md` and `SOUL.md`, plus memory databases like SQLite or Postgres. If you back these up to GitHub, anyone who gets into that repo can read them.
 
-Salt encrypts your files before they reach GitHub. Anyone who looks inside only sees scrambled data. Even the file names are hidden.
+Salt encrypts your files before they reach GitHub. Anyone who looks inside only sees scrambled data. Even the file names are hidden, because a name like `job_search_new_york.md` can say a lot on its own.
 
-Your backup repo can stay private, and we recommend it. Salt works with private and public repos alike, so the encryption is an extra layer on top of GitHub's access controls.
+Your agent's files on your laptop stay as they are. Only the backup copy is encrypted, since that's the part that could leak. We still recommend a private repo, with Salt as an extra layer on top of GitHub's access controls.
 
 ## 📦 Install
 
@@ -30,30 +30,6 @@ You can also install Salt with Go.
 
 ```bash
 go install github.com/spicy-lemonade/salt/cmd/salt@latest
-```
-
-To uninstall Salt, run these two commands. The second one is optional and tells Homebrew to forget the Salt tap.
-
-```bash
-brew uninstall spicy-lemonade/tap/salt
-brew untap spicy-lemonade/tap
-```
-
-Uninstalling leaves your key and settings on your machine. To remove them too, first make sure you still have your recovery phrase or passphrase. Without it, your backups can never be unlocked again.
-
-```bash
-# macOS: remove the key from the Keychain (run it again for each extra key if you have more than one)
-security delete-generic-password -s salt
-
-# Linux: remove the key from the system keyring
-secret-tool clear service salt
-
-# Remove approved keys, the key file (if you used SALT_KEYSTORE=file) and the cache
-rm -rf ~/Library/Application\ Support/salt ~/Library/Caches/salt   # macOS
-rm -rf ~/.config/salt ~/.cache/salt                                # Linux
-
-# In each backup repo, remove the check. Otherwise every commit will be refused
-rm ~/my-backup-repo/.git/hooks/pre-commit
 ```
 
 ## 🚀 Get started
@@ -74,7 +50,7 @@ Then lock your files into the repo whenever you back up.
 salt seal --prune ~/agent-files ~/my-backup-repo
 ```
 
-Commit and push as normal. Files that haven't changed stay the same, so a backup with no changes makes no commit. The `--prune` option clears out anything in the repo that Salt didn't put there.
+Commit and push as normal. Your backup always matches your files: unchanged files stay the same, deleted files are removed, and a backup with no changes makes no commit. `--prune` also clears out anything Salt didn't put there. Older versions stay in your git history, so you can check out an older commit and run `salt restore` on it.
 
 ## ⏰ Daily backups
 
@@ -121,19 +97,15 @@ Salt only prints messages when something goes wrong, so a successful backup is s
 
 ## 🗄️ Databases
 
-Salt encrypts database files too, such as Mnemosyne's memory database. It treats them like any other file.
+Salt encrypts database files like any other file, exactly as they are. So copy a database safely first. A plain `cp` while the agent is running can give a broken copy, and you'd only find out when you restore it. Use `sqlite3 ... ".backup ..."` as in the script above, or `pg_dump` for Postgres databases such as Honcho or Hindsight. Salt will soon do this for you.
 
-A database must be backed up before Salt encrypts it. For now you need to do this yourself. The script above uses `sqlite3 ... ".backup ..."` for SQLite. For Postgres databases, such as Honcho or Hindsight, use `pg_dump`.
-
-Don't copy a database with plain `cp` while the agent is using it. The copy can be broken with no warning. This is a problem because Salt encrypts the broken copy exactly as it is. Decrypting it later gives you back the same broken database, and you only find out when you try to restore it.
-
-For safety, Salt will soon make these backups for you.
+To keep several snapshots, give each copy a dated name, such as `memory-2026-09-30.db`, and keep them in the folder you back up.
 
 ## 🔑 Getting your files back
 
 When you set up Salt you pick one of two ways to recover your key if you lose your laptop.
 
-- **12 recovery words** (recommended). Write them down on paper and keep them safe. The words are your key, and nothing is stored in your repo. Write them down in at least two places, with one preferably being offline.
+- **12 recovery words** (recommended). The words are your key, and nothing is stored in your repo. Write them down in at least two places, one of them offline.
 - **A passphrase** you choose. Make it strong and keep it in a password manager like Bitwarden.
 
 Your key is saved on the laptop where you set up Salt, so restoring there takes one command.
@@ -151,6 +123,8 @@ salt restore my-backup-repo --to ~/restored-files
 
 Salt puts your files in a new folder with their original names and folders. It never overwrites anything, so you can check them before copying them back.
 
+Backing up only needs the public key in your repo. The private key is only needed to restore, so you can delete it from your laptop (see [Uninstall](#-uninstall)) and keep just your 12 words.
+
 To start backing up from the new laptop, run `salt trust my-backup-repo` once. Salt shows which keys your backups are locked with and asks you to approve them. It won't back up until you do.
 
 ## 🩺 Checking everything works
@@ -159,6 +133,32 @@ To start backing up from the new laptop, run `salt trust my-backup-repo` once. S
 - `salt verify` makes sure every file in your backup can be unlocked.
 - `salt recovery test` checks your recovery words or passphrase still work.
 - `salt trust` approves your backup repo's keys on this laptop. If someone else adds a key to your repo, Salt refuses to back up and tells you. Only run `salt trust` if you made the change yourself.
+
+## 👋 Uninstall
+
+To uninstall Salt, run these two commands. The second one is optional and tells Homebrew to forget the Salt tap.
+
+```bash
+brew uninstall spicy-lemonade/tap/salt
+brew untap spicy-lemonade/tap
+```
+
+Uninstalling leaves your key and settings on your machine. To remove them too, first make sure you still have your recovery phrase or passphrase. Without it, your backups can never be unlocked again.
+
+```bash
+# macOS: remove the key from the Keychain (run it again for each extra key if you have more than one)
+security delete-generic-password -s salt
+
+# Linux: remove the key from the system keyring
+secret-tool clear service salt
+
+# Remove approved keys, the key file (if you used SALT_KEYSTORE=file) and the cache
+rm -rf ~/Library/Application\ Support/salt ~/Library/Caches/salt   # macOS
+rm -rf ~/.config/salt ~/.cache/salt                                # Linux
+
+# In each backup repo, remove the check. Otherwise every commit will be refused
+rm ~/my-backup-repo/.git/hooks/pre-commit
+```
 
 ## 🔧 Notes
 
