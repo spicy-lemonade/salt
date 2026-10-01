@@ -116,15 +116,7 @@ salt prune ~/my-backup-repo                  # keep the last 5 days with a chang
 salt prune --keep-days 10 ~/my-backup-repo   # keep 10 instead
 ```
 
-**"5 days" means 5 days on which anything in the repo changed, not 5 calendar days.** Days are counted for the whole repo, never per file. A day counts when any file changed, which is when your backup made a commit. A day with no changes makes no commit and is skipped, so if nothing changed on one day, the 5 days kept span 6 calendar days. The latest backup is always kept, and the current version of every file is in it. Older versions of a file stay restorable while one of the kept backups still has them. `--keep-days 1` keeps only the latest day. The [design doc](docs/design.md#keeping-only-recent-backups) has worked examples.
-
-Things to know:
-
-- **It rewrites your git history.** Push with `git push --force-with-lease` afterwards. A plain `git push` is refused. Salt never pushes for you.
-- **Other clones need resetting.** On any other laptop with a copy of the backup repo, run `git fetch` then `git reset --hard origin/main` (or clone it again) before backing up from it.
-- **GitHub may keep dropped backups for a while.** After a force push, GitHub can still serve dropped commits to anyone with their hash, and may keep them cached until it cleans up. They stay encrypted. GitHub support can remove them sooner.
-- **It only touches your Salt backup repo.** Salt refuses to prune a folder that isn't a Salt repo you've approved on this machine, a folder inside another git repo, a detached HEAD, or a shallow clone (run `git fetch --unshallow` first).
-- **It also frees space on your laptop.** Salt deletes the dropped backups from your local copy too, so you can't undo a prune locally. If that clean-up fails, Salt only warns: your backups are complete, and the next prune tries again.
+**"5 days" means 5 days on which anything in the repo changed, not 5 calendar days.** Days are counted for the whole repo, never per file. A day counts when any file changed, which is when your backup made a commit. A day with no changes makes no commit and is skipped, so if nothing changed on one day, the 5 days kept span 6 calendar days. The latest backup is always kept, and the current version of every file is in it. Older versions of a file stay restorable while one of the kept backups still has them. `--keep-days 1` keeps only the latest day. Pruning rewrites your git history, so push with `git push --force-with-lease` afterwards. The [design doc](docs/design.md#keeping-only-recent-backups) explains the rest, with worked examples.
 
 ## 🗄️ Databases
 

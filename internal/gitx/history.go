@@ -56,15 +56,25 @@ func runCapped(dir string, stdin []byte, limit int, args ...string) ([]byte, err
 	return out, nil
 }
 
+// runGit runs every git command in this file. Unit tests replace it to make
+// git fail at a chosen step, without starting git.
+var runGit = runCapped
+
+// gitLine runs git and returns its output with surrounding space trimmed.
+func gitLine(dir string, args ...string) (string, error) {
+	out, err := runGit(dir, nil, MaxLogSize, args...)
+	return strings.TrimSpace(string(out)), err
+}
+
 // Toplevel returns the top folder of the git work tree containing dir.
 func Toplevel(dir string) (string, error) {
-	return Run(dir, "rev-parse", "--show-toplevel")
+	return gitLine(dir, "rev-parse", "--show-toplevel")
 }
 
 // IsShallow reports whether the repository at dir is a shallow clone, which
 // is missing older history.
 func IsShallow(dir string) (bool, error) {
-	out, err := Run(dir, "rev-parse", "--is-shallow-repository")
+	out, err := gitLine(dir, "rev-parse", "--is-shallow-repository")
 	if err != nil {
 		return false, err
 	}
@@ -74,10 +84,10 @@ func IsShallow(dir string) (bool, error) {
 // CurrentBranch returns the full name of the checked-out branch, such as
 // "refs/heads/main", or "" when HEAD is detached.
 func CurrentBranch(dir string) (string, error) {
-	if _, err := Run(dir, "rev-parse", "--git-dir"); err != nil {
+	if _, err := gitLine(dir, "rev-parse", "--git-dir"); err != nil {
 		return "", err
 	}
-	out, err := Run(dir, "symbolic-ref", "-q", "HEAD")
+	out, err := gitLine(dir, "symbolic-ref", "-q", "HEAD")
 	if err != nil {
 		return "", nil // exit 1: HEAD is detached
 	}
@@ -87,10 +97,10 @@ func CurrentBranch(dir string) (string, error) {
 // FirstParentLog lists the commits on HEAD's first-parent line, newest first.
 // It returns none when the branch has no commits yet.
 func FirstParentLog(dir string) ([]Commit, error) {
-	if _, err := Run(dir, "rev-parse", "--verify", "-q", "HEAD^{commit}"); err != nil {
+	if _, err := gitLine(dir, "rev-parse", "--verify", "-q", "HEAD^{commit}"); err != nil {
 		return nil, nil
 	}
-	out, err := runCapped(dir, nil, MaxLogSize, "log", "--first-parent", "--format=%H%x00%P%x00%cI", "HEAD")
+	out, err := runGit(dir, nil, MaxLogSize, "log", "--first-parent", "--format=%H%x00%P%x00%cI", "HEAD")
 	if err != nil {
 		return nil, err
 	}
@@ -121,13 +131,13 @@ func ParseLog(out string) ([]Commit, error) {
 
 // CatCommit returns the raw commit object sha, exactly as git stores it.
 func CatCommit(dir, sha string) ([]byte, error) {
-	return runCapped(dir, nil, MaxCommitSize, "cat-file", "commit", sha)
+	return runGit(dir, nil, MaxCommitSize, "cat-file", "commit", sha)
 }
 
 // HashCommit writes raw as a commit object and returns its hash. git checks
 // that raw is a well-formed commit first.
 func HashCommit(dir string, raw []byte) (string, error) {
-	out, err := runCapped(dir, raw, 1024, "hash-object", "-t", "commit", "-w", "--stdin")
+	out, err := runGit(dir, raw, 1024, "hash-object", "-t", "commit", "-w", "--stdin")
 	if err != nil {
 		return "", err
 	}
@@ -137,7 +147,7 @@ func HashCommit(dir string, raw []byte) (string, error) {
 // UpdateRef points ref at newSHA, but only if it still points at oldSHA, so a
 // commit made in the meantime is never lost.
 func UpdateRef(dir, ref, newSHA, oldSHA, reason string) error {
-	_, err := Run(dir, "update-ref", "-m", reason, ref, newSHA, oldSHA)
+	_, err := gitLine(dir, "update-ref", "-m", reason, ref, newSHA, oldSHA)
 	return err
 }
 
@@ -152,17 +162,17 @@ func ReclaimSpace(dir string) error {
 		return err
 	}
 	args := append([]string{"reflog", "expire", "--expire=now", "--expire-unreachable=now"}, refs...)
-	if _, err := Run(dir, args...); err != nil {
+	if _, err := gitLine(dir, args...); err != nil {
 		return err
 	}
-	_, err = Run(dir, "-c", "pack.window=0", "-c", "pack.depth=0", "-c", "gc.auto=0",
+	_, err = gitLine(dir, "-c", "pack.window=0", "-c", "pack.depth=0", "-c", "gc.auto=0",
 		"gc", "--prune=now", "--quiet")
 	return err
 }
 
 // reflogRefs lists HEAD and every ref except the stash.
 func reflogRefs(dir string) ([]string, error) {
-	out, err := Run(dir, "for-each-ref", "--format=%(refname)")
+	out, err := gitLine(dir, "for-each-ref", "--format=%(refname)")
 	if err != nil {
 		return nil, err
 	}

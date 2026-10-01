@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -424,5 +425,67 @@ func TestPruneCountsADateOnlyChange(t *testing.T) {
 		if !maps.Equal(got, b.sealed[subject]) || !sameDates(dates, b.sealedDates[subject]) {
 			t.Fatalf("%s restored %v %v, want %v %v", subject, got, dates, b.sealed[subject], b.sealedDates[subject])
 		}
+	}
+}
+
+// mustInput runs a command with stdin and returns its trimmed output.
+func (e *env) mustInput(dir, stdin, name string, args ...string) string {
+	e.t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Env = e.vars
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.Output()
+	if err != nil {
+		e.t.Fatalf("%s %v: %v", name, args, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// plantCommit writes raw as a commit without git's checks and makes it the
+// branch's newest commit, as a damaged or crafted history would.
+func (b *backupRepo) plantCommit(t *testing.T, raw string) {
+	t.Helper()
+	sha := b.e.mustInput(b.dir, raw, "git", "hash-object", "-t", "commit", "-w", "--literally", "--stdin")
+	b.e.must(b.dir, "git", "update-ref", "refs/heads/main", sha)
+}
+
+// A history salt cannot read, or a commit git refuses to copy, stops the
+// prune with git's reason, and the branch is left exactly as it was.
+func TestPruneStopsOnABrokenHistory(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		// commit builds the planted commit from the tree and parent of the
+		// newest backup.
+		commit func(tree, parent string) string
+		want   string
+	}{
+		{"an older commit is missing", func(tree, _ string) string {
+			return "tree " + tree + "\nparent 1111111111111111111111111111111111111111\n" +
+				"author t <t@t> 1788328800 +0000\ncommitter t <t@t> 1788328800 +0000\n\nmissing parent\n"
+		}, "Failed to traverse parents"},
+		{"a commit git will not copy", func(tree, parent string) string {
+			return "tree " + tree + "\nparent " + parent + "\n" +
+				"author nobody 1788328800 +0000\ncommitter t <t@t> 1788328800 +0000\n\nno email\n"
+		}, "missing email"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			b := newBackupRepo(t, e)
+			b.files["MEMORY.md"] = "x"
+			b.backup(t, "2026-09-01")
+			tree := strings.TrimSpace(e.must(b.dir, "git", "rev-parse", "HEAD^{tree}"))
+			parent := strings.TrimSpace(e.must(b.dir, "git", "rev-parse", "HEAD"))
+			b.plantCommit(t, tt.commit(tree, parent))
+			head := e.must(b.dir, "git", "rev-parse", "HEAD")
+
+			out, code := e.run(b.base, "salt", "prune", "--keep-days", "1", b.dir)
+			if code != 1 || !strings.Contains(out, tt.want) {
+				t.Fatalf("prune: exit %d, want 1 with %q:\n%s", code, tt.want, out)
+			}
+			if e.must(b.dir, "git", "rev-parse", "HEAD") != head {
+				t.Fatal("a failed prune moved the branch")
+			}
+		})
 	}
 }
