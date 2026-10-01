@@ -50,7 +50,7 @@ Then lock your files into the repo whenever you back up.
 salt seal --prune ~/agent-files ~/my-backup-repo
 ```
 
-Commit and push as normal. Your backup always matches your files: unchanged files stay the same, deleted files are removed, and a backup with no changes makes no commit. Each file's last-modified date is saved too, and `salt restore` puts it back. `--prune` also clears out anything Salt didn't put there. Older versions stay in your git history, so you can check out an older commit and run `salt restore` on it.
+Commit and push as normal. Your backup always matches your files: unchanged files stay the same, deleted files are removed, and a backup with no changes makes no commit. Each file's last-modified date is saved too, and `salt restore` puts it back. `--prune` also clears out anything Salt didn't put there. Older versions stay in your git history, so you can check out an older commit and run `salt restore` on it. `salt prune` keeps that history to the last few days (see [Keeping only recent backups](#-keeping-only-recent-backups)).
 
 ## ⏰ Daily backups
 
@@ -84,13 +84,16 @@ copy_db() {
 copy_db ~/.hermes/state.db "$STAGE/state.db"
 copy_db ~/.hermes/mnemosyne/data/mnemosyne.db "$STAGE/mnemosyne.db"
 
-# Lock everything into the repo, then commit and push if anything changed
+# Lock everything into the repo, then commit and push if anything changed.
+# salt prune drops backups older than the last 5 days with a change, which
+# rewrites history, so the push needs --force-with-lease.
 salt seal --prune "$STAGE" "$REPO"
 cd "$REPO"
 git add -A
 if ! git diff --cached --quiet; then
   git commit -m "Backup $(date '+%Y-%m-%d')"
-  git push
+  salt prune "$REPO"
+  git push --force-with-lease
 fi
 ```
 
@@ -103,6 +106,17 @@ Save it as `~/backup.sh`, then run `crontab -e` and add this line to run it ever
 Make sure `git push` works without asking for a password. Running `gh auth setup-git` once is an easy way to do this.
 
 Salt only prints messages when something goes wrong, so a successful backup is silent.
+
+## 🧹 Keeping only recent backups
+
+Encrypted files can't be compressed against their older versions, so every change adds the whole changed file to your repo again. Over months a busy repo gets slow to clone and push. `salt prune` keeps only recent backups:
+
+```bash
+salt prune ~/my-backup-repo                  # keep the last 5 days with a change
+salt prune --keep-days 10 ~/my-backup-repo   # keep 10 instead
+```
+
+**"5 days" means 5 days on which anything in the repo changed, not 5 calendar days.** Days are counted for the whole repo, never per file. A day counts when any file changed, which is when your backup made a commit. A day with no changes makes no commit and is skipped, so if nothing changed on one day, the 5 days kept span 6 calendar days. The latest backup is always kept, and the current version of every file is in it. Older versions of a file stay restorable while one of the kept backups still has them. `--keep-days 1` keeps only the latest day. Pruning rewrites your git history, so push with `git push --force-with-lease` afterwards. The [design doc](docs/design.md#keeping-only-recent-backups) explains the rest, with worked examples.
 
 ## 🗄️ Databases
 

@@ -28,6 +28,10 @@ salt seal --prune "$STAGE" "$REPO" 2>>"$LOG" || die "salt seal failed"
 `--prune` removes files in the repo that salt did not write. Salt prints
 nothing to stdout, so a Hermes `--no-agent` job stays silent on success.
 
+After committing, the script runs `salt prune "$REPO"` to drop old backups
+from the history, then pushes with `git push --force-with-lease` (see
+"Keeping only recent backups").
+
 ## Backup repo layout
 
 | Path | Contents |
@@ -90,6 +94,134 @@ If you lose them and this laptop, your backups cannot be recovered.
   any file that cannot be restored. It needs the key.
 - `salt doctor` checks the hook, the key, the repo and the last backup. It
   needs no key.
+
+## Keeping only recent backups
+
+Encrypted files can't be compressed against their earlier versions, so every
+change adds the changed file's full size to the repo. `salt prune REPO` keeps
+the repo from growing forever by dropping old backups from its history.
+
+### What "5 days" means
+
+`salt prune` keeps the backups from the last **5 days with a change**
+(`--keep-days N` sets the number; 5 is the default). Read this carefully,
+because it is not the same as the last 5 calendar days:
+
+- **Days are counted for the whole repo, never per file.** A backup is a
+  commit, and every commit is a complete snapshot of every file. Salt cannot
+  keep one file's history longer than another's.
+- **A day counts only if something in the repo changed that day.** A change
+  to any file, or to any file's last-modified date or permissions, makes a
+  commit. A night on which nothing changed makes no commit, so that day does
+  not count.
+- **So a day with no change makes the window one calendar day longer.** If
+  nothing changes on one of the days, keeping 5 days with a change reaches
+  back 6 calendar days. With 3 quiet days it reaches back 8.
+- **Several backups on the same day count as one day**, and all of them are
+  kept.
+- The date of a backup is its commit date, in the time zone of the machine
+  that made the commit.
+
+An example, keeping 5 days, with the backup running every morning:
+
+| Day | 10th | 11th | 12th | 13th | 14th | 15th |
+|---|---|---|---|---|---|---|
+| Anything changed? | yes | yes | yes | **no** | yes | yes |
+| Commit made? | yes | yes | yes | no | yes | yes |
+| Kept on the 15th? | yes | yes | yes | (none) | yes | yes |
+
+The 5 days kept are the 10th, 11th, 12th, 14th and 15th: 6 calendar days,
+because nothing changed on the 13th. Anything older is dropped.
+
+What this means for one file that changes once a week (`USER.md` changed on
+the 9th, then on the 16th), while `MEMORY.md` changes every day:
+
+- The current version of every file is always kept, because it is in the
+  latest backup, and the latest backup is never dropped.
+- An older version of a file stays restorable for as long as one of the kept
+  backups still holds it. On the 18th, with daily changes, the kept backups
+  are the 14th to the 18th: the 14th and 15th hold `USER.md` from the 9th, and
+  the 16th to the 18th hold the version from the 16th. On the 20th, every kept
+  backup holds the version from the 16th, and the version from the 9th is
+  gone.
+- If nothing else in the repo changes, there is a commit only when `USER.md`
+  changes. The last 5 days with a change are then the last 5 weeks, and all 5
+  versions are kept.
+
+Counting days with a change, rather than calendar days, means a quiet spell
+or a backup job that stopped for a while never leaves only one backup: the
+first backup after a two-week gap still keeps the 4 days with a change before
+the gap. The trade-off is that the time span kept is not fixed. It grows when
+the repo changes less often.
+
+`--keep-days 1` keeps only the backups from the latest day with a change.
+The latest backup is never dropped.
+
+### How it works
+
+Each kept backup's commit is copied exactly, with the same files, author,
+dates and message. Only its parent changes, so the oldest kept backup
+becomes the first commit. Every kept backup restores exactly as before.
+Commit signatures are removed from the copies, because they no longer match.
+A merge commit among the kept backups is copied onto the line kept, so the
+history it merged in is dropped; its files are kept.
+
+Salt then deletes the dropped backups from the local repo. It empties git's
+reflogs (except the stash's), which would otherwise keep them for 30 to 90
+days, and runs `git gc --prune=now`. This also removes git's local undo
+for them. Git can't delete what `origin/<branch>` still points at until the
+force push updates it, so those go on the next prune.
+
+A prune is all or nothing. Every copied commit is written first, and the
+branch then moves to the copies in one step, only if it still points where
+it did, so a commit made in the meantime is never lost. If anything fails
+before that step, the branch is left as it was. Deleting the dropped
+backups from the local repo comes after the branch has moved, so if that
+fails, every kept backup is still complete: salt prints a warning, exits 0
+so a backup script still pushes, and the next prune that drops something
+deletes them.
+
+A night with nothing to drop changes nothing.
+
+### Rewriting history and force pushing
+
+Dropping backups rewrites the branch's history, so a plain `git push` is
+refused afterwards. Push with:
+
+```bash
+git push --force-with-lease
+```
+
+`--force-with-lease` only overwrites the remote if it still holds what this
+machine last saw there, so a backup pushed from another machine in the
+meantime is not lost. Salt never pushes by itself.
+
+- **Other clones.** Any other clone of the backup repo, such as on another
+  laptop, still has the old history. Before backing up from it, run
+  `git fetch` then `git reset --hard origin/<branch>`, or clone it afresh.
+- **GitHub may keep dropped backups for a while.** After the force push,
+  GitHub can still serve dropped commits to anyone who knows their hash, and
+  can keep them in caches, forks and pull request references until it cleans
+  up on its own schedule. GitHub support can remove them sooner. The dropped
+  backups are encrypted like every other backup.
+
+### Only the backup repo salt was set up in
+
+`salt prune` refuses, and changes nothing, unless:
+
+- the folder is a salt repo (it has `.salt/format.json`) and is the top of its
+  git repository, so a folder inside another repository never has that
+  repository rewritten;
+- this machine has approved the repo's keys and settings (see "Security"). If
+  someone else changed them, the history that shows the change must not be
+  rewritten away;
+- a branch is checked out (not a detached HEAD), and only that branch is
+  rewritten;
+- the clone is not shallow, so salt can see the date of every backup it
+  might drop. Run `git fetch --unshallow` first.
+
+Other branches and tags are left alone. Any that still point at old backups
+keep them in the repo.
 
 ## Security
 
@@ -154,7 +286,8 @@ things about them:
   `index.age` shows that a file's last-modified date or permissions changed
   but no file's contents did. From the history, a reader can see
   when backups ran, how many files changed each time, and, by matching sizes,
-  how one file such as a growing database changes over time.
+  how one file such as a growing database changes over time. `salt prune`
+  limits this to the backups it keeps.
 - **How many keys can decrypt the backups.** `.salt/recipients.txt` is public,
   so a reader can see how many keys the backups are encrypted to.
 - **File names, with `--plain-paths`.** Objects are stored under their real
@@ -224,6 +357,6 @@ Touch ID, and switching recovery method.
 - Salt making safe copies of live databases by itself (SQLite and Postgres),
   so a backup script no longer has to. Salt already encrypts database files.
 - OpenViking support. Its data format has not been checked yet.
-- a one-command `salt backup`
+- a one-command `salt backup`, which will also run `salt prune`
 - splitting files over GitHub's 100 MB limit
 - a signed index, to detect planted files

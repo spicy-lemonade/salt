@@ -14,6 +14,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/gitx"
 	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/keys"
+	"github.com/spicy-lemonade/salt/internal/prune"
 	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/spicy-lemonade/salt/internal/seal"
 )
@@ -47,6 +48,9 @@ type GitOps interface {
 	// Storage reports files salt wrote that git would ignore or change when
 	// storing them (see check.StorageProblems).
 	Storage(repoRoot string) (problems []check.StorageProblem, total int, err error)
+	// Prune drops backups older than the keepDays most recent days with a
+	// change from the checked-out branch (see prune.Run).
+	Prune(repoRoot string, keepDays int) (*prune.Result, error)
 }
 
 // RealGit runs git through gitx (hooks disabled).
@@ -63,6 +67,9 @@ func (RealGit) LastCommit(root string) (time.Time, bool, error) { return gitx.La
 func (RealGit) Remote(root string) string                       { return gitx.Remote(root) }
 func (RealGit) Storage(root string) ([]check.StorageProblem, int, error) {
 	return check.StorageProblems(root)
+}
+func (RealGit) Prune(root string, keepDays int) (*prune.Result, error) {
+	return prune.Run(prune.RealGit{}, root, keepDays)
 }
 
 // HookSearchPath is where the pre-commit hook looks for salt: the caller's

@@ -17,6 +17,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/app"
 	"github.com/spicy-lemonade/salt/internal/guard"
 	"github.com/spicy-lemonade/salt/internal/keys"
+	"github.com/spicy-lemonade/salt/internal/prune"
 	"github.com/spicy-lemonade/salt/internal/seal"
 )
 
@@ -37,6 +38,11 @@ Nightly (in your backup script):
       Encrypt the snapshot directory SRC into REPO. Unchanged files are left
       untouched. --prune removes anything in REPO that salt did not write.
       Fails if git would ignore or change any file salt wrote.
+  salt prune [--keep-days N] REPO
+      Keep only the backups from the last N days on which anything in REPO
+      changed (default 5), counted over the whole repo, and drop older ones
+      from the branch's history. The latest backup is always kept. Rewrites
+      history, so push with git push --force-with-lease.
   salt check [REPO]
       Pre-commit hook: refuse the commit if any staged file is not encrypted,
       or if git would ignore or change any file salt wrote.
@@ -181,6 +187,17 @@ func run(cmd string, args []string) error {
 			return err
 		}
 		return a.Seal(pos[0], pos[1], *prune)
+	case "prune":
+		fs := newFlags("prune")
+		days := fs.Int("keep-days", prune.DefaultKeepDays, "days with a change to keep")
+		pos, err := parse(fs, args, 1, 1)
+		if err != nil {
+			return err
+		}
+		if *days < 1 {
+			return usageError{fmt.Sprintf("prune: --keep-days must be 1 or more, got %d", *days)}
+		}
+		return a.Prune(pos[0], *days)
 	case "check":
 		pos, err := parse(newFlags("check"), args, 0, 1)
 		if err != nil {

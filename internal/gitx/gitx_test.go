@@ -61,3 +61,29 @@ func TestReadCheckAttr(t *testing.T) {
 		t.Fatalf("callback error = %v", err)
 	}
 }
+
+func TestParseLog(t *testing.T) {
+	out := "aaaa\x00bbbb\x002026-09-15T23:30:00-05:00\n" +
+		"bbbb\x00cccc dddd\x002026-09-15T06:00:00+01:00\n" +
+		"cccc\x00\x002026-09-14T00:10:00+13:00\n"
+	got, err := ParseLog(out)
+	// Days are in each committer's own time zone: 23:30 at -05:00 is the 16th
+	// in UTC, but the committer's day is the 15th.
+	want := []Commit{{"aaaa", 1, "2026-09-15"}, {"bbbb", 2, "2026-09-15"}, {"cccc", 0, "2026-09-14"}}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("ParseLog = %v, %v; want %v", got, err, want)
+	}
+	if got, err := ParseLog(""); err != nil || len(got) != 0 {
+		t.Fatalf("ParseLog of nothing = %v, %v", got, err)
+	}
+	for _, bad := range []string{
+		"aaaa\x00bbbb",
+		"\x00bbbb\x002026-09-15T06:00:00Z",
+		"aaaa\x00bbbb\x00yesterday",
+		"aaaa\x00bbbb\x002026-09-15T06:00:00Z\x00extra",
+	} {
+		if _, err := ParseLog(bad); err == nil {
+			t.Errorf("ParseLog(%q) accepted", bad)
+		}
+	}
+}

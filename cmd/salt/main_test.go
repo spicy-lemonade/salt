@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/app"
 	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/keys"
+	"github.com/spicy-lemonade/salt/internal/prune"
 	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/zalando/go-keyring"
 )
@@ -28,7 +30,10 @@ func TestMain(m *testing.M) {
 }
 
 // noGit answers salt's questions for git without starting it.
-type noGit struct{ storageCalls int }
+type noGit struct {
+	storageCalls int
+	pruneDays    []int
+}
 
 var testGit = &noGit{}
 
@@ -40,6 +45,11 @@ func (*noGit) Remote(string) string                        { return "" }
 func (g *noGit) Storage(string) ([]check.StorageProblem, int, error) {
 	g.storageCalls++
 	return nil, 0, nil
+}
+
+func (g *noGit) Prune(_ string, keepDays int) (*prune.Result, error) {
+	g.pruneDays = append(g.pruneDays, keepDays)
+	return &prune.Result{Kept: 1, Days: 1}, nil
 }
 
 // isolate points HOME and the config and cache dirs at a temp dir.
@@ -97,6 +107,11 @@ func TestRunUsageErrors(t *testing.T) {
 		{"hook", "install", "a", "b"},
 		{"trust"},
 		{"trust", "a", "b"},
+		{"prune"},
+		{"prune", "a", "b"},
+		{"prune", "--keep-days", "0", "a"},
+		{"prune", "--keep-days", "-3", "a"},
+		{"prune", "--keep-days", "five", "a"},
 	} {
 		var ue usageError
 		if err := run(args[0], args[1:]); !errors.As(err, &ue) {
@@ -165,6 +180,20 @@ func TestRunSealVerifyRestore(t *testing.T) {
 	}
 	if err := run("recovery", []string{"show", root}); err == nil {
 		t.Fatal("recovery show on a passphrase repo succeeded")
+	}
+	// prune passes the number of days on, 5 unless --keep-days says otherwise.
+	testGit.pruneDays = nil
+	if err := run("prune", []string{root}); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if err := run("prune", []string{"--keep-days", "1", root}); err != nil {
+		t.Fatalf("prune --keep-days 1: %v", err)
+	}
+	if !slices.Equal(testGit.pruneDays, []int{5, 1}) {
+		t.Fatalf("prune asked git for %v days, want [5 1]", testGit.pruneDays)
+	}
+	if err := run("prune", []string{filepath.Join(base, "not-a-repo")}); !errors.Is(err, repo.ErrNotInitialised) {
+		t.Fatalf("prune of a non-salt dir: %v", err)
 	}
 	if err := run("seal", []string{src, filepath.Join(base, "not-a-repo")}); !errors.Is(err, repo.ErrNotInitialised) {
 		t.Fatalf("seal into a non-salt dir: %v", err)

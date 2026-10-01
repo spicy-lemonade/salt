@@ -23,6 +23,8 @@
 
 Salt is an open-source Go CLI that encrypts AI-agent memory backups before they are pushed to Git. Examples are Hermes with Mnemosyne SQLite databases and Markdown files such as USER.md, MEMORY.md, SOUL.md and SKILL.md. It will later cover Honcho and Hindsight (Postgres + pgvector) and OpenViking. An example usage is a nightly backup script which saves a snapshot of the agent files, but runs `salt seal` to encrypt them before they reach the git repo. A pre-commit hook (`salt check`) then refuses any commit containing a file that is not encrypted. Salt is distributed through a Homebrew tap. The full design is in `docs/design.md`.
 
+Salt is a general-purpose open-source tool for public release. Write code, defaults, messages and docs for any user and any setup.
+
 **Key Technologies:**
 - Go 1.26+
 - age (`filippo.io/age`) for encryption: X25519 keys, and scrypt for passphrase-wrapped keys
@@ -30,7 +32,7 @@ Salt is an open-source Go CLI that encrypts AI-agent memory backups before they 
 - BIP39 12-word recovery phrases; the age key is derived from the phrase with HKDF-SHA256
 - OS keychain via `github.com/zalando/go-keyring`, with a 0600 file fallback (`SALT_KEYSTORE=file`)
 
-**Commands:** `init`, `seal`, `check`, `restore`, `verify`, `doctor`, `trust`, `recovery test|show`, `hook install`, `version`.
+**Commands:** `init`, `seal`, `prune`, `check`, `restore`, `verify`, `doctor`, `trust`, `recovery test|show`, `hook install`, `version`.
 
 **Package layout:**
 - `cmd/salt`: CLI entry point and flag parsing
@@ -42,6 +44,7 @@ Salt is an open-source Go CLI that encrypts AI-agent memory backups before they 
 - `internal/hook`: pre-commit hook script and installation
 - `internal/gitx`: the only way salt runs git (hooks always disabled)
 - `internal/guard`: refuses nested salt processes; sets a soft memory limit
+- `internal/prune`: keeps only the backups from the last N days with a change (counted for the whole repo, not per file) by rewriting the branch's history
 - `internal/trust`: this machine's approved copy of each repo's keys and settings; seal refuses if the repo differs
 - `internal/rules`: source-scan test enforcing the process-safety rules
 
