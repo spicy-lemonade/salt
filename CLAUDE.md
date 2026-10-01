@@ -23,6 +23,8 @@
 
 Salt is an open-source Go CLI that encrypts AI-agent memory backups before they are pushed to Git. Examples are Hermes with Mnemosyne SQLite databases and Markdown files such as USER.md, MEMORY.md, SOUL.md and SKILL.md. It will later cover Honcho and Hindsight (Postgres + pgvector) and OpenViking. An example usage is a nightly backup script which saves a snapshot of the agent files, but runs `salt seal` to encrypt them before they reach the git repo. A pre-commit hook (`salt check`) then refuses any commit containing a file that is not encrypted. Salt is distributed through a Homebrew tap. The full design is in `docs/design.md`.
 
+Salt is a general-purpose open-source tool for public release. Write code, defaults, messages and docs for any user and any setup, not for the maintainer's own machine or backup repo.
+
 **Key Technologies:**
 - Go 1.26+
 - age (`filippo.io/age`) for encryption: X25519 keys, and scrypt for passphrase-wrapped keys
