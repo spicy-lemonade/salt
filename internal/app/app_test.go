@@ -16,6 +16,7 @@ import (
 
 	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/keys"
+	"github.com/spicy-lemonade/salt/internal/prune"
 	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/zalando/go-keyring"
 )
@@ -67,6 +68,10 @@ type fakeGit struct {
 	storageErr   error
 	storageCalls int
 	onStorage    func(root string)
+	// prune is what Prune reports; pruneDays records each call's keepDays.
+	prune     *prune.Result
+	pruneErr  error
+	pruneDays []int
 }
 
 func (f *fakeGit) HookPath(string) (string, error) { return f.hook, nil }
@@ -84,6 +89,11 @@ func (f *fakeGit) Storage(root string) ([]check.StorageProblem, int, error) {
 		f.onStorage(root)
 	}
 	return f.storage, f.storageTotal, f.storageErr
+}
+
+func (f *fakeGit) Prune(_ string, keepDays int) (*prune.Result, error) {
+	f.pruneDays = append(f.pruneDays, keepDays)
+	return f.prune, f.pruneErr
 }
 
 func newEnv(t *testing.T) *testEnv {
