@@ -129,7 +129,7 @@ func TestTrustMessagesShowHomePathsButKeepCommands(t *testing.T) {
 	e := homeEnv(t)
 	healthyRepo(t, e)
 	e.app.TrustDir = filepath.Join(t.TempDir(), "fresh")
-	err := e.app.Seal(t.TempDir(), e.root, false)
+	err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root})
 	if !errors.Is(err, ErrNotTrusted) ||
 		!strings.Contains(err.Error(), "the keys in ~/backup yet") ||
 		!strings.Contains(err.Error(), "`salt trust \""+e.root+"\"`") {
@@ -145,7 +145,7 @@ func TestTrustMessagesShowHomePathsButKeepCommands(t *testing.T) {
 	}
 
 	addAttackerKey(t, e.root)
-	err = e.app.Seal(t.TempDir(), e.root, false)
+	err = e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root})
 	if !errors.Is(err, ErrNotTrusted) ||
 		!strings.Contains(err.Error(), "keys or settings in ~/backup changed") ||
 		!strings.Contains(err.Error(), "`salt trust \""+e.root+"\"`") {
@@ -224,13 +224,13 @@ func TestSealRefusalsShowHomePaths(t *testing.T) {
 	healthyRepo(t, e)
 	inside := filepath.Join(e.root, "src")
 	os.MkdirAll(inside, 0o755)
-	err := e.app.Seal(inside, e.root, false)
+	err := e.app.Seal(SealOptions{Src: inside, Repo: e.root})
 	if err == nil || !strings.Contains(err.Error(), "source ~/backup/src and repository ~/backup must not contain each other") {
 		t.Fatalf("seal from inside the repo: %v", err)
 	}
 	file := filepath.Join(e.app.Home, "notes.md")
 	os.WriteFile(file, []byte("x"), 0o644)
-	err = e.app.Seal(file, e.root, false)
+	err = e.app.Seal(SealOptions{Src: file, Repo: e.root})
 	if err == nil || !strings.Contains(err.Error(), "~/notes.md is not a directory") {
 		t.Fatalf("seal from a file: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestSuggestedCommandsQuotePaths(t *testing.T) {
 			t.Errorf("doctor missing `%s`:\n%s", want, e.ui.out.String())
 		}
 	}
-	if err := e.app.Seal(t.TempDir(), e.root, false); err == nil || !strings.Contains(err.Error(), "`salt trust "+quoted+"`") {
+	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); err == nil || !strings.Contains(err.Error(), "`salt trust "+quoted+"`") {
 		t.Fatalf("seal on a new machine: %v", err)
 	}
 }

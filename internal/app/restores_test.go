@@ -139,12 +139,12 @@ func TestDoctorReportsLeftoverRestores(t *testing.T) {
 func TestVerifyListsAtMostFiftyProblems(t *testing.T) {
 	e := newEnv(t)
 	healthyRepo(t, e)
-	src := filepath.Join(t.TempDir(), "hermes")
+	src := filepath.Join(t.TempDir(), "agent")
 	os.MkdirAll(src, 0o755)
 	for i := 0; i < 60; i++ {
 		os.WriteFile(filepath.Join(src, fmt.Sprintf("f%02d.md", i)), []byte(fmt.Sprint(i)), 0o644)
 	}
-	if err := e.app.Seal(src, e.root, true); err != nil {
+	if err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Prune: true}); err != nil {
 		t.Fatal(err)
 	}
 	os.RemoveAll(filepath.Join(e.root, "objects"))

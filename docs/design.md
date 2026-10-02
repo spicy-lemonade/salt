@@ -85,8 +85,8 @@ If you lose them and this laptop, your backups cannot be recovered.
   moves it into place. An existing folder is moved aside, never overwritten.
   Each file gets back the last-modified date it had when it was sealed. Seal
   records the date of the file it is given, so a backup script must keep the
-  original dates when it copies files (`cp -p`, and `touch -r` after
-  `sqlite3 .backup`). A file whose only change is its date keeps its
+  original dates when it copies files (`cp -p`). `--sqlite` databases get
+  the live database file's date (see "Databases"). A file whose only change is its date keeps its
   ciphertext; only `index.age` is rewritten. Backups made before salt recorded
   dates restore with the time of the restore, and the first seal with a salt
   that records dates rewrites `index.age` once to add them.
@@ -319,27 +319,40 @@ Salt encrypts any file you give it, and that includes database files. Mnemosyne
 keeps its memory in a SQLite file (`mnemosyne.db`). Salt encrypts that file
 today, the same way it encrypts a Markdown file.
 
-A database must be backed up before it is encrypted. For now the user must do
-this themselves, using the database's own backup tool, before running
-`salt seal`:
+A database in use must be copied safely before it is encrypted. A plain `cp`
+can give a broken copy with no warning, and Salt would encrypt it exactly as
+it is, so you would only find out when you restore it.
 
-- SQLite (Mnemosyne, Hermes): `sqlite3 live.db ".backup 'copy.db'"`
-- Postgres (Honcho, Hindsight): `pg_dump`
+For SQLite, `salt seal --sqlite DB SRC REPO` makes the copy itself
+(`internal/source`). It runs
+`sqlite3 -init /dev/null -bail -cmd ".timeout 30000" DB ".backup N.db"`
+inside a new private temporary folder, seals the copy at the top of the
+backup under DB's file name, and always removes the folder, also when the
+copy or the seal fails or salt is stopped with Ctrl-C or SIGTERM. SQLite's
+backup gives a consistent copy while other programs write, and copies page
+by page, so nothing is held in memory. It starts again whenever another
+program saves to the database, so a large, busy database might never finish.
+For a database in WAL mode (header bytes 18 and 19 are 2), salt adds
+`-cmd BEGIN -cmd "SELECT count(*) FROM sqlite_master"`: the read transaction
+makes the backup copy the database as it was at that moment, so it never
+starts again, and other programs keep saving to the `-wal` file. In
+rollback-journal mode a read transaction would make other programs wait to
+save until the backup ends, so salt leaves it out: the agent never waits for
+salt, and a save during the copy only makes the copy start again. Two copies of an unchanged database
+are identical, so an unchanged database makes no commit. Before starting
+`sqlite3`, salt refuses a path that is missing or is not a SQLite database,
+because `sqlite3` would create an empty database at a missing path. A
+database name that clashes with another database, or with a file or folder
+at the top of SRC, is refused.
 
-A plain `cp` of a database in use can give a broken copy with no warning.
-This is a problem because Salt encrypts the broken copy exactly as it is.
-Decrypting it later gives back the same broken database, and you only find
-out when you try to restore it. For safety, Salt will soon make these backups
-itself. Salt only encrypts the
-copies it gets from the databases.
+Postgres (Honcho, Hindsight) is not built yet. The backup script runs
+`pg_dump` into SRC before `salt seal`.
 
-Salt records the last-modified date of the file it is given, and a
-`.backup` copy is dated when the copy was made. The backup script therefore
-copies the database file's own date onto the copy with `touch -r` (`copy_db`
-in the README, which the e2e tests run). It reads the date before the backup,
-because the backup can change it: after a crash, `sqlite3` moves a leftover
-`-wal` file's changes into the database file when it closes. Salt takes that
-date as it is, in either SQLite journal mode:
+The backup gets the live database file's permissions and last-modified date.
+They are read before the copy, because the copy can change them: after a
+crash, `sqlite3` moves a leftover `-wal` file's changes into the database
+file when it closes. Salt takes that date as it is, in either SQLite journal
+mode:
 
 - Rollback journal (`delete`, `truncate`, the default): every change is
   written into the database file, so its date is the date of the last change.
@@ -354,8 +367,8 @@ Touch ID, and switching recovery method.
 
 ## Still to build
 
-- Salt making safe copies of live databases by itself (SQLite and Postgres),
-  so a backup script no longer has to. Salt already encrypts database files.
+- Salt making safe copies of live Postgres databases by itself, as it does
+  for SQLite, so a backup script no longer has to run `pg_dump`.
 - OpenViking support. Its data format has not been checked yet.
 - a one-command `salt backup`, which will also run `salt prune`
 - splitting files over GitHub's 100 MB limit

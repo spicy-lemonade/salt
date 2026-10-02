@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -21,12 +22,22 @@ import (
 // Two locks on the real keychain: salt's own file store, and go-keyring's
 // in-memory mock in case anything still reaches the keychain code.
 //
-// git is replaced too: unit tests must never start it.
+// git and sqlite3 are replaced too: unit tests must never start them.
 func TestMain(m *testing.M) {
 	os.Setenv("SALT_KEYSTORE", "file")
 	keyring.MockInit()
 	gitOps = testGit
+	copySQLite = copyFile
 	os.Exit(m.Run())
+}
+
+// copyFile stands in for sqlite3's backup with a plain copy.
+func copyFile(_ context.Context, live, dst string) error {
+	b, err := os.ReadFile(live)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, b, 0o600)
 }
 
 // noGit answers salt's questions for git without starting it.
@@ -157,8 +168,13 @@ func TestRunSealVerifyRestore(t *testing.T) {
 	if err := run("trust", []string{"--yes", root}); err != nil {
 		t.Fatalf("trust --yes: %v", err)
 	}
+	// Each --sqlite database is copied and sealed at the top of the backup.
+	dbs := filepath.Join(base, "agent")
+	os.MkdirAll(dbs, 0o755)
+	os.WriteFile(filepath.Join(dbs, "state.db"), []byte("state"), 0o644)
+	os.WriteFile(filepath.Join(dbs, "memory.db"), []byte("memory"), 0o644)
 	calls := testGit.storageCalls
-	if err := run("seal", []string{"--prune", src, root}); err != nil {
+	if err := run("seal", []string{"--prune", "--sqlite", filepath.Join(dbs, "state.db"), src, root, "--sqlite", filepath.Join(dbs, "memory.db")}); err != nil {
 		t.Fatalf("seal: %v", err)
 	}
 	if testGit.storageCalls != calls+1 {
@@ -171,8 +187,10 @@ func TestRunSealVerifyRestore(t *testing.T) {
 	if err := run("restore", []string{root, "--to", dest}); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	if b, _ := os.ReadFile(filepath.Join(dest, "memories", "USER.md")); string(b) != "hello" {
-		t.Fatalf("restored %q", b)
+	for rel, want := range map[string]string{"memories/USER.md": "hello", "state.db": "state", "memory.db": "memory"} {
+		if b, _ := os.ReadFile(filepath.Join(dest, rel)); string(b) != want {
+			t.Fatalf("restored %s = %q, want %q", rel, b, want)
+		}
 	}
 	// Recovery commands need a terminal; tests have none.
 	if err := run("recovery", []string{"test", root}); !errors.Is(err, app.ErrNotInteractive) {

@@ -59,7 +59,7 @@ func newFixture(t *testing.T, encryptPaths bool) *fixture {
 	f.write("memories/MEMORY.md", "secret memory\n")
 	f.write("SOUL.md", "be kind\n")
 	f.write("skills/tax-return-2026/SKILL.md", "# Tax\n")
-	f.write("mnemosyne/data/mnemosyne.db", "SQLite format 3\x00"+strings.Repeat("\x01\x02", 5000))
+	f.write("data/memory.db", "SQLite format 3\x00"+strings.Repeat("\x01\x02", 5000))
 	if err := os.Symlink("SOUL.md", filepath.Join(f.src, "soul-link")); err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func assertAllCiphertext(t *testing.T, root string, encryptPaths bool) {
 		if bytes.Contains(b, []byte("Ciaran")) || bytes.Contains(b, []byte("secret memory")) {
 			t.Errorf("%s contains plaintext", rel)
 		}
-		if encryptPaths && (strings.Contains(rel, "USER") || strings.Contains(rel, "tax-return") || strings.Contains(rel, "mnemosyne")) {
+		if encryptPaths && (strings.Contains(rel, "USER") || strings.Contains(rel, "tax-return") || strings.Contains(rel, "memory.db")) {
 			t.Errorf("repo path %s reveals a source path", rel)
 		}
 	}

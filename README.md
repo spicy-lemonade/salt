@@ -71,23 +71,14 @@ cp -p ~/.hermes/SOUL.md ~/.hermes/config.yaml "$STAGE/"
 cp -p ~/.hermes/memories/*.md "$STAGE/memories/"
 cp -Rp ~/.hermes/skills "$STAGE/"
 
-# Copy a database safely, even while the agent is running, and give the copy
-# the database file's own last-modified date. The date is read first, because
-# the backup itself can change it.
-copy_db() {
-  local stamp status=0
-  stamp="$(mktemp)"
-  touch -r "$1" "$stamp" && sqlite3 "$1" ".backup '$2'" && touch -r "$stamp" "$2" || status=$?
-  rm -f "$stamp"
-  return "$status"
-}
-copy_db ~/.hermes/state.db "$STAGE/state.db"
-copy_db ~/.hermes/mnemosyne/data/mnemosyne.db "$STAGE/mnemosyne.db"
-
-# Lock everything into the repo, then commit and push if anything changed.
+# Lock everything into the repo, with a safe copy of each database made even
+# while the agent is running, then commit and push if anything changed.
 # salt prune drops backups older than the last 5 days with a change, which
 # rewrites history, so the push needs --force-with-lease.
-salt seal --prune "$STAGE" "$REPO"
+salt seal --prune \
+  --sqlite ~/.hermes/state.db \
+  --sqlite ~/.hermes/mnemosyne/data/mnemosyne.db \
+  "$STAGE" "$REPO"
 cd "$REPO"
 git add -A
 if ! git diff --cached --quiet; then
@@ -120,7 +111,11 @@ salt prune --keep-days 10 ~/my-backup-repo   # keep 10 instead
 
 ## 🗄️ Databases
 
-Salt encrypts database files like any other file, exactly as they are. So copy a database safely first. A plain `cp` while the agent is running can give a broken copy, and you'd only find out when you restore it. Use `sqlite3 ... ".backup ..."` as in the script above, or `pg_dump` for Postgres databases such as Honcho or Hindsight. Salt will soon do this for you. The script's `copy_db` also gives each copy the database file's own last-modified date. In WAL mode (check with `sqlite3 your.db "PRAGMA journal_mode;"`), SQLite writes new changes to a separate `-wal` file first, so the database file's date can be older than its newest change. That is how SQLite works, and Salt keeps the date as it is.
+Salt only encrypts the files it is given. A database that is in use needs a safe copy first, because a plain `cp` while the agent is writing can give a broken copy, and you'd only find out when you restore it.
+
+Salt can make that copy for you. Give it each SQLite database with `--sqlite`, as in the script above, and Salt copies it safely, even while the agent is running, then encrypts the copy. Each copy is stored at the top of the backup under its file name, with its own last-modified date, so two databases need different file names. The copy is made with SQLite's own `sqlite3` tool, which macOS includes. On Linux, install it with your package manager.
+
+For Postgres databases such as Honcho or Hindsight, run `pg_dump` into the folder you back up first. Salt will soon make these copies for you too.
 
 To keep several snapshots, give each copy a dated name, such as `memory-2026-09-30.db`, and keep them in the folder you back up.
 

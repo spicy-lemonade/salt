@@ -15,7 +15,7 @@ func TestClassify(t *testing.T) {
 		{"objects/ab/cd.age", "age-encryption.org/v1\n-> X25519", true, false},
 		{"index.age", "-----BEGIN AGE ENCRYPTED FILE-----", true, false},
 		{"memories/USER.md", "The user is", true, true},
-		{"mnemosyne.db", "SQLite format 3\x00", true, true},
+		{"memory.db", "SQLite format 3\x00", true, true},
 		{"empty", "", true, true},
 		{"fake.age", "age-encryption.org/v2\n", true, true},
 		{"README.md", "# backups", true, false},

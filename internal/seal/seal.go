@@ -38,7 +38,23 @@ type Options struct {
 	Workers int
 	// Show, if set, is how paths are written in messages, such as "~/…".
 	Show func(path string) string
+	// Extra lists files sealed as if they were in the source tree.
+	Extra []Extra
 }
+
+// Extra is a file sealed as if it were at Rel in the source tree, such as a
+// safe copy of a live database. Mode and ModTime are recorded instead of the
+// file's own, so the backup keeps the original's.
+type Extra struct {
+	Rel     string // slash path in the backup
+	Path    string // the file to read
+	Mode    fs.FileMode
+	ModTime time.Time
+}
+
+// ErrDuplicatePath means two files would be backed up at the same path, or a
+// file at a path the source tree uses as a folder.
+var ErrDuplicatePath = errors.New("two files would be backed up at the same path")
 
 // show writes p for a message through fn, or unchanged when fn is nil.
 func show(fn func(string) string, p string) string {
@@ -93,6 +109,9 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	res := &Result{}
 	items, err := walkSource(src, exclude, res, opt.Show)
 	if err != nil {
+		return nil, err
+	}
+	if items, err = addExtra(items, opt.Extra); err != nil {
 		return nil, err
 	}
 	if len(items) > MaxIndexEntries {
@@ -309,6 +328,41 @@ func walkSource(src string, exclude []string, res *Result, fn func(string) strin
 	})
 	sort.Slice(items, func(i, j int) bool { return items[i].rel < items[j].rel })
 	return items, err
+}
+
+// addExtra adds the extra files to the source items, refusing a path that is
+// unsafe or already taken by a file or folder.
+func addExtra(items []item, extra []Extra) ([]item, error) {
+	if len(extra) == 0 {
+		return items, nil
+	}
+	files, dirs := map[string]bool{}, map[string]bool{}
+	add := func(rel string) {
+		files[rel] = true
+		for d := path.Dir(rel); d != "."; d = path.Dir(d) {
+			dirs[d] = true
+		}
+	}
+	for _, it := range items {
+		add(it.rel)
+	}
+	for _, x := range extra {
+		rel, err := repo.CleanPath(x.Rel)
+		if err != nil {
+			return nil, err
+		}
+		clash := files[rel] || dirs[rel]
+		for d := path.Dir(rel); d != "." && !clash; d = path.Dir(d) {
+			clash = files[d]
+		}
+		if clash {
+			return nil, fmt.Errorf("%w: %s", ErrDuplicatePath, rel)
+		}
+		add(rel)
+		items = append(items, item{rel: rel, abs: x.Path, mode: x.Mode, modTime: x.ModTime})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].rel < items[j].rel })
+	return items, nil
 }
 
 // removeStale deletes ciphertext no longer referenced by the index, leftover

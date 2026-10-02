@@ -75,9 +75,9 @@ func TestRestoreKeepsModTimes(t *testing.T) {
 		t.Run(map[bool]string{true: "encrypted-paths", false: "plain-paths"}[encryptPaths], func(t *testing.T) {
 			f := newFixture(t, encryptPaths)
 			dates := map[string]time.Time{
-				"memories/USER.md":            time.Date(2024, 3, 1, 9, 30, 15, 123456789, time.UTC),
-				"mnemosyne/data/mnemosyne.db": time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC),
-				"SOUL.md":                     time.Date(1969, 7, 20, 20, 17, 0, 0, time.UTC), // before 1970
+				"memories/USER.md": time.Date(2024, 3, 1, 9, 30, 15, 123456789, time.UTC),
+				"data/memory.db":   time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC),
+				"SOUL.md":          time.Date(1969, 7, 20, 20, 17, 0, 0, time.UTC), // before 1970
 			}
 			for rel, at := range dates {
 				f.setModTime(rel, at)
@@ -118,12 +118,12 @@ func TestRestoreKeepsModTimes(t *testing.T) {
 // rewritten, and a restore gives the new date.
 func TestDateOnlyChangeRecordsNewDate(t *testing.T) {
 	f := newFixture(t, true)
-	f.setModTime("mnemosyne/data/mnemosyne.db", time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC))
+	f.setModTime("data/memory.db", time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC))
 	f.seal(false)
 	before := snapshot(t, f.root)
 
 	touched := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
-	f.setModTime("mnemosyne/data/mnemosyne.db", touched)
+	f.setModTime("data/memory.db", touched)
 	res := f.seal(false)
 	if res.Encrypted != 0 || res.Reused != 5 || !res.IndexNew {
 		t.Fatalf("seal after a date-only change: %+v", res)
@@ -133,7 +133,7 @@ func TestDateOnlyChangeRecordsNewDate(t *testing.T) {
 			t.Errorf("%s changed although only a date did", k)
 		}
 	}
-	if got := f.restoredModTime("mnemosyne/data/mnemosyne.db"); !got.Equal(touched) {
+	if got := f.restoredModTime("data/memory.db"); !got.Equal(touched) {
 		t.Fatalf("last-modified after a date-only change = %v, want %v", got, touched)
 	}
 

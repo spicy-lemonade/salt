@@ -32,7 +32,7 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - BIP39 12-word recovery phrases; the age key is derived from the phrase with HKDF-SHA256
 - OS keychain via `github.com/zalando/go-keyring`, with a 0600 file fallback (`SALT_KEYSTORE=file`)
 
-**Commands:** `init`, `seal`, `prune`, `check`, `restore`, `verify`, `doctor`, `trust`, `recovery test|show`, `hook install`, `version`.
+**Commands:** `init`, `seal [--sqlite DB]`, `prune`, `check`, `restore`, `verify`, `doctor`, `trust`, `recovery test|show`, `hook install`, `version`.
 
 **Package layout:**
 - `cmd/salt`: CLI entry point and flag parsing
@@ -43,6 +43,7 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - `internal/check`: pre-commit plaintext detection
 - `internal/hook`: pre-commit hook script and installation
 - `internal/gitx`: the only way salt runs git (hooks always disabled)
+- `internal/source`: safe copies of live databases (runs `sqlite3`); with `gitx`, the only packages that start programs
 - `internal/guard`: refuses nested salt processes; sets a soft memory limit
 - `internal/prune`: keeps only the backups from the last N days with a change (counted for the whole repo, not per file) by rewriting the branch's history
 - `internal/trust`: this machine's approved copy of each repo's keys and settings; seal refuses if the repo differs
@@ -100,8 +101,8 @@ go test ./internal/seal -run TestRoundTrip
 - User-facing onboarding and warning copy is agreed wording (see `docs/design.md`, "Onboarding copy"). Do not reword it without asking.
 - Salt prints to stderr only. Scheduled jobs (cron, agent schedulers) often send any stdout on as an email or message, so success must be silent on stdout.
 - Decided out of scope is Touch ID gating, and switching recovery method from the 12 word passphrase to the user chosen passphrase or vice versa.
-- Salt already encrypts database files, including SQLite files. What is not built yet is Salt making a *safe copy* of a live database by itself. Today the backup script does that first (`sqlite3 ... ".backup ..."` for SQLite, `pg_dump` for Postgres), then runs `salt seal` on the copy. See `docs/design.md`, "Databases".
-- Not yet built: Salt making safe database copies by itself (SQLite, Postgres), OpenViking support, a `salt backup` preset, splitting files over 100 MB, and the signed index.
+- `salt seal --sqlite DB` makes a safe copy of a live SQLite database itself (`internal/source` runs `sqlite3 .backup`). Not built yet is the same for Postgres: today the backup script runs `pg_dump` first, then `salt seal`. See `docs/design.md`, "Databases".
+- Not yet built: Salt making safe Postgres copies by itself, OpenViking support, a `salt backup` preset, splitting files over 100 MB, and the signed index.
 
 ### Agent contributing rules
 
