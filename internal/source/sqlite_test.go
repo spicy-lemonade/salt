@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -72,6 +73,17 @@ func TestCheckSQLiteUnreadable(t *testing.T) {
 	}
 }
 
+// A named pipe is refused without opening it, which would wait forever.
+func TestCheckSQLiteRefusesAPipe(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "pipe.db")
+	if err := syscall.Mkfifo(p, 0o644); err != nil {
+		t.Skip("mkfifo:", err)
+	}
+	if _, err := checkSQLite(p); !errors.Is(err, ErrNotSQLite) {
+		t.Fatalf("pipe: %v, want ErrNotSQLite", err)
+	}
+}
+
 // CopySQLite checks the database before it starts sqlite3, so these fail
 // without starting a process.
 func TestCopySQLiteRefusesBeforeRunning(t *testing.T) {
@@ -108,14 +120,13 @@ func TestCopySQLiteWithoutSQLite3(t *testing.T) {
 
 func TestSQLiteCommand(t *testing.T) {
 	dir := t.TempDir()
-	t.Chdir(dir)
 	base := []string{"sqlite3", "-init", os.DevNull, "-bail", "-cmd", ".timeout 30000"}
 	tail := []string{filepath.Join(dir, "-live.db"), ".backup 0.db"}
 	for wal, extra := range map[bool][]string{
 		false: nil,
 		true:  {"-cmd", "BEGIN", "-cmd", "SELECT count(*) FROM sqlite_master"},
 	} {
-		cmd, err := sqliteCommand(context.Background(), "-live.db", filepath.Join(dir, "tmp", "0.db"), wal)
+		cmd, err := sqliteCommand(context.Background(), filepath.Join(dir, "-live.db"), filepath.Join(dir, "tmp", "0.db"), wal)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -127,8 +138,12 @@ func TestSQLiteCommand(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"it's.db", "a b.db", `x"y.db`, "new\nline.db", "-x.db", ".hidden"} {
-		if _, err := sqliteCommand(context.Background(), "live.db", filepath.Join(dir, name), false); err == nil {
-			t.Errorf("%q: no error", name)
+		if _, err := sqliteCommand(context.Background(), filepath.Join(dir, "live.db"), filepath.Join(dir, name), false); err == nil || !strings.Contains(err.Error(), "needs quoting") {
+			t.Errorf("%q: %v", name, err)
 		}
+	}
+	// A relative path would be read from the copy's folder.
+	if _, err := sqliteCommand(context.Background(), "live.db", filepath.Join(dir, "0.db"), false); err == nil || !strings.Contains(err.Error(), "not absolute") {
+		t.Errorf("relative path: %v", err)
 	}
 }

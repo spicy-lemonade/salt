@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -228,5 +229,51 @@ func TestSealSQLiteFailures(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "gone.db")); !os.IsNotExist(err) {
 		t.Fatalf("salt created the missing database: %v", err)
+	}
+}
+
+// Ctrl-C while sqlite3 is copying stops it, removes the copy and seals
+// nothing. A stand-in sqlite3 starts a copy, says so, then waits.
+func TestSealSQLiteInterrupted(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	os.MkdirAll(b.src, 0o755)
+	db := filepath.Join(t.TempDir(), "memory.db")
+	write(t, db, "SQLite format 3\x00pages")
+	bin := t.TempDir()
+	started := filepath.Join(t.TempDir(), "started")
+	fake := "#!/bin/sh\necho partial > \"$PWD/0.db\"\ntouch " + started + "\nexec sleep 60\n"
+	if err := os.WriteFile(filepath.Join(bin, "sqlite3"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	salt, tmp := withTemp(t, e)
+	salt = salt.with("PATH=" + bin + ":" + filepath.Dir(e.bin) + ":/usr/bin:/bin")
+	cmd := exec.Command(e.bin, "seal", "--sqlite", db, b.src, b.dir)
+	cmd.Env = salt.vars
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill() })
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("sqlite3 never started")
+		}
+	}
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.Wait()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 130 || !strings.Contains(out.String(), "seal interrupted: the database copies were removed and nothing was sealed") {
+		t.Fatalf("exit %v, want 130:\n%s", err, out.String())
+	}
+	assertEmpty(t, tmp)
+	if st := e.must(b.dir, "git", "status", "--porcelain"); st != "" {
+		t.Fatalf("an interrupted seal changed the repo:\n%s", st)
 	}
 }

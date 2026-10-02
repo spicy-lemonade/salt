@@ -170,9 +170,14 @@ func (a *App) copyDatabases(ctx context.Context, dbs []string) (extra []seal.Ext
 	extra = make([]seal.Extra, len(dbs))
 	for i, db := range dbs {
 		dst := filepath.Join(tmp, strconv.Itoa(i)+".db")
-		fi, err := os.Stat(db)
+		// sqlite3 runs in the temp folder, so it is given an absolute path.
+		abs, err := filepath.Abs(db)
+		var fi os.FileInfo
 		if err == nil {
-			err = a.CopySQLite(ctx, db, dst)
+			fi, err = os.Stat(abs)
+		}
+		if err == nil {
+			err = a.CopySQLite(ctx, abs, dst)
 		}
 		if err != nil {
 			cleanup()

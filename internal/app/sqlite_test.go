@@ -99,6 +99,25 @@ func TestSealCopiesSQLite(t *testing.T) {
 	}
 }
 
+// A relative database path is resolved from the current folder, and the
+// copier gets it absolute, since sqlite3 runs in the temp folder.
+func TestSealSQLiteRelativePath(t *testing.T) {
+	e, fc, src, db := sqliteEnv(t)
+	t.Chdir(filepath.Dir(db))
+	var got string
+	e.app.CopySQLite = func(ctx context.Context, live, dst string) error {
+		got = live
+		return fc.copy(ctx, live, dst)
+	}
+	if err := e.app.Seal(SealOptions{Src: src, Repo: e.root, SQLite: []string{"memory.db"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got != db {
+		t.Fatalf("copier got %q, want %q", got, db)
+	}
+	assertNoCopiesLeft(t, fc)
+}
+
 // Every way a copy can fail stops the seal before anything is written, names
 // the database, and removes the copies already made.
 func TestSealSQLiteCopyFails(t *testing.T) {
