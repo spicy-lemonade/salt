@@ -205,6 +205,10 @@ func TestReadmeCopyDBAfterACrash(t *testing.T) {
 	e := newEnv(t)
 	live := t.TempDir()
 	db := filepath.Join(live, "state.db")
+	// WAL mode is stored in the database file, so it is set before the agent
+	// starts. Switching to it while another connection reads fails with
+	// "database is locked", and sqlite3 would carry on without a -wal file.
+	e.must(live, sqlite, db, "PRAGMA journal_mode=wal; CREATE TABLE m(x);")
 
 	// An "agent" holds the database open with its changes only in the -wal
 	// file. Its files are copied while it runs, which is what a crash leaves.
@@ -221,13 +225,15 @@ func TestReadmeCopyDBAfterACrash(t *testing.T) {
 		agent.Process.Kill()
 		agent.Wait()
 	})
-	io.WriteString(in, "PRAGMA journal_mode=wal;\nPRAGMA wal_autocheckpoint=0;\nCREATE TABLE m(x);\n"+
+	// Both connections wait for a lock rather than fail, and the agent stops
+	// at its first error so a failed step can't go unnoticed.
+	io.WriteString(in, ".bail on\n.timeout 10000\nPRAGMA wal_autocheckpoint=0;\n"+
 		"WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<500) INSERT INTO m SELECT i FROM n;\n")
 	// sqlite3 buffers its output to a pipe, so a second connection checks
 	// when the rows are committed. It is not the last to close, so it leaves
 	// the -wal file as it is.
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-		out, _ := e.run(live, sqlite, db, "SELECT count(*) FROM m;")
+		out, _ := e.run(live, sqlite, "-cmd", ".timeout 10000", db, "SELECT count(*) FROM m;")
 		if strings.TrimSpace(out) == "500" {
 			break
 		}
