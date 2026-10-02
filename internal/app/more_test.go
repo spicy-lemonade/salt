@@ -255,7 +255,7 @@ func TestInitRefusesForeignSymlinks(t *testing.T) {
 func TestSealChecksStorageAfterSealing(t *testing.T) {
 	e := newEnv(t)
 	healthyRepo(t, e)
-	src := filepath.Join(t.TempDir(), "hermes")
+	src := filepath.Join(t.TempDir(), "agent")
 	os.MkdirAll(src, 0o755)
 	os.WriteFile(filepath.Join(src, "USER.md"), []byte("changed"), 0o644)
 
@@ -266,7 +266,7 @@ func TestSealChecksStorageAfterSealing(t *testing.T) {
 	e.git.storage = []check.StorageProblem{{Path: "objects/ab/new.age"}}
 	e.git.storageTotal = 1
 	calls := e.git.storageCalls
-	err := e.app.Seal(src, e.root, true)
+	err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Prune: true})
 	if !errors.Is(err, ErrReported) {
 		t.Fatalf("Seal with an ignored object: %v", err)
 	}
@@ -282,12 +282,12 @@ func TestSealChecksStorageAfterSealing(t *testing.T) {
 	}
 
 	e.git.storage, e.git.storageTotal, e.git.storageErr = nil, 0, errors.New("no git")
-	if err := e.app.Seal(src, e.root, true); err == nil || !strings.Contains(err.Error(), "checking how git will store the backup: no git") {
+	if err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Prune: true}); err == nil || !strings.Contains(err.Error(), "checking how git will store the backup: no git") {
 		t.Fatalf("Seal when git fails: %v", err)
 	}
 
 	e.git.storageErr = nil
-	if err := e.app.Seal(src, e.root, true); err != nil {
+	if err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Prune: true}); err != nil {
 		t.Fatalf("Seal with nothing wrong: %v", err)
 	}
 
@@ -295,7 +295,7 @@ func TestSealChecksStorageAfterSealing(t *testing.T) {
 	os.RemoveAll(filepath.Join(e.root, ".git"))
 	calls = e.git.storageCalls
 	e.git.storage, e.git.storageTotal = []check.StorageProblem{{Path: "index.age"}}, 1
-	if err := e.app.Seal(src, e.root, true); err != nil || e.git.storageCalls != calls {
+	if err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Prune: true}); err != nil || e.git.storageCalls != calls {
 		t.Fatalf("Seal outside git: %v, %d storage call(s)", err, e.git.storageCalls-calls)
 	}
 }
@@ -449,16 +449,16 @@ func TestSealCommandReportsSkipped(t *testing.T) {
 	if err := syscall.Mkfifo(filepath.Join(src, "pipe"), 0o644); err != nil {
 		t.Skip("mkfifo:", err)
 	}
-	if err := e.app.Seal(src, e.root, false); err != nil {
+	if err := e.app.Seal(SealOptions{Src: src, Repo: e.root}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(e.ui.out.String(), "skipped pipe") {
 		t.Fatalf("output = %q", e.ui.out.String())
 	}
-	if err := e.app.Seal(src, t.TempDir(), false); !errors.Is(err, repo.ErrNotInitialised) {
+	if err := e.app.Seal(SealOptions{Src: src, Repo: t.TempDir()}); !errors.Is(err, repo.ErrNotInitialised) {
 		t.Fatalf("seal into non-salt dir: %v", err)
 	}
-	if err := e.app.Seal(filepath.Join(src, "missing"), e.root, false); err == nil {
+	if err := e.app.Seal(SealOptions{Src: filepath.Join(src, "missing"), Repo: e.root}); err == nil {
 		t.Fatal("seal of a missing dir succeeded")
 	}
 }

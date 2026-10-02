@@ -321,10 +321,10 @@ func TestRestoreOnNewMachine(t *testing.T) {
 			if err := e.app.Init(InitOptions{Repo: e.root, Recovery: method}); err != nil {
 				t.Fatal(err)
 			}
-			src := filepath.Join(t.TempDir(), "hermes")
+			src := filepath.Join(t.TempDir(), "agent")
 			os.MkdirAll(filepath.Join(src, "memories"), 0o755)
 			os.WriteFile(filepath.Join(src, "memories", "USER.md"), []byte("hello"), 0o644)
-			if err := e.app.Seal(src, e.root, true); err != nil {
+			if err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Prune: true}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -422,10 +422,10 @@ func healthyRepo(t *testing.T, e *testEnv) string {
 		t.Fatal(err)
 	}
 	phrase := lastPhrase(e.ui.out.String())
-	src := filepath.Join(t.TempDir(), "hermes")
+	src := filepath.Join(t.TempDir(), "agent")
 	os.MkdirAll(src, 0o755)
 	os.WriteFile(filepath.Join(src, "USER.md"), []byte("hello"), 0o644)
-	if err := e.app.Seal(src, e.root, true); err != nil {
+	if err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Prune: true}); err != nil {
 		t.Fatal(err)
 	}
 	e.ui.out.Reset()

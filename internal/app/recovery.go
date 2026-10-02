@@ -98,7 +98,7 @@ func (a *App) Restore(o RestoreOptions) error {
 		Paths: o.Paths, Force: o.Force, Context: o.Context, Track: a.trackRestore, Show: a.short,
 	})
 	if errors.Is(err, context.Canceled) {
-		return fmt.Errorf("%w: the partly restored files were removed and %s was not changed", ErrInterrupted, a.short(o.To))
+		return fmt.Errorf("restore %w: the partly restored files were removed and %s was not changed", ErrInterrupted, a.short(o.To))
 	}
 	if err != nil {
 		return err

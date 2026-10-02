@@ -10,9 +10,9 @@ import (
 	"slices"
 )
 
-// ErrInterrupted means the person stopped a restore (Ctrl-C or SIGTERM) and
-// the partly restored files were removed.
-var ErrInterrupted = errors.New("restore interrupted")
+// ErrInterrupted means the person stopped a restore or a seal (Ctrl-C or
+// SIGTERM) and the files it had written were removed.
+var ErrInterrupted = errors.New("interrupted")
 
 // restoreLog lists the temporary folders of restores in progress. A restore
 // that is killed outright (SIGKILL, a power cut) cannot clean up, and its

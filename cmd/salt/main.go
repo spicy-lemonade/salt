@@ -19,12 +19,17 @@ import (
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/prune"
 	"github.com/spicy-lemonade/salt/internal/seal"
+	"github.com/spicy-lemonade/salt/internal/source"
 )
 
 var version = "dev"
 
 // gitOps is how salt reaches git. Tests replace it so they never start git.
 var gitOps app.GitOps = app.RealGit{}
+
+// copySQLite is how salt copies a live SQLite database. Tests replace it so
+// they never start sqlite3.
+var copySQLite = source.CopySQLite
 
 const usage = `salt encrypts your agent's memory backups before they are pushed.
 
@@ -34,9 +39,12 @@ Setup:
       recover it, and install the pre-commit hook.
 
 Nightly (in your backup script):
-  salt seal [--prune] SRC REPO
+  salt seal [--prune] [--sqlite DB]... SRC REPO
       Encrypt the snapshot directory SRC into REPO. Unchanged files are left
       untouched. --prune removes anything in REPO that salt did not write.
+      --sqlite makes a safe copy of a live SQLite database DB, even while it
+      is in use, and seals it at the top of the backup under its file name.
+      Repeat it for each database; needs the sqlite3 program.
       Fails if git would ignore or change any file salt wrote.
   salt prune [--keep-days N] REPO
       Keep only the backups from the last N days on which anything in REPO
@@ -132,16 +140,17 @@ func newApp() (*app.App, error) {
 		store, name = keys.FileStore{Dir: keyDir}, "private key file under "+app.ShortPath(keyDir, home)
 	}
 	return &app.App{
-		UI:        ui,
-		Store:     store,
-		StoreName: name,
-		CacheDir:  cache,
-		TrustDir:  filepath.Join(cfg, "salt", "trusted"),
-		Git:       gitOps,
-		LookPath:  app.LookPath,
-		Now:       time.Now,
-		Version:   version,
-		Home:      home,
+		UI:         ui,
+		Store:      store,
+		StoreName:  name,
+		CacheDir:   cache,
+		TrustDir:   filepath.Join(cfg, "salt", "trusted"),
+		Git:        gitOps,
+		LookPath:   app.LookPath,
+		CopySQLite: copySQLite,
+		Now:        time.Now,
+		Version:    version,
+		Home:       home,
 	}, nil
 }
 
@@ -182,11 +191,24 @@ func run(cmd string, args []string) error {
 	case "seal":
 		fs := newFlags("seal")
 		prune := fs.Bool("prune", false, "remove files in REPO that salt did not write")
+		var dbs []string
+		fs.Func("sqlite", "a live SQLite database to copy safely and seal", func(db string) error {
+			dbs = append(dbs, db)
+			return nil
+		})
 		pos, err := parse(fs, args, 2, 2)
 		if err != nil {
 			return err
 		}
-		return a.Seal(pos[0], pos[1], *prune)
+		o := app.SealOptions{Src: pos[0], Repo: pos[1], Prune: *prune, SQLite: dbs}
+		// Only database copies need cleaning up after Ctrl-C or SIGTERM.
+		// Without them, a signal stops salt at once, as it always has.
+		if len(dbs) > 0 {
+			ctx, stop := interruptible()
+			defer stop()
+			o.Context = ctx
+		}
+		return a.Seal(o)
 	case "prune":
 		fs := newFlags("prune")
 		days := fs.Int("keep-days", prune.DefaultKeepDays, "days with a change to keep")
@@ -216,13 +238,9 @@ func run(cmd string, args []string) error {
 			return usageError{"restore needs --to DIR"}
 		}
 		// Ctrl-C or SIGTERM stops the restore and removes the partly
-		// restored files. A second signal quits at once.
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		// restored files.
+		ctx, stop := interruptible()
 		defer stop()
-		go func() {
-			<-ctx.Done()
-			stop()
-		}()
 		return a.Restore(app.RestoreOptions{Repo: pos[0], To: *to, Paths: pos[1:], Force: *force, Context: ctx})
 	case "recovery":
 		if len(args) == 0 {
@@ -274,6 +292,17 @@ func run(cmd string, args []string) error {
 		return err
 	}
 	return usageError{fmt.Sprintf("unknown command %q", cmd)}
+}
+
+// interruptible returns a context that Ctrl-C or SIGTERM cancels, so the
+// command can remove the files it wrote. A second signal quits at once.
+func interruptible() (context.Context, context.CancelFunc) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return ctx, stop
 }
 
 func newFlags(name string) *flag.FlagSet {

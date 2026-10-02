@@ -55,7 +55,7 @@ func TestSealRefusesChangedKeysOrSettings(t *testing.T) {
 			os.MkdirAll(src, 0o755)
 			os.WriteFile(filepath.Join(src, "USER.md"), []byte("new secret"), 0o644)
 
-			err := e.app.Seal(src, e.root, true)
+			err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Prune: true})
 			if !errors.Is(err, ErrNotTrusted) || !strings.Contains(err.Error(), want) {
 				t.Fatalf("Seal after tampering: %v", err)
 			}
@@ -112,7 +112,7 @@ func TestTrustApprovesAChange(t *testing.T) {
 		t.Error("visible-names warning shown for a repo with hidden names")
 	}
 	src := t.TempDir()
-	if err := e.app.Seal(src, e.root, false); !errors.Is(err, ErrNotTrusted) {
+	if err := e.app.Seal(SealOptions{Src: src, Repo: e.root}); !errors.Is(err, ErrNotTrusted) {
 		t.Fatalf("seal after declining: %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestTrustApprovesAChange(t *testing.T) {
 	if err := e.app.Trust(e.root, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.app.Seal(src, e.root, false); err != nil {
+	if err := e.app.Seal(SealOptions{Src: src, Repo: e.root}); err != nil {
 		t.Fatalf("seal after approving: %v", err)
 	}
 	e.ui.out.Reset()
@@ -164,7 +164,7 @@ func TestTrustOnANewMachine(t *testing.T) {
 	if !strings.Contains(e.ui.out.String(), "has not approved the repo's keys yet") {
 		t.Fatalf("doctor on a new machine:\n%s", e.ui.out.String())
 	}
-	if err := e.app.Seal(t.TempDir(), e.root, false); !errors.Is(err, ErrNotTrusted) || !strings.Contains(err.Error(), "salt trust") {
+	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); !errors.Is(err, ErrNotTrusted) || !strings.Contains(err.Error(), "salt trust") {
 		t.Fatalf("seal on a new machine: %v", err)
 	}
 	e.ui.interactive = false
@@ -174,7 +174,7 @@ func TestTrustOnANewMachine(t *testing.T) {
 	if err := e.app.Trust(e.root, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.app.Seal(t.TempDir(), e.root, false); err != nil {
+	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); err != nil {
 		t.Fatalf("seal after trust --yes: %v", err)
 	}
 }
@@ -202,7 +202,7 @@ func TestTrustErrors(t *testing.T) {
 	if err := e.app.Trust(e.root, true); err == nil {
 		t.Error("trust saved into a file path")
 	}
-	if err := e.app.Seal(t.TempDir(), e.root, false); err == nil {
+	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); err == nil {
 		t.Error("seal with an unreadable approval store succeeded")
 	}
 	e.ui.out.Reset()
