@@ -16,28 +16,51 @@ import (
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/prune"
 	"github.com/spicy-lemonade/salt/internal/repo"
+	"github.com/spicy-lemonade/salt/internal/source"
 	"github.com/zalando/go-keyring"
 )
 
 // Two locks on the real keychain: salt's own file store, and go-keyring's
 // in-memory mock in case anything still reaches the keychain code.
 //
-// git and sqlite3 are replaced too: unit tests must never start them.
+// git and database programs are replaced too: unit tests must never start
+// them.
 func TestMain(m *testing.M) {
 	os.Setenv("SALT_KEYSTORE", "file")
 	keyring.MockInit()
 	gitOps = testGit
-	copySQLite = copyFile
+	databaseKinds = testKinds()
 	os.Exit(m.Run())
 }
 
-// copyFile stands in for sqlite3's backup with a plain copy.
-func copyFile(_ context.Context, live, dst string) error {
-	b, err := os.ReadFile(live)
-	if err != nil {
-		return err
+// testKinds keeps every real kind's option and parsing, but copies each
+// database as a plain file, so no database program is started.
+func testKinds() []source.Kind {
+	kinds := slices.Clone(source.Kinds)
+	for i := range kinds {
+		real := kinds[i].New
+		kinds[i].New = func(arg string) (source.Database, error) {
+			if _, err := real(arg); err != nil {
+				return nil, err
+			}
+			return fileDB(arg), nil
+		}
 	}
-	return os.WriteFile(dst, b, 0o600)
+	return kinds
+}
+
+// fileDB stands in for a live database with a plain copy of the file.
+type fileDB string
+
+func (f fileDB) Name() string   { return filepath.Base(string(f)) }
+func (f fileDB) String() string { return string(f) }
+func (f fileDB) Flag() string   { return "--test" }
+func (f fileDB) Copy(_ context.Context, o source.CopyOptions) (source.Meta, error) {
+	b, err := os.ReadFile(string(f))
+	if err != nil {
+		return source.Meta{}, err
+	}
+	return source.Meta{Mode: 0o600}, os.WriteFile(o.Dst, b, 0o600)
 }
 
 // noGit answers salt's questions for git without starting it.
@@ -192,6 +215,20 @@ func TestRunSealVerifyRestore(t *testing.T) {
 			t.Fatalf("restored %s = %q, want %q", rel, b, want)
 		}
 	}
+	// A database option's value is checked before anything is sealed, and a
+	// password in it is never repeated.
+	t.Setenv("SALT_TEST_EMPTY", "")
+	for _, args := range [][]string{
+		{"--postgres", "postgresql://agent:hunter2@localhost:5432"},
+		{"--postgres", "mysql://agent:hunter2@localhost/memory"},
+		{"--postgres-env", "SALT_TEST_EMPTY"},
+	} {
+		err := run("seal", append(args, src, root))
+		var ue usageError
+		if err == nil || errors.As(err, &ue) || strings.Contains(err.Error(), "hunter2") {
+			t.Fatalf("seal %v: %v", args, err)
+		}
+	}
 	// Recovery commands need a terminal; tests have none.
 	if err := run("recovery", []string{"test", root}); !errors.Is(err, app.ErrNotInteractive) {
 		t.Fatalf("recovery test: %v", err)
@@ -265,5 +302,27 @@ func TestNewAppWithoutHome(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	if _, err := newApp(); err == nil {
 		t.Fatal("newApp without a home folder succeeded")
+	}
+}
+
+// Database options of different kinds may be mixed and repeated, and keep
+// the order they were given in.
+func TestDatabaseFlags(t *testing.T) {
+	fs := newFlags("seal")
+	given := databaseFlags(fs)
+	t.Setenv("SALT_TEST_DB", "dbname=c")
+	if _, err := parse(fs, []string{"--sqlite", "a.db", "src", "--postgres", "dbname=b", "--postgres-env", "SALT_TEST_DB", "repo", "--sqlite", "d.db"}, 2, 2); err != nil {
+		t.Fatal(err)
+	}
+	dbs, err := given.databases()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, db := range dbs {
+		got = append(got, db.String())
+	}
+	if want := []string{"a.db", "dbname=b", "SALT_TEST_DB", "d.db"}; !slices.Equal(got, want) {
+		t.Fatalf("databases = %q, want %q", got, want)
 	}
 }

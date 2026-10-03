@@ -27,9 +27,9 @@ var version = "dev"
 // gitOps is how salt reaches git. Tests replace it so they never start git.
 var gitOps app.GitOps = app.RealGit{}
 
-// copySQLite is how salt copies a live SQLite database. Tests replace it so
-// they never start sqlite3.
-var copySQLite = source.CopySQLite
+// databaseKinds are the kinds of live database salt seal can copy. Tests
+// replace them so they never start a database program.
+var databaseKinds = source.Kinds
 
 const usage = `salt encrypts your agent's memory backups before they are pushed.
 
@@ -39,13 +39,23 @@ Setup:
       recover it, and install the pre-commit hook.
 
 Nightly (in your backup script):
-  salt seal [--prune] [--sqlite DB]... SRC REPO
+  salt seal [--prune] [--sqlite DB]... [--postgres CONN]... [--postgres-env VAR]... SRC REPO
       Encrypt the snapshot directory SRC into REPO. Unchanged files are left
       untouched. --prune removes anything in REPO that salt did not write.
-      --sqlite makes a safe copy of a live SQLite database DB, even while it
-      is in use, and seals it at the top of the backup under its file name.
-      Repeat it for each database; needs the sqlite3 program.
       Fails if git would ignore or change any file salt wrote.
+      Each database option makes a safe copy of a live database, even while
+      it is in use, and seals it at the top of the backup. Repeat them for
+      each database.
+      --sqlite copies the SQLite database file DB under its file name. Needs
+      the sqlite3 program.
+      --postgres dumps the Postgres database CONN names, as plain SQL, under
+      its name with .sql. CONN is a URL such as
+      postgresql://user@host:5432/dbname or settings such as
+      "host=localhost dbname=memory". Needs the pg_dump program.
+      --postgres-env does the same for the connection held by the
+      environment variable VAR, so its password never shows in a process
+      list. Without a password in the connection, pg_dump looks in ~/.pgpass
+      or PGPASSWORD.
   salt prune [--keep-days N] REPO
       Keep only the backups from the last N days on which anything in REPO
       changed (default 5), counted over the whole repo, and drop older ones
@@ -140,17 +150,16 @@ func newApp() (*app.App, error) {
 		store, name = keys.FileStore{Dir: keyDir}, "private key file under "+app.ShortPath(keyDir, home)
 	}
 	return &app.App{
-		UI:         ui,
-		Store:      store,
-		StoreName:  name,
-		CacheDir:   cache,
-		TrustDir:   filepath.Join(cfg, "salt", "trusted"),
-		Git:        gitOps,
-		LookPath:   app.LookPath,
-		CopySQLite: copySQLite,
-		Now:        time.Now,
-		Version:    version,
-		Home:       home,
+		UI:        ui,
+		Store:     store,
+		StoreName: name,
+		CacheDir:  cache,
+		TrustDir:  filepath.Join(cfg, "salt", "trusted"),
+		Git:       gitOps,
+		LookPath:  app.LookPath,
+		Now:       time.Now,
+		Version:   version,
+		Home:      home,
 	}, nil
 }
 
@@ -191,16 +200,16 @@ func run(cmd string, args []string) error {
 	case "seal":
 		fs := newFlags("seal")
 		prune := fs.Bool("prune", false, "remove files in REPO that salt did not write")
-		var dbs []string
-		fs.Func("sqlite", "a live SQLite database to copy safely and seal", func(db string) error {
-			dbs = append(dbs, db)
-			return nil
-		})
+		given := databaseFlags(fs)
 		pos, err := parse(fs, args, 2, 2)
 		if err != nil {
 			return err
 		}
-		o := app.SealOptions{Src: pos[0], Repo: pos[1], Prune: *prune, SQLite: dbs}
+		dbs, err := given.databases()
+		if err != nil {
+			return err
+		}
+		o := app.SealOptions{Src: pos[0], Repo: pos[1], Prune: *prune, Databases: dbs}
 		// Only database copies need cleaning up after Ctrl-C or SIGTERM.
 		// Without them, a signal stops salt at once, as it always has.
 		if len(dbs) > 0 {
@@ -292,6 +301,41 @@ func run(cmd string, args []string) error {
 		return err
 	}
 	return usageError{fmt.Sprintf("unknown command %q", cmd)}
+}
+
+// givenDatabase is a database option's value and the kind it makes.
+type givenDatabase struct {
+	kind source.Kind
+	arg  string
+}
+
+type givenDatabases []givenDatabase
+
+// databaseFlags adds an option to fs for each kind of database, which may be
+// repeated, and returns the values given, in order.
+func databaseFlags(fs *flag.FlagSet) *givenDatabases {
+	given := &givenDatabases{}
+	for _, k := range databaseKinds {
+		fs.Func(k.Flag, k.Usage, func(arg string) error {
+			*given = append(*given, givenDatabase{kind: k, arg: arg})
+			return nil
+		})
+	}
+	return given
+}
+
+// databases makes the databases only after parsing, so a value that holds a
+// password never shows in a usage error.
+func (g *givenDatabases) databases() ([]source.Database, error) {
+	var dbs []source.Database
+	for _, d := range *g {
+		db, err := d.kind.New(d.arg)
+		if err != nil {
+			return nil, err
+		}
+		dbs = append(dbs, db)
+	}
+	return dbs, nil
 }
 
 // interruptible returns a context that Ctrl-C or SIGTERM cancels, so the

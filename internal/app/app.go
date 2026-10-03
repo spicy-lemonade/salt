@@ -20,6 +20,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/prune"
 	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/spicy-lemonade/salt/internal/seal"
+	"github.com/spicy-lemonade/salt/internal/source"
 )
 
 // App holds salt's dependencies.
@@ -34,11 +35,8 @@ type App struct {
 	Git      GitOps
 	// LookPath finds an executable the way the pre-commit hook would.
 	LookPath func(name string) (string, bool)
-	// CopySQLite makes a safe copy of a live SQLite database (see
-	// source.CopySQLite). Tests replace it so they never start sqlite3.
-	CopySQLite func(ctx context.Context, live, dst string) error
-	Now        func() time.Time
-	Version    string
+	Now      func() time.Time
+	Version  string
 	// Home is the user's home folder. Messages show paths inside it as "~/…";
 	// empty means paths are shown in full.
 	Home string
@@ -102,14 +100,14 @@ type SealOptions struct {
 	Src, Repo string
 	// Prune removes everything in Repo that salt did not write.
 	Prune bool
-	// SQLite lists live SQLite databases to copy safely and seal at the top
-	// of the backup under their own file names.
-	SQLite []string
+	// Databases lists live databases to copy safely and seal at the top of
+	// the backup, each under its own name.
+	Databases []source.Database
 	// Context stops the database copies early. Nil means never.
 	Context context.Context
 }
 
-// Seal encrypts o.Src, and safe copies of o.SQLite, into the salt repository
+// Seal encrypts o.Src, and safe copies of o.Databases, into the salt repository
 // at o.Repo.
 func (a *App) Seal(o SealOptions) error {
 	r, err := repo.Open(o.Repo)
@@ -119,14 +117,14 @@ func (a *App) Seal(o SealOptions) error {
 	if err := a.checkTrusted(r); err != nil {
 		return err
 	}
-	extra, cleanup, err := a.copyDatabases(o.Context, o.SQLite)
+	extra, cleanup, err := a.copyDatabases(o.Context, r.Root, o.Databases)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 	res, err := seal.Seal(o.Src, r, seal.Options{CacheDir: a.CacheDir, Prune: o.Prune, Show: a.short, Extra: extra})
 	if errors.Is(err, seal.ErrDuplicatePath) && len(extra) > 0 {
-		return fmt.Errorf("%w; each --sqlite database is backed up under its file name, which must not be used by another database or by a file or folder at the top of %s", err, a.short(o.Src))
+		return fmt.Errorf("%w; each database salt copies is backed up under its own name, which must not be used by another database or by a file or folder at the top of %s", err, a.short(o.Src))
 	}
 	if err != nil {
 		return err
@@ -151,16 +149,18 @@ func (a *App) Seal(o SealOptions) error {
 }
 
 // copyDatabases makes a safe copy of each live database in a new private
-// temporary folder, and returns them as files to seal with each database's
-// own permissions and last-modified date. Those are read before the copy,
-// because copying can change them: after a crash, sqlite3 moves a leftover
-// -wal file into the database when it closes. cleanup removes the folder.
-func (a *App) copyDatabases(ctx context.Context, dbs []string) (extra []seal.Extra, cleanup func(), err error) {
+// temporary folder, and returns them as files to seal. cleanup removes the
+// folder.
+func (a *App) copyDatabases(ctx context.Context, repoRoot string, dbs []source.Database) (extra []seal.Extra, cleanup func(), err error) {
 	if len(dbs) == 0 {
 		return nil, func() {}, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	key, err := seal.CopyKey(a.CacheDir, repoRoot)
+	if err != nil {
+		return nil, nil, err
 	}
 	tmp, err := os.MkdirTemp("", "salt-db-")
 	if err != nil {
@@ -169,27 +169,19 @@ func (a *App) copyDatabases(ctx context.Context, dbs []string) (extra []seal.Ext
 	cleanup = func() { os.RemoveAll(tmp) }
 	extra = make([]seal.Extra, len(dbs))
 	for i, db := range dbs {
-		dst := filepath.Join(tmp, strconv.Itoa(i)+".db")
-		// sqlite3 runs in the temp folder, so it is given an absolute path.
-		abs, err := filepath.Abs(db)
-		var fi os.FileInfo
-		if err == nil {
-			fi, err = os.Stat(abs)
-		}
-		if err == nil {
-			err = a.CopySQLite(ctx, abs, dst)
-		}
+		dst := filepath.Join(tmp, strconv.Itoa(i))
+		meta, err := db.Copy(ctx, source.CopyOptions{Dst: dst, Key: key})
 		if err != nil {
 			cleanup()
 			switch {
 			case ctx.Err() != nil:
 				return nil, nil, fmt.Errorf("seal %w: the database copies were removed and nothing was sealed", ErrInterrupted)
 			case errors.Is(err, fs.ErrNotExist):
-				return nil, nil, fmt.Errorf("the database %s does not exist; check the path given to --sqlite", a.short(db))
+				return nil, nil, fmt.Errorf("the database %s does not exist; check the path given to %s", a.short(db.String()), db.Flag())
 			}
-			return nil, nil, fmt.Errorf("copying the database %s: %w", a.short(db), err)
+			return nil, nil, fmt.Errorf("copying the database %s: %w", a.short(db.String()), err)
 		}
-		extra[i] = seal.Extra{Rel: filepath.Base(db), Path: dst, Mode: fi.Mode(), ModTime: fi.ModTime()}
+		extra[i] = seal.Extra{Rel: db.Name(), Path: dst, Mode: meta.Mode, ModTime: meta.ModTime}
 	}
 	return extra, cleanup, nil
 }

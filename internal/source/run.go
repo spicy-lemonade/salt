@@ -36,6 +36,16 @@ func run(ctx context.Context, cmd *exec.Cmd) error {
 	return fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
 }
 
+// output runs cmd like run and returns the first max bytes it printed.
+func output(ctx context.Context, cmd *exec.Cmd, max int) ([]byte, error) {
+	stdout := &limitedBuffer{max: max}
+	cmd.Stdout = stdout
+	if err := run(ctx, cmd); err != nil {
+		return nil, err
+	}
+	return stdout.buf.Bytes(), nil
+}
+
 // limitedBuffer keeps the first max bytes written to it and drops the rest.
 // The buffer is a field, not embedded, so io.Copy cannot reach
 // bytes.Buffer.ReadFrom and skip the limit.

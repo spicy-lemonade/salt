@@ -147,3 +147,43 @@ func TestSQLiteCommand(t *testing.T) {
 		t.Errorf("relative path: %v", err)
 	}
 }
+
+// A relative path is resolved from the current folder, since sqlite3 runs
+// in the copy's folder.
+func TestNewSQLite(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	db, err := NewSQLite("memory.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := db.(*SQLite)
+	if s.abs != filepath.Join(dir, "memory.db") || s.Name() != "memory.db" || s.String() != "memory.db" || s.Flag() != "--sqlite" {
+		t.Fatalf("got %q %q %q %q", s.abs, s.Name(), s.String(), s.Flag())
+	}
+}
+
+// Copy reports a missing database, or one that is not a SQLite database,
+// before starting sqlite3.
+func TestSQLiteCopyRefuses(t *testing.T) {
+	dir := t.TempDir()
+	for path, want := range map[string]error{
+		filepath.Join(dir, "missing.db"):                          fs.ErrNotExist,
+		writeFile(t, filepath.Join(dir, "notes.md"), "# notes\n"): ErrNotSQLite,
+	} {
+		db, _ := NewSQLite(path)
+		if _, err := db.Copy(context.Background(), CopyOptions{Dst: filepath.Join(dir, "0")}); !errors.Is(err, want) {
+			t.Errorf("%s: %v, want %v", path, err, want)
+		}
+	}
+}
+
+// Without sqlite3, Copy fails before any process starts.
+func TestSQLiteCopyWithoutSQLite3(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	dir := t.TempDir()
+	db, _ := NewSQLite(writeFile(t, filepath.Join(dir, "live.db"), sqliteHeader))
+	if _, err := db.Copy(context.Background(), CopyOptions{Dst: filepath.Join(dir, "0")}); !errors.Is(err, ErrMissingProgram) {
+		t.Fatalf("Copy: %v", err)
+	}
+}

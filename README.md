@@ -115,7 +115,32 @@ Salt only encrypts the files it is given. A database that is in use needs a safe
 
 Salt can make that copy for you. Give it each SQLite database with `--sqlite`, as in the script above, and Salt copies it safely, even while the agent is running, then encrypts the copy. Each copy is stored at the top of the backup under its file name, with its own last-modified date, so two databases need different file names. The copy is made with SQLite's own `sqlite3` tool, which macOS includes. On Linux, install it with your package manager.
 
-For Postgres databases such as Honcho or Hindsight, run `pg_dump` into the folder you back up first. Salt will soon make these copies for you too.
+Postgres databases, such as the ones Honcho and Hindsight use, work the same way. Give Salt the connection with `--postgres`, and it dumps the database as plain SQL with Postgres's own `pg_dump` tool, even while the agent is running, then encrypts the dump. Each dump is stored at the top of the backup as the database's name with `.sql`, such as `memory.sql`. `pg_dump` comes with Postgres. Its version must be the same as your server's or newer.
+
+```bash
+salt seal --postgres postgresql://agent@localhost:5432/memory "$STAGE" "$REPO"
+```
+
+The connection can be a URL, or settings such as `"host=localhost dbname=memory"`. A URL in the form some tools save, such as `postgresql+psycopg://...`, works too. Don't type a password on the command line, because other programs on your computer can see it there. Put it in `~/.pgpass`, or give Salt the name of an environment variable that holds the whole connection with `--postgres-env`. Many agents already keep their connection in one.
+
+```bash
+set -a; source ~/agent/.env; set +a   # sets DB_CONNECTION_URI
+salt seal --postgres-env DB_CONNECTION_URI "$STAGE" "$REPO"
+```
+
+Salt never passes the password to `pg_dump` on its command line, and never shows it in a message. An unchanged database gives the same dump, so it makes no commit.
+
+### Restoring a Postgres database
+
+`salt restore` gives you back the dump. Load it into a new, empty database with `psql`.
+
+```bash
+salt restore ~/my-backup-repo --to ~/restored-files memory.sql
+createdb memory_restored
+psql -X -v ON_ERROR_STOP=1 --single-transaction -d memory_restored -f ~/restored-files/memory.sql
+```
+
+The dump recreates every table, row and extension, but the server must already have the extensions installed. Install `pgvector`, or any other extension your agent uses, on the new server first. If the dump names database users that don't exist there yet, create them first too. With `ON_ERROR_STOP` and `--single-transaction`, a failed restore stops at the first error and leaves the new database empty.
 
 To keep several snapshots, give each copy a dated name, such as `memory-2026-09-30.db`, and keep them in the folder you back up.
 

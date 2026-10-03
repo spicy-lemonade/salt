@@ -242,7 +242,7 @@ func TestSealSQLiteInterrupted(t *testing.T) {
 	write(t, db, "SQLite format 3\x00pages")
 	bin := t.TempDir()
 	started := filepath.Join(t.TempDir(), "started")
-	fake := "#!/bin/sh\necho partial > \"$PWD/0.db\"\ntouch " + started + "\nexec sleep 60\n"
+	fake := "#!/bin/sh\necho partial > \"$PWD/0\"\ntouch " + started + "\nexec sleep 60\n"
 	if err := os.WriteFile(filepath.Join(bin, "sqlite3"), []byte(fake), 0o755); err != nil {
 		t.Fatal(err)
 	}

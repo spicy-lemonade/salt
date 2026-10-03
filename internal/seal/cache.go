@@ -1,6 +1,7 @@
 package seal
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -39,12 +40,48 @@ func cacheKey(recipients []string, encryptPaths bool) string {
 }
 
 func cachePath(dir, repoRoot string) (string, error) {
+	return repoFile(dir, repoRoot, "seal-", ".json")
+}
+
+// repoFile names the local file holding what salt keeps for the repo at
+// repoRoot.
+func repoFile(dir, repoRoot, prefix, ext string) (string, error) {
 	abs, err := filepath.Abs(repoRoot)
 	if err != nil {
 		return "", err
 	}
 	s := sha256.Sum256([]byte(abs))
-	return filepath.Join(dir, "seal-"+hex.EncodeToString(s[:8])+".json"), nil
+	return filepath.Join(dir, prefix+hex.EncodeToString(s[:8])+ext), nil
+}
+
+// copyKeyLen is the length of a copy key: 128 random bits in hex.
+const copyKeyLen = 32
+
+// CopyKey returns a random secret salt keeps for the repo at repoRoot, made
+// the first time it is asked for. Database copies use it in place of a key
+// their program would otherwise make up anew each time (see
+// source.CopyOptions). It is kept 0600 next to the change cache and never
+// committed. If it is lost, a new one only means one more commit.
+func CopyKey(dir, repoRoot string) (string, error) {
+	p, err := repoFile(dir, repoRoot, "copykey-", "")
+	if err != nil {
+		return "", err
+	}
+	if b, err := os.ReadFile(p); err == nil && isCopyKey(string(b)) {
+		return string(b), nil
+	}
+	raw := make([]byte, copyKeyLen/2)
+	rand.Read(raw)
+	key := hex.EncodeToString(raw)
+	if err := writePrivate(p, []byte(key)); err != nil {
+		return "", err
+	}
+	return key, nil
+}
+
+func isCopyKey(s string) bool {
+	_, err := hex.DecodeString(s)
+	return len(s) == copyKeyLen && err == nil
 }
 
 func loadCache(path, key string) *cache {
@@ -61,11 +98,16 @@ func loadCache(path, key string) *cache {
 }
 
 func (c *cache) save(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
 	b, err := json.Marshal(c)
 	if err != nil {
+		return err
+	}
+	return writePrivate(path, b)
+}
+
+// writePrivate replaces the file at path with b, readable only by its owner.
+func writePrivate(path string, b []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
