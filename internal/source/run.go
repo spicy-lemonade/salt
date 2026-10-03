@@ -9,10 +9,15 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // maxStderr caps how much of a program's error output is kept.
 const maxStderr = 4 << 10
+
+// waitDelay bounds how long a stopped program's output is waited for, in case
+// a program it started still holds it open.
+const waitDelay = 5 * time.Second
 
 // ErrMissingProgram means a program salt needs could not be found.
 var ErrMissingProgram = errors.New("is not installed or not on PATH")
@@ -23,6 +28,7 @@ var ErrMissingProgram = errors.New("is not installed or not on PATH")
 func run(ctx context.Context, cmd *exec.Cmd) error {
 	stderr := &limitedBuffer{max: maxStderr}
 	cmd.Stderr = stderr
+	cmd.WaitDelay = waitDelay
 	err := cmd.Run()
 	name := cmd.Args[0]
 	switch {

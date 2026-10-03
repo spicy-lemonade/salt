@@ -325,7 +325,7 @@ it is, so you would only find out when you restore it.
 
 For SQLite, `salt seal --sqlite DB SRC REPO` makes the copy itself
 (`internal/source`). It runs
-`sqlite3 -init /dev/null -bail -cmd ".timeout 30000" DB ".backup N.db"`
+`sqlite3 -init /dev/null -bail -cmd ".timeout 30000" DB ".backup N"`
 inside a new private temporary folder, seals the copy at the top of the
 backup under DB's file name, and always removes the folder, also when the
 copy or the seal fails or salt is stopped with Ctrl-C or SIGTERM. SQLite's
@@ -345,8 +345,53 @@ because `sqlite3` would create an empty database at a missing path. A
 database name that clashes with another database, or with a file or folder
 at the top of SRC, is refused.
 
-Postgres (Honcho, Hindsight) is not built yet. The backup script runs
-`pg_dump` into SRC before `salt seal`.
+For Postgres, `salt seal --postgres CONN SRC REPO` dumps the database with
+`pg_dump --no-password --format=plain --lock-wait-timeout=30000
+--file=N --dbname=CONN` into the same kind of private temporary folder, and
+seals the dump at the top of the backup as the database's name with `.sql`.
+`pg_dump` reads the whole database in one transaction, so the dump is
+consistent while other programs write, and it streams the dump to the file,
+so nothing is held in memory. Plain SQL restores with `psql` alone, and zstd
+compresses it well. CONN is a libpq URL or a string of libpq settings. A
+driver in a URL's scheme (`postgresql+psycopg://`), as SQLAlchemy writes
+it, is dropped. `--postgres-env VAR` reads CONN from an environment variable,
+which is where agents usually keep it, so the password is never on salt's
+command line.
+
+Salt takes the password out of CONN and gives it to `pg_dump` in
+`PGPASSWORD`, so it never shows in a process list or a message. Without one,
+`pg_dump` looks in `~/.pgpass`, `PGPASSFILE` and `PGPASSWORD` as usual.
+`--no-password` stops `pg_dump` from waiting for someone to type a password.
+Unless the person set `PGCONNECT_TIMEOUT`, salt sets it to 30 seconds, so a
+server that cannot be reached fails the backup instead of stopping it. A
+table another program has locked fails the dump after 30 seconds. A dropped
+connection or any other `pg_dump` error stops salt before sealing, with
+`pg_dump`'s reason. A connection with no database name uses `PGDATABASE`, as
+libpq does, and without that it is refused, rather than letting `pg_dump`
+guess one.
+
+A dump has no last-modified date of its own, so none is recorded, and it is
+owner-only (0600). Recent `pg_dump` releases (18, and 17.6, 16.10, 15.14,
+14.19 and 13.22) write a new random key into every plain dump (`\restrict`).
+That would make every dump differ, so salt gives `pg_dump --restrict-key`
+when `pg_dump --help` lists it. The key is random, made once per backup repo
+and kept in salt's cache folder (`copykey-<hash>`, 0600, never committed), so
+it stays secret and the protection it gives on restore still holds. If the
+cache is lost, a new key only means one more commit. With that, an unchanged
+database gives an identical dump and makes no commit.
+
+To restore, `salt restore` gives back the dump, and `psql -X -v
+ON_ERROR_STOP=1 --single-transaction -d NEWDB -f NAME.sql` loads it into a
+new, empty database. The dump recreates extensions with `CREATE EXTENSION`,
+so the new server must already have them installed (for example
+`pgvector`), and the database users the dump names should exist first.
+
+Every kind of database is a `source.Database`, which says what the copy is
+called, how to show the database in messages without a password, and how to
+make the copy. `source.Kinds` maps each `salt seal` option to one, so adding
+another database means adding one type and one entry there. Salt's commands
+handle every kind the same way: the temporary folder, cleaning up, name
+clashes, Ctrl-C, and the per-repo key.
 
 The backup gets the live database file's permissions and last-modified date.
 They are read before the copy, because the copy can change them: after a
@@ -367,8 +412,6 @@ Touch ID, and switching recovery method.
 
 ## Still to build
 
-- Salt making safe copies of live Postgres databases by itself, as it does
-  for SQLite, so a backup script no longer has to run `pg_dump`.
 - OpenViking support. Its data format has not been checked yet.
 - a one-command `salt backup`, which will also run `salt prune`
 - splitting files over GitHub's 100 MB limit

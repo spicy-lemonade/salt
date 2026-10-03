@@ -10,15 +10,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
-	"time"
 )
 
 // sqliteHeader starts every SQLite database file.
 const sqliteHeader = "SQLite format 3\x00"
-
-// busyTimeout is how long sqlite3 waits for another program's write to finish
-// before giving up.
-const busyTimeout = 30 * time.Second
 
 // ErrNotSQLite means a file given as a SQLite database is not one.
 var ErrNotSQLite = errors.New("not a SQLite database")
@@ -29,6 +24,40 @@ var copyName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // walVersion in header bytes 18 and 19 marks a database in WAL mode.
 const walVersion = 2
+
+// SQLite is a live SQLite database file.
+type SQLite struct {
+	given, abs string
+}
+
+// NewSQLite returns the SQLite database at path. A relative path is resolved
+// from the current folder.
+func NewSQLite(path string) (Database, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	return &SQLite{given: path, abs: abs}, nil
+}
+
+func (s *SQLite) Name() string   { return filepath.Base(s.abs) }
+func (s *SQLite) String() string { return s.given }
+func (s *SQLite) Flag() string   { return "--sqlite" }
+
+// Copy copies the database with CopySQLite. The copy keeps the live file's
+// permissions and last-modified date, read before copying, because copying
+// can change them: after a crash, sqlite3 moves a leftover -wal file into the
+// database when it closes.
+func (s *SQLite) Copy(ctx context.Context, o CopyOptions) (Meta, error) {
+	fi, err := os.Stat(s.abs)
+	if err != nil {
+		return Meta{}, err
+	}
+	if err := CopySQLite(ctx, s.abs, o.Dst); err != nil {
+		return Meta{}, err
+	}
+	return Meta{Mode: fi.Mode(), ModTime: fi.ModTime()}, nil
+}
 
 // checkSQLite refuses a path that is not a regular file holding a SQLite
 // database, and reports whether the database is in WAL mode. An empty file
@@ -65,7 +94,8 @@ func checkSQLite(path string) (wal bool, err error) {
 
 // CopySQLite writes a consistent copy of the SQLite database at live to dst
 // with SQLite's own backup, which is safe while other programs write to the
-// database. live must be an absolute path. sqlite3 copies it page by page, so it is never held in memory.
+// database. live must be an absolute path. sqlite3 copies it page by page,
+// so it is never held in memory.
 // dst's file name must start with a letter or digit and may only use
 // letters, digits, '.', '_' and '-'.
 func CopySQLite(ctx context.Context, live, dst string) error {
@@ -100,7 +130,7 @@ func sqliteCommand(ctx context.Context, live, dst string, wal bool) (*exec.Cmd, 
 	if !copyName.MatchString(name) {
 		return nil, fmt.Errorf("copy name %q needs quoting", name)
 	}
-	args := []string{"-init", os.DevNull, "-bail", "-cmd", ".timeout " + strconv.FormatInt(busyTimeout.Milliseconds(), 10)}
+	args := []string{"-init", os.DevNull, "-bail", "-cmd", ".timeout " + strconv.FormatInt(waitTimeout.Milliseconds(), 10)}
 	if wal {
 		// A read starts the transaction; its output goes nowhere.
 		args = append(args, "-cmd", "BEGIN", "-cmd", "SELECT count(*) FROM sqlite_master")
