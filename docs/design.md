@@ -86,7 +86,8 @@ If you lose them and this laptop, your backups cannot be recovered.
   Each file gets back the last-modified date it had when it was sealed. Seal
   records the date of the file it is given, so a backup script must keep the
   original dates when it copies files (`cp -p`). `--sqlite` databases get
-  the live database file's date (see "Databases"). A file whose only change is its date keeps its
+  the live database file's date. `--postgres` dumps have no date of their own,
+  so they restore with the time of the restore (see "Databases"). A file whose only change is its date keeps its
   ciphertext; only `index.age` is rewritten. Backups made before salt recorded
   dates restore with the time of the restore, and the first seal with a salt
   that records dates rewrites `index.age` once to add them.
