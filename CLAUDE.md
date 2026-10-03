@@ -21,7 +21,7 @@
 
 ## Project Overview
 
-Salt is an open-source Go CLI that encrypts AI-agent memory backups before they are pushed to Git. Examples are Hermes with Mnemosyne SQLite databases and Markdown files such as USER.md, MEMORY.md, SOUL.md and SKILL.md. It will later cover Honcho and Hindsight (Postgres + pgvector) and OpenViking. An example usage is a nightly backup script which saves a snapshot of the agent files, but runs `salt seal` to encrypt them before they reach the git repo. A pre-commit hook (`salt check`) then refuses any commit containing a file that is not encrypted. Salt is distributed through a Homebrew tap. The full design is in `docs/design.md`.
+Salt is an open-source Go CLI that encrypts AI-agent memory backups before they are pushed to Git. Examples are Hermes with Mnemosyne SQLite databases and Markdown files such as USER.md, MEMORY.md, SOUL.md and SKILL.md. It also covers Postgres databases such as Honcho and Hindsight (Postgres + pgvector), and will later cover OpenViking. An example usage is a nightly backup script which saves a snapshot of the agent files, but runs `salt seal` to encrypt them before they reach the git repo. A pre-commit hook (`salt check`) then refuses any commit containing a file that is not encrypted. Salt is distributed through a Homebrew tap. The full design is in `docs/design.md`.
 
 Salt is a general-purpose open-source tool for public release. Write code, defaults, messages and docs for any user and any setup.
 
@@ -32,7 +32,7 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - BIP39 12-word recovery phrases; the age key is derived from the phrase with HKDF-SHA256
 - OS keychain via `github.com/zalando/go-keyring`, with a 0600 file fallback (`SALT_KEYSTORE=file`)
 
-**Commands:** `init`, `seal [--sqlite DB]`, `prune`, `check`, `restore`, `verify`, `doctor`, `trust`, `recovery test|show`, `hook install`, `version`.
+**Commands:** `init`, `seal [--sqlite DB] [--postgres CONN] [--postgres-env VAR]`, `prune`, `check`, `restore`, `verify`, `doctor`, `trust`, `recovery test|show`, `hook install`, `version`.
 
 **Package layout:**
 - `cmd/salt`: CLI entry point and flag parsing
@@ -43,7 +43,7 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - `internal/check`: pre-commit plaintext detection
 - `internal/hook`: pre-commit hook script and installation
 - `internal/gitx`: the only way salt runs git (hooks always disabled)
-- `internal/source`: safe copies of live databases (runs `sqlite3`); with `gitx`, the only packages that start programs
+- `internal/source`: safe copies of live databases (runs `sqlite3` and `pg_dump`); each kind is a `Database` listed in `Kinds`; with `gitx`, the only packages that start programs
 - `internal/guard`: refuses nested salt processes; sets a soft memory limit
 - `internal/prune`: keeps only the backups from the last N days with a change (counted for the whole repo, not per file) by rewriting the branch's history
 - `internal/trust`: this machine's approved copy of each repo's keys and settings; seal refuses if the repo differs
@@ -69,7 +69,7 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 
 **Approved keys:** `salt init` saves the repo's keys and file-name setting to the OS config dir (`salt/trusted/<hash>.json`, 0600). `salt seal` refuses if the repo's `.salt/recipients.txt` or `format.json` differ, because anyone who can push could otherwise add their own key. `salt trust` approves a change. All repo reads and writes go through `os.Root` so symlinks can't lead outside the repo.
 
-**Change detection:** age output is randomised, so a local cache (the OS cache dir, `seal-<hash>.json`, 0600, never committed) maps plaintext hashes to existing ciphertext. Unchanged files keep their ciphertext, and an unchanged snapshot (same contents, permissions and last-modified dates) produces no commit.
+**Change detection:** age output is randomised, so a local cache (the OS cache dir, `seal-<hash>.json`, 0600, never committed) maps plaintext hashes to existing ciphertext. Unchanged files keep their ciphertext, and an unchanged snapshot (same contents, permissions and last-modified dates) produces no commit. The same folder holds `copykey-<hash>` (0600), a random key per repo that database copies use in place of a random one of their own (for `pg_dump --restrict-key`), so an unchanged database also makes no commit.
 
 **Restore:** decrypts into a temp directory, verifies every file against the index, then moves the result into place with owner-only permissions. An existing destination is moved aside, never overwritten.
 
@@ -101,8 +101,8 @@ go test ./internal/seal -run TestRoundTrip
 - User-facing onboarding and warning copy is agreed wording (see `docs/design.md`, "Onboarding copy"). Do not reword it without asking.
 - Salt prints to stderr only. Scheduled jobs (cron, agent schedulers) often send any stdout on as an email or message, so success must be silent on stdout.
 - Decided out of scope is Touch ID gating, and switching recovery method from the 12 word passphrase to the user chosen passphrase or vice versa.
-- `salt seal --sqlite DB` makes a safe copy of a live SQLite database itself (`internal/source` runs `sqlite3 .backup`). Not built yet is the same for Postgres: today the backup script runs `pg_dump` first, then `salt seal`. See `docs/design.md`, "Databases".
-- Not yet built: Salt making safe Postgres copies by itself, OpenViking support, a `salt backup` preset, splitting files over 100 MB, and the signed index.
+- `salt seal --sqlite DB` makes a safe copy of a live SQLite database itself (`internal/source` runs `sqlite3 .backup`). `salt seal --postgres CONN` (or `--postgres-env VAR`) dumps a Postgres database as plain SQL with `pg_dump`, with the password passed in `PGPASSWORD` and never shown. See `docs/design.md`, "Databases".
+- Not yet built: OpenViking support, a `salt backup` preset, splitting files over 100 MB, and the signed index.
 
 ### Agent contributing rules
 

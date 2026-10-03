@@ -56,6 +56,66 @@ func assertEmpty(t *testing.T, dir string) {
 	}
 }
 
+// assertSealFails runs salt seal with args and checks it stops before
+// sealing: exit 1, a message containing want, no database copy left behind
+// and the repo unchanged. It returns the output.
+func assertSealFails(t *testing.T, e *env, b *backupRepo, want string, args ...string) string {
+	t.Helper()
+	salt, tmp := withTemp(t, e)
+	out, code := salt.run(b.base, "salt", append(append([]string{"seal"}, args...), b.src, b.dir)...)
+	if code != 1 || !strings.HasPrefix(out, "salt: ") || !strings.Contains(out, want) {
+		t.Fatalf("exit %d, want 1 and %q:\n%s", code, want, out)
+	}
+	assertEmpty(t, tmp)
+	if st := e.must(b.dir, "git", "status", "--porcelain"); st != "" {
+		t.Fatalf("a failed copy changed the repo:\n%s", st)
+	}
+	return out
+}
+
+// assertInterruptStopsCopy runs salt seal with args, with a stand-in for
+// program that runs script, then waits. Ctrl-C once the stand-in has started
+// must stop it, remove the copy and seal nothing. script touches
+// "$SALT_TEST_STARTED" once it has started copying.
+func assertInterruptStopsCopy(t *testing.T, e *env, b *backupRepo, program, script string, args ...string) {
+	t.Helper()
+	bin := t.TempDir()
+	started := filepath.Join(t.TempDir(), "started")
+	if err := os.WriteFile(filepath.Join(bin, program), []byte("#!/bin/sh\n"+script+"\nexec sleep 60\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	salt, tmp := withTemp(t, e)
+	salt = salt.with("PATH="+bin+":"+filepath.Dir(e.bin)+":/usr/bin:/bin", "SALT_TEST_STARTED="+started)
+	cmd := exec.Command(e.bin, append(append([]string{"seal"}, args...), b.src, b.dir)...)
+	cmd.Env = salt.vars
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill() })
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never started", program)
+		}
+	}
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.Wait()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 130 || !strings.Contains(out.String(), "seal interrupted: the database copies were removed and nothing was sealed") {
+		t.Fatalf("exit %v, want 130:\n%s", err, out.String())
+	}
+	assertEmpty(t, tmp)
+	if st := e.must(b.dir, "git", "status", "--porcelain"); st != "" {
+		t.Fatalf("an interrupted seal changed the repo:\n%s", st)
+	}
+}
+
 // startAgent holds the WAL-mode database db open in a sqlite3 process, as a
 // running agent does, and commits rows rows that stay only in the -wal file.
 // It returns once another connection can see them.
@@ -216,15 +276,7 @@ func TestSealSQLiteFailures(t *testing.T) {
 		"sqlite3 fails":    {db, []string{"PATH=" + failing + ":" + filepath.Dir(e.bin) + ":/usr/bin:/bin"}, "database is locked"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			salt, tmp := withTemp(t, e)
-			out, code := salt.with(tc.vars...).run(b.base, "salt", "seal", "--sqlite", tc.db, b.src, b.dir)
-			if code != 1 || !strings.HasPrefix(out, "salt: ") || !strings.Contains(out, tc.want) {
-				t.Fatalf("exit %d, want 1 and %q:\n%s", code, tc.want, out)
-			}
-			assertEmpty(t, tmp)
-			if st := e.must(b.dir, "git", "status", "--porcelain"); st != "" {
-				t.Fatalf("a failed copy changed the repo:\n%s", st)
-			}
+			assertSealFails(t, e.with(tc.vars...), b, tc.want, "--sqlite", tc.db)
 		})
 	}
 	if _, err := os.Stat(filepath.Join(dir, "gone.db")); !os.IsNotExist(err) {
@@ -233,47 +285,12 @@ func TestSealSQLiteFailures(t *testing.T) {
 }
 
 // Ctrl-C while sqlite3 is copying stops it, removes the copy and seals
-// nothing. A stand-in sqlite3 starts a copy, says so, then waits.
+// nothing.
 func TestSealSQLiteInterrupted(t *testing.T) {
 	e := newEnv(t)
 	b := newBackupRepo(t, e)
 	os.MkdirAll(b.src, 0o755)
 	db := filepath.Join(t.TempDir(), "memory.db")
 	write(t, db, "SQLite format 3\x00pages")
-	bin := t.TempDir()
-	started := filepath.Join(t.TempDir(), "started")
-	fake := "#!/bin/sh\necho partial > \"$PWD/0.db\"\ntouch " + started + "\nexec sleep 60\n"
-	if err := os.WriteFile(filepath.Join(bin, "sqlite3"), []byte(fake), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	salt, tmp := withTemp(t, e)
-	salt = salt.with("PATH=" + bin + ":" + filepath.Dir(e.bin) + ":/usr/bin:/bin")
-	cmd := exec.Command(e.bin, "seal", "--sqlite", db, b.src, b.dir)
-	cmd.Env = salt.vars
-	var out strings.Builder
-	cmd.Stdout, cmd.Stderr = &out, &out
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { cmd.Process.Kill() })
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		if _, err := os.Stat(started); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("sqlite3 never started")
-		}
-	}
-	if err := cmd.Process.Signal(os.Interrupt); err != nil {
-		t.Fatal(err)
-	}
-	err := cmd.Wait()
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 130 || !strings.Contains(out.String(), "seal interrupted: the database copies were removed and nothing was sealed") {
-		t.Fatalf("exit %v, want 130:\n%s", err, out.String())
-	}
-	assertEmpty(t, tmp)
-	if st := e.must(b.dir, "git", "status", "--porcelain"); st != "" {
-		t.Fatalf("an interrupted seal changed the repo:\n%s", st)
-	}
+	assertInterruptStopsCopy(t, e, b, "sqlite3", `echo partial > "$PWD/0"; touch "$SALT_TEST_STARTED"`, "--sqlite", db)
 }

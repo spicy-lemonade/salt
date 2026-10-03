@@ -111,13 +111,16 @@ salt prune --keep-days 10 ~/my-backup-repo   # keep 10 instead
 
 ## 🗄️ Databases
 
-Salt only encrypts the files it is given. A database that is in use needs a safe copy first, because a plain `cp` while the agent is writing can give a broken copy, and you'd only find out when you restore it.
+A database that is in use needs a safe copy before it is encrypted, because a plain `cp` while the agent is writing can give a broken copy. Salt makes that copy for you, even while the agent is running.
 
-Salt can make that copy for you. Give it each SQLite database with `--sqlite`, as in the script above, and Salt copies it safely, even while the agent is running, then encrypts the copy. Each copy is stored at the top of the backup under its file name, with its own last-modified date, so two databases need different file names. The copy is made with SQLite's own `sqlite3` tool, which macOS includes. On Linux, install it with your package manager.
+```bash
+salt seal --sqlite ~/agent/memory.db "$STAGE" "$REPO"
+salt seal --postgres-env DB_CONNECTION_URI "$STAGE" "$REPO"
+```
 
-For Postgres databases such as Honcho or Hindsight, run `pg_dump` into the folder you back up first. Salt will soon make these copies for you too.
+`--postgres-env` reads the database address from an environment variable, so the password never appears on the command line. The [design doc](docs/design.md#databases) explains the options and [how to restore a Postgres database](docs/design.md#restoring-a-postgres-database).
 
-To keep several snapshots, give each copy a dated name, such as `memory-2026-09-30.db`, and keep them in the folder you back up.
+`salt prune` keeps only the last few days of backups. As a workaround to keep a database for longer, give a full copy a dated name, such as `memory-2026-09-30.db` or a Postgres dump `memory-2026-09-30.sql`, and keep it in the folder you back up. This works for any database, because Salt encrypts whatever files are in that folder.
 
 ## 🔑 Getting your files back
 
