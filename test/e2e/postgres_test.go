@@ -136,7 +136,7 @@ func TestSealPostgres(t *testing.T) {
 		t.Fatalf("plaintext dump found in commit: %s", grep)
 	}
 
-	// The restore steps from the README.
+	// The restore steps from the design doc.
 	dest := filepath.Join(t.TempDir(), "restored")
 	e.must(b.base, "salt", "restore", b.dir, "--to", dest, "memory.sql")
 	dump := filepath.Join(dest, "memory.sql")

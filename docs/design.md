@@ -356,7 +356,9 @@ compresses it well. CONN is a libpq URL or a string of libpq settings. A
 driver in a URL's scheme (`postgresql+psycopg://`), as SQLAlchemy writes
 it, is dropped. `--postgres-env VAR` reads CONN from an environment variable,
 which is where agents usually keep it, so the password is never on salt's
-command line.
+command line. `pg_dump` comes with Postgres, and its version must be the same
+as the server's or newer. `sqlite3`, for `--sqlite`, comes with macOS. On
+Linux it is installed with the package manager.
 
 Salt takes the password out of CONN and gives it to `pg_dump` in
 `PGPASSWORD`, so it never shows in a process list or a message. Without one,
@@ -380,12 +382,6 @@ it stays secret and the protection it gives on restore still holds. If the
 cache is lost, a new key only means one more commit. With that, an unchanged
 database gives an identical dump and makes no commit.
 
-To restore, `salt restore` gives back the dump, and `psql -X -v
-ON_ERROR_STOP=1 --single-transaction -d NEWDB -f NAME.sql` loads it into a
-new, empty database. The dump recreates extensions with `CREATE EXTENSION`,
-so the new server must already have them installed (for example
-`pgvector`), and the database users the dump names should exist first.
-
 Every kind of database is a `source.Database`, which says what the copy is
 called, how to show the database in messages without a password, and how to
 make the copy. `source.Kinds` maps each `salt seal` option to one, so adding
@@ -405,6 +401,23 @@ mode:
   first and reach `live.db` only at a checkpoint, so `live.db` can be older
   than the last change. This is a property of the database, and Salt does
   not try to work around it.
+
+### Restoring a Postgres database
+
+`salt restore` gives back the dump. `psql` loads it into a new, empty
+database.
+
+```bash
+salt restore ~/my-backup-repo --to ~/restored-files memory.sql
+createdb memory_restored
+psql -X -v ON_ERROR_STOP=1 --single-transaction -d memory_restored -f ~/restored-files/memory.sql
+```
+
+The dump recreates every table, row and extension, but the new server must
+already have the extensions installed, such as `pgvector`. Database users the
+dump names must exist there first too. With `ON_ERROR_STOP` and
+`--single-transaction`, a failed restore stops at the first error and leaves
+the new database empty.
 
 ## Out of scope
 
