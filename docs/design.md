@@ -366,8 +366,9 @@ Unless the person set `PGCONNECT_TIMEOUT`, salt sets it to 30 seconds, so a
 server that cannot be reached fails the backup instead of stopping it. A
 table another program has locked fails the dump after 30 seconds. A dropped
 connection or any other `pg_dump` error stops salt before sealing, with
-`pg_dump`'s reason. A connection with no database name is refused, rather
-than letting `pg_dump` guess one.
+`pg_dump`'s reason. A connection with no database name uses `PGDATABASE`, as
+libpq does, and without that it is refused, rather than letting `pg_dump`
+guess one.
 
 A dump has no last-modified date of its own, so none is recorded, and it is
 owner-only (0600). Recent `pg_dump` releases (18, and 17.6, 16.10, 15.14,

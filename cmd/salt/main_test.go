@@ -218,6 +218,7 @@ func TestRunSealVerifyRestore(t *testing.T) {
 	// A database option's value is checked before anything is sealed, and a
 	// password in it is never repeated.
 	t.Setenv("SALT_TEST_EMPTY", "")
+	t.Setenv("PGDATABASE", "")
 	for _, args := range [][]string{
 		{"--postgres", "postgresql://agent:hunter2@localhost:5432"},
 		{"--postgres", "mysql://agent:hunter2@localhost/memory"},
@@ -302,27 +303,5 @@ func TestNewAppWithoutHome(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	if _, err := newApp(); err == nil {
 		t.Fatal("newApp without a home folder succeeded")
-	}
-}
-
-// Database options of different kinds may be mixed and repeated, and keep
-// the order they were given in.
-func TestDatabaseFlags(t *testing.T) {
-	fs := newFlags("seal")
-	given := databaseFlags(fs)
-	t.Setenv("SALT_TEST_DB", "dbname=c")
-	if _, err := parse(fs, []string{"--sqlite", "a.db", "src", "--postgres", "dbname=b", "--postgres-env", "SALT_TEST_DB", "repo", "--sqlite", "d.db"}, 2, 2); err != nil {
-		t.Fatal(err)
-	}
-	dbs, err := given.databases()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got []string
-	for _, db := range dbs {
-		got = append(got, db.String())
-	}
-	if want := []string{"a.db", "dbname=b", "SALT_TEST_DB", "d.db"}; !slices.Equal(got, want) {
-		t.Fatalf("databases = %q, want %q", got, want)
 	}
 }

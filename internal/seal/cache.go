@@ -67,8 +67,11 @@ func CopyKey(dir, repoRoot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if b, err := os.ReadFile(p); err == nil && isCopyKey(string(b)) {
-		return string(b), nil
+	// A damaged key is replaced.
+	if b, err := os.ReadFile(p); err == nil && len(b) == copyKeyLen {
+		if _, err := hex.DecodeString(string(b)); err == nil {
+			return string(b), nil
+		}
 	}
 	raw := make([]byte, copyKeyLen/2)
 	rand.Read(raw)
@@ -77,11 +80,6 @@ func CopyKey(dir, repoRoot string) (string, error) {
 		return "", err
 	}
 	return key, nil
-}
-
-func isCopyKey(s string) bool {
-	_, err := hex.DecodeString(s)
-	return len(s) == copyKeyLen && err == nil
 }
 
 func loadCache(path, key string) *cache {

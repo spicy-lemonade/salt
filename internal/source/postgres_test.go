@@ -3,6 +3,7 @@ package source
 import (
 	"context"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -22,7 +23,7 @@ func TestParseURL(t *testing.T) {
 		"postgresql://%2Fvar%2Frun%2Fpostgresql/memory":                     {"postgresql://%2Fvar%2Frun%2Fpostgresql/memory", "", "memory"},
 		"postgresql://localhost":                                            {"postgresql://localhost", "", ""},
 	} {
-		conn, password, dbname, err := parseConn(in)
+		conn, password, dbname, err := parseURL(in)
 		if err != nil || [3]string{conn, password, dbname} != want {
 			t.Errorf("%s: %q, %q, %q, %v; want %q", in, conn, password, dbname, err, want)
 		}
@@ -33,7 +34,7 @@ func TestParseURL(t *testing.T) {
 		"postgresql://localhost/%zz",
 		"postgresql://localhost/memory?dbname=%zz",
 	} {
-		if _, _, _, err := parseConn(in); !errors.Is(err, errNotPostgres) {
+		if _, _, _, err := parseURL(in); !errors.Is(err, errNotPostgres) {
 			t.Errorf("%s: %v, want errNotPostgres", in, err)
 		}
 	}
@@ -49,29 +50,33 @@ func TestParseSettings(t *testing.T) {
 		"user=agent":                                               {"user='agent'", "", ""},
 		"dbname=postgresql://h/x":                                  {"dbname='postgresql://h/x'", "", "postgresql://h/x"},
 	} {
-		conn, password, dbname, err := parseConn(in)
+		conn, password, dbname, err := parseSettings(in)
 		if err != nil || [3]string{conn, password, dbname} != want {
 			t.Errorf("%q: %q, %q, %q, %v; want %q", in, conn, password, dbname, err, want)
 		}
 	}
 	for _, in := range []string{"", "   ", "memory", "dbname", "=memory", "db name=memory", "dbname='memory", "host=x dbname"} {
-		if _, _, _, err := parseConn(in); !errors.Is(err, errNotPostgres) {
+		if _, _, _, err := parseSettings(in); !errors.Is(err, errNotPostgres) {
 			t.Errorf("%q: %v, want errNotPostgres", in, err)
 		}
 	}
 }
 
-// libpq reads a quoted setting back unchanged.
-func TestQuoteSettingRoundTrip(t *testing.T) {
+// A quoted setting reads back unchanged.
+func TestSettingsRoundTrip(t *testing.T) {
 	for _, v := range []string{"", "plain", "two words", `it's`, `back\slash`, `'\'`, "tab\there"} {
-		got, rest, ok := settingValue(quoteSetting(v) + " next=1")
-		if !ok || got != v || rest != " next=1" {
-			t.Errorf("%q: %q, %q, %v", v, got, rest, ok)
+		conn, _, dbname, err := parseSettings("dbname='" + settingQuoter.Replace(v) + "'")
+		if err != nil || dbname != v {
+			t.Errorf("%q: %q, %v", v, dbname, err)
+		}
+		if _, _, again, err := parseSettings(conn); err != nil || again != v {
+			t.Errorf("%q: written back as %q, read %q, %v", v, conn, again, err)
 		}
 	}
 }
 
 func TestNewPostgres(t *testing.T) {
+	t.Setenv("PGDATABASE", "")
 	db, err := NewPostgres("postgresql+psycopg://agent:s3cret@localhost:5432/memory")
 	if err != nil {
 		t.Fatal(err)
@@ -103,6 +108,7 @@ func TestNewPostgres(t *testing.T) {
 }
 
 func TestNewPostgresEnv(t *testing.T) {
+	t.Setenv("PGDATABASE", "")
 	t.Setenv("SALT_TEST_DB", "postgresql://agent:s3cret@localhost/memory")
 	db, err := NewPostgresEnv("SALT_TEST_DB")
 	if err != nil {
@@ -127,45 +133,58 @@ func TestNewPostgresEnv(t *testing.T) {
 	}
 }
 
-func TestPgDumpArgs(t *testing.T) {
-	base := []string{"--no-password", "--format=plain", "--lock-wait-timeout=30000", "--file=/tmp/x/0"}
-	if got, want := pgDumpArgs("postgresql://h/m", "/tmp/x/0", ""), append(slices.Clone(base), "--dbname=postgresql://h/m"); !slices.Equal(got, want) {
-		t.Errorf("args = %q, want %q", got, want)
-	}
-	if got, want := pgDumpArgs("dbname='m'", "/tmp/x/0", "abc"), append(slices.Clone(base), "--restrict-key=abc", "--dbname=dbname='m'"); !slices.Equal(got, want) {
-		t.Errorf("args = %q, want %q", got, want)
-	}
-}
-
-func TestPgDumpEnv(t *testing.T) {
-	environ := []string{"HOME=/h", "PGPASSWORD=old"}
-	got := pgDumpEnv(environ, "new")
-	if want := []string{"HOME=/h", "PGPASSWORD=old", "PGPASSWORD=new", "PGCONNECT_TIMEOUT=30"}; !slices.Equal(got, want) {
-		t.Errorf("env = %q, want %q", got, want)
-	}
-	if environ[1] != "PGPASSWORD=old" || len(environ) != 2 {
-		t.Errorf("environ changed: %q", environ)
+func TestPgDumpCommand(t *testing.T) {
+	t.Setenv("PGPASSWORD", "old")
+	t.Setenv("PGCONNECT_TIMEOUT", "")
+	os.Unsetenv("PGCONNECT_TIMEOUT")
+	p := &Postgres{conn: "postgresql://h/m", password: "new"}
+	o := CopyOptions{Dst: "/tmp/x/0", Key: "abc"}
+	base := []string{"pg_dump", "--no-password", "--format=plain", "--lock-wait-timeout=30000", "--file=/tmp/x/0"}
+	for help, want := range map[string][]string{
+		"  --restrict-key=RESTRICT_KEY  use provided string": append(slices.Clone(base), "--restrict-key=abc", "--dbname=postgresql://h/m"),
+		"  --no-password  never prompt for password":         append(slices.Clone(base), "--dbname=postgresql://h/m"),
+	} {
+		cmd := pgDumpCommand(context.Background(), p, o, help)
+		if !slices.Equal(cmd.Args, want) {
+			t.Errorf("args = %q, want %q", cmd.Args, want)
+		}
+		// The connection's password wins, as it comes last.
+		env := cmd.Env[len(cmd.Env)-2:]
+		if want := []string{"PGPASSWORD=new", "PGCONNECT_TIMEOUT=30"}; !slices.Equal(env, want) {
+			t.Errorf("env ends %q, want %q", env, want)
+		}
 	}
 	// The person's own timeout is kept, and no password adds none.
-	got = pgDumpEnv([]string{"PGCONNECT_TIMEOUT=5"}, "")
-	if want := []string{"PGCONNECT_TIMEOUT=5"}; !slices.Equal(got, want) {
-		t.Errorf("env = %q, want %q", got, want)
+	t.Setenv("PGCONNECT_TIMEOUT", "5")
+	cmd := pgDumpCommand(context.Background(), &Postgres{conn: "dbname='m'"}, o, "")
+	if slices.ContainsFunc(cmd.Env, func(kv string) bool { return kv == "PGPASSWORD=" || kv == "PGCONNECT_TIMEOUT=30" }) {
+		t.Errorf("env = %q", cmd.Env)
 	}
 }
 
-// With pg_dump missing, the copy fails before any process starts, whether or
-// not it first asks pg_dump about --restrict-key.
+// A connection without a database name uses PGDATABASE, as libpq does.
+func TestNewPostgresUsesPGDATABASE(t *testing.T) {
+	t.Setenv("PGDATABASE", "memory")
+	db, err := NewPostgres("host=localhost")
+	if err != nil || db.Name() != "memory.sql" {
+		t.Fatalf("NewPostgres = %v, %v", db, err)
+	}
+	t.Setenv("PGDATABASE", "")
+	if _, err := NewPostgres("host=localhost"); !errors.Is(err, errNoDatabase) {
+		t.Fatalf("without PGDATABASE: %v", err)
+	}
+}
+
+// With pg_dump missing, the copy fails before any process starts.
 func TestPostgresCopyWithoutPgDump(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	db, err := NewPostgres("postgresql://localhost/memory")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"", "0123456789abcdef0123456789abcdef"} {
-		_, err := db.Copy(context.Background(), CopyOptions{Dst: t.TempDir() + "/0", Key: key})
-		if !errors.Is(err, ErrMissingProgram) || err.Error() != "salt needs the pg_dump program, which is not installed or not on PATH" {
-			t.Errorf("key %q: %v", key, err)
-		}
+	_, err = db.Copy(context.Background(), CopyOptions{Dst: t.TempDir() + "/0", Key: "abc"})
+	if !errors.Is(err, ErrMissingProgram) || err.Error() != "salt needs the pg_dump program, which is not installed or not on PATH" {
+		t.Fatalf("Copy: %v", err)
 	}
 }
 

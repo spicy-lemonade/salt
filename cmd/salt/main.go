@@ -2,6 +2,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -200,14 +201,24 @@ func run(cmd string, args []string) error {
 	case "seal":
 		fs := newFlags("seal")
 		prune := fs.Bool("prune", false, "remove files in REPO that salt did not write")
-		given := databaseFlags(fs)
+		// A database option's error is kept out of flag's usage error, which
+		// would repeat the value, password and all.
+		var dbs []source.Database
+		var dbErr error
+		for _, k := range databaseKinds {
+			fs.Func(k.Flag, k.Usage, func(arg string) error {
+				db, err := k.New(arg)
+				dbs = append(dbs, db)
+				dbErr = cmp.Or(dbErr, err)
+				return nil
+			})
+		}
 		pos, err := parse(fs, args, 2, 2)
 		if err != nil {
 			return err
 		}
-		dbs, err := given.databases()
-		if err != nil {
-			return err
+		if dbErr != nil {
+			return dbErr
 		}
 		o := app.SealOptions{Src: pos[0], Repo: pos[1], Prune: *prune, Databases: dbs}
 		// Only database copies need cleaning up after Ctrl-C or SIGTERM.
@@ -301,41 +312,6 @@ func run(cmd string, args []string) error {
 		return err
 	}
 	return usageError{fmt.Sprintf("unknown command %q", cmd)}
-}
-
-// givenDatabase is a database option's value and the kind it makes.
-type givenDatabase struct {
-	kind source.Kind
-	arg  string
-}
-
-type givenDatabases []givenDatabase
-
-// databaseFlags adds an option to fs for each kind of database, which may be
-// repeated, and returns the values given, in order.
-func databaseFlags(fs *flag.FlagSet) *givenDatabases {
-	given := &givenDatabases{}
-	for _, k := range databaseKinds {
-		fs.Func(k.Flag, k.Usage, func(arg string) error {
-			*given = append(*given, givenDatabase{kind: k, arg: arg})
-			return nil
-		})
-	}
-	return given
-}
-
-// databases makes the databases only after parsing, so a value that holds a
-// password never shows in a usage error.
-func (g *givenDatabases) databases() ([]source.Database, error) {
-	var dbs []source.Database
-	for _, d := range *g {
-		db, err := d.kind.New(d.arg)
-		if err != nil {
-			return nil, err
-		}
-		dbs = append(dbs, db)
-	}
-	return dbs, nil
 }
 
 // interruptible returns a context that Ctrl-C or SIGTERM cancels, so the

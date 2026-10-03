@@ -1,16 +1,15 @@
 package source
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
-	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // maxHelp caps how much of pg_dump --help is read.
@@ -19,9 +18,13 @@ const maxHelp = 64 << 10
 // spaces separate the settings in a keyword connection string.
 const spaces = " \t\n\r\f\v"
 
+// settingQuoter escapes a setting's value for single quotes, so libpq reads
+// it back unchanged.
+var settingQuoter = strings.NewReplacer(`\`, `\\`, `'`, `\'`)
+
 var (
 	errNotPostgres = errors.New("is not a Postgres connection; use a URL such as postgresql://user@host:5432/dbname or settings such as \"host=localhost dbname=memory\"")
-	errNoDatabase  = errors.New("names no database; add its name, as in postgresql://host/dbname or dbname=name")
+	errNoDatabase  = errors.New("names no database; add its name, as in postgresql://host/dbname or dbname=name, or set PGDATABASE")
 	errBadName     = errors.New("names a database whose name cannot be used as a file name")
 )
 
@@ -61,19 +64,25 @@ func NewPostgresEnv(name string) (Database, error) {
 }
 
 func newPostgres(flag, s string) (*Postgres, error) {
-	conn, password, dbname, err := parseConn(s)
+	parse := parseSettings
+	if scheme, _, ok := strings.Cut(s, "://"); ok && !strings.ContainsAny(scheme, spaces+"=") {
+		parse = parseURL
+	}
+	conn, password, dbname, err := parse(s)
+	if dbname == "" {
+		// As in libpq, which pg_dump uses.
+		dbname = os.Getenv("PGDATABASE")
+	}
 	switch {
 	case err != nil:
 		return nil, err
 	case dbname == "":
 		return nil, errNoDatabase
-	case dbname == "." || dbname == ".." || strings.ContainsAny(dbname, "/\\") || strings.ContainsFunc(dbname, isControl):
+	case dbname == "." || dbname == ".." || strings.ContainsAny(dbname, "/\\") || strings.ContainsFunc(dbname, unicode.IsControl):
 		return nil, errBadName
 	}
 	return &Postgres{flag: flag, conn: conn, password: password, dbname: dbname}, nil
 }
-
-func isControl(r rune) bool { return r < 0x20 || r == 0x7f }
 
 // Name is the database's name with .sql, the extension of pg_dump's plain
 // SQL output.
@@ -88,75 +97,54 @@ func (p *Postgres) Flag() string   { return p.flag }
 // keeps an unchanged database from making a commit. A restored dump is dated
 // when it is restored.
 func (p *Postgres) Copy(ctx context.Context, o CopyOptions) (Meta, error) {
-	restrictKey := ""
-	if o.Key != "" {
-		ok, err := supportsRestrictKey(ctx)
-		if err != nil {
-			return Meta{}, err
-		}
-		if ok {
-			restrictKey = o.Key
-		}
-	}
-	cmd := exec.CommandContext(ctx, "pg_dump", pgDumpArgs(p.conn, o.Dst, restrictKey)...)
-	cmd.Env = pgDumpEnv(os.Environ(), p.password)
+	// pg_dump --help says whether it has --restrict-key.
+	help := &limitedBuffer{max: maxHelp}
+	cmd := exec.CommandContext(ctx, "pg_dump", "--help")
+	cmd.Stdout = help
 	if err := run(ctx, cmd); err != nil {
+		return Meta{}, err
+	}
+	if err := run(ctx, pgDumpCommand(ctx, p, o, help.String())); err != nil {
 		return Meta{}, err
 	}
 	return Meta{Mode: 0o600}, nil
 }
 
-// supportsRestrictKey reports whether pg_dump has --restrict-key. Versions
-// that have it write a new random key into every dump unless given one.
-func supportsRestrictKey(ctx context.Context) (bool, error) {
-	help, err := output(ctx, exec.CommandContext(ctx, "pg_dump", "--help"), maxHelp)
-	return bytes.Contains(help, []byte("--restrict-key")), err
-}
-
-// pgDumpArgs never lets pg_dump ask for a password, which would stop a
-// scheduled backup until someone answers, and gives up on a table another
-// program has locked after waitTimeout instead of waiting forever. A
-// restrictKey replaces the random key newer versions write.
-func pgDumpArgs(conn, dst, restrictKey string) []string {
+// pgDumpCommand builds the pg_dump command that dumps p into o.Dst. It never
+// lets pg_dump ask for a password, which would stop a scheduled backup until
+// someone answers, and gives up on a table another program has locked after
+// waitTimeout instead of waiting forever. When help lists --restrict-key,
+// o.Key replaces the random key that pg_dump would write into every dump.
+//
+// The password goes in PGPASSWORD, where it wins over any already set, as it
+// would in the connection. Unless the person set their own
+// PGCONNECT_TIMEOUT, each connection attempt is limited to waitTimeout, so
+// an unreachable server fails the backup instead of stopping it.
+func pgDumpCommand(ctx context.Context, p *Postgres, o CopyOptions, help string) *exec.Cmd {
 	args := []string{
 		"--no-password",
 		"--format=plain",
 		"--lock-wait-timeout=" + strconv.FormatInt(waitTimeout.Milliseconds(), 10),
-		"--file=" + dst,
+		"--file=" + o.Dst,
 	}
-	if restrictKey != "" {
-		args = append(args, "--restrict-key="+restrictKey)
+	if strings.Contains(help, "--restrict-key") {
+		args = append(args, "--restrict-key="+o.Key)
 	}
-	return append(args, "--dbname="+conn)
-}
-
-// pgDumpEnv adds the password to environ, where it wins over any PGPASSWORD
-// already set, as it would in the connection. Unless the person set their
-// own, it limits each connection attempt to waitTimeout, so an unreachable
-// server fails the backup instead of stopping it.
-func pgDumpEnv(environ []string, password string) []string {
-	env := append([]string(nil), environ...)
-	if password != "" {
-		env = append(env, "PGPASSWORD="+password)
+	cmd := exec.CommandContext(ctx, "pg_dump", append(args, "--dbname="+p.conn)...)
+	cmd.Env = os.Environ()
+	if p.password != "" {
+		cmd.Env = append(cmd.Env, "PGPASSWORD="+p.password)
 	}
-	if !slices.ContainsFunc(environ, func(kv string) bool { return strings.HasPrefix(kv, "PGCONNECT_TIMEOUT=") }) {
-		env = append(env, "PGCONNECT_TIMEOUT="+strconv.Itoa(int(waitTimeout.Seconds())))
+	if _, set := os.LookupEnv("PGCONNECT_TIMEOUT"); !set {
+		cmd.Env = append(cmd.Env, "PGCONNECT_TIMEOUT="+strconv.Itoa(int(waitTimeout.Seconds())))
 	}
-	return env
-}
-
-// parseConn splits a connection into the connection without its password,
-// the password and the database name.
-func parseConn(s string) (conn, password, dbname string, err error) {
-	if scheme, rest, ok := strings.Cut(s, "://"); ok && !strings.ContainsAny(scheme, spaces+"=") {
-		return parseURL(scheme, rest)
-	}
-	return parseSettings(s)
+	return cmd
 }
 
 // parseURL reads a URL in libpq's form. Everything but the password is kept
 // as written, so pg_dump reads the same connection.
-func parseURL(scheme, rest string) (conn, password, dbname string, err error) {
+func parseURL(s string) (conn, password, dbname string, err error) {
+	scheme, rest, _ := strings.Cut(s, "://")
 	if base, _, _ := strings.Cut(scheme, "+"); base != "postgresql" && base != "postgres" {
 		return "", "", "", errNotPostgres
 	}
@@ -227,7 +215,7 @@ func parseSettings(s string) (conn, password, dbname string, err error) {
 		case "dbname":
 			dbname = value
 		}
-		kept = append(kept, key+"="+quoteSetting(value))
+		kept = append(kept, key+"='"+settingQuoter.Replace(value)+"'")
 	}
 	return strings.Join(kept, " "), password, dbname, nil
 }
@@ -253,9 +241,4 @@ func settingValue(s string) (value, rest string, ok bool) {
 		}
 	}
 	return b.String(), "", !quoted
-}
-
-// quoteSetting writes a value so libpq reads it back unchanged.
-func quoteSetting(v string) string {
-	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(v) + "'"
 }

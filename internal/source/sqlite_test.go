@@ -187,3 +187,17 @@ func TestSQLiteCopyWithoutSQLite3(t *testing.T) {
 		t.Fatalf("Copy: %v", err)
 	}
 }
+
+// A relative path needs the current folder, which may be gone.
+func TestNewSQLiteWithoutCurrentFolder(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "gone")
+	os.Mkdir(gone, 0o700)
+	t.Chdir(gone)
+	os.Remove(gone)
+	if _, err := os.Getwd(); err == nil {
+		t.Skip("this system still reports a removed current folder")
+	}
+	if _, err := NewSQLite("memory.db"); err == nil {
+		t.Fatal("NewSQLite without a current folder succeeded")
+	}
+}
