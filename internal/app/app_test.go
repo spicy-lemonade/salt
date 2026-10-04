@@ -85,6 +85,10 @@ type fakeGit struct {
 	commitErr error
 	push      func(ctx context.Context) error
 	branchErr error
+	// head is what Head returns, h1 when empty; known records what each
+	// Push was given.
+	head  string
+	known [][]string
 }
 
 func (f *fakeGit) HookPath(string) (string, error) { return f.hook, nil }
@@ -130,8 +134,16 @@ func (f *fakeGit) Commit(_ context.Context, _, msg string) error {
 	return f.commitErr
 }
 
-func (f *fakeGit) Push(ctx context.Context, _ string) error {
+func (f *fakeGit) Head(string) (string, error) {
+	if f.head == "" {
+		return "h1", nil
+	}
+	return f.head, nil
+}
+
+func (f *fakeGit) Push(ctx context.Context, _ string, known []string) error {
 	f.calls = append(f.calls, "push")
+	f.known = append(f.known, known)
 	if f.push == nil {
 		return nil
 	}

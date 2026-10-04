@@ -2,8 +2,11 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"slices"
 
 	"github.com/spicy-lemonade/salt/internal/preset"
 	"github.com/spicy-lemonade/salt/internal/seal"
@@ -82,11 +85,55 @@ func (a *App) Backup(o BackupOptions) error {
 	if err := a.pruneCleanup(err); err != nil {
 		return fmt.Errorf("the backup was committed, but dropping old backups failed, so it was not pushed: %w", err)
 	}
-	if err := a.Git.Push(ctx, r.Root); err != nil {
+	if err := a.push(ctx, r.Root); err != nil {
 		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 			return fmt.Errorf("backup %w: the backup was committed but not pushed", ErrInterrupted)
 		}
 		return fmt.Errorf("the backup was committed but not pushed: %w", err)
 	}
 	return nil
+}
+
+// maxKnownPushes caps how many commits salt remembers trying to push.
+const maxKnownPushes = 100
+
+// push pushes the backup to origin. Salt remembers, in its cache folder, the
+// commit it last pushed and every one it has tried to push since, before
+// each push. A push that reached origin, but whose answer was lost when the
+// connection dropped, then still counts as this machine's on the next run,
+// even after prune rewrote the branch.
+func (a *App) push(ctx context.Context, root string) error {
+	p, err := seal.RepoFile(a.CacheDir, root, "pushed-", ".json")
+	if err != nil {
+		return err
+	}
+	var known []string
+	if b, err := os.ReadFile(p); err == nil && json.Unmarshal(b, &known) != nil {
+		known = nil // a damaged record only means the remote-tracking branch is used
+	}
+	head, err := a.Git.Head(root)
+	if err != nil {
+		return err
+	}
+	tried := known
+	if !slices.Contains(tried, head) {
+		tried = append(tried, head)
+	}
+	if err := writeKnown(p, tried[max(0, len(tried)-maxKnownPushes):]); err != nil {
+		return err
+	}
+	if err := a.Git.Push(ctx, root, known); err != nil {
+		return err
+	}
+	// Losing this only keeps older commits known until the next push.
+	writeKnown(p, []string{head})
+	return nil
+}
+
+func writeKnown(p string, known []string) error {
+	b, err := json.Marshal(known)
+	if err != nil {
+		return err
+	}
+	return seal.WritePrivate(p, b)
 }

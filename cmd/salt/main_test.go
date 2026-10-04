@@ -89,7 +89,8 @@ func (g *noGit) Clone(context.Context, string, string) error {
 func (*noGit) Branch(string) (string, error)                { return "main", nil }
 func (*noGit) Stage(string) error                           { return nil }
 func (*noGit) Commit(context.Context, string, string) error { return nil }
-func (*noGit) Push(context.Context, string) error           { return nil }
+func (*noGit) Head(string) (string, error)                  { return "h", nil }
+func (*noGit) Push(context.Context, string, []string) error { return nil }
 
 func (g *noGit) Prune(_ string, keepDays int) (*prune.Result, error) {
 	g.pruneDays = append(g.pruneDays, keepDays)

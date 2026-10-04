@@ -133,7 +133,7 @@ func TestBackupFailures(t *testing.T) {
 	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "x"), "a file")
 	e.must(b.dir, "git", "remote", "set-url", "origin", "https://agent:hunter2@127.0.0.1:1/backup.git")
 	out, code = e.run(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
-	if code != 1 || !strings.Contains(out, "the backup was committed but not pushed: git push") || strings.Contains(out, "hunter2") {
+	if code != 1 || !strings.Contains(out, "the backup was committed but not pushed: git ls-remote") || strings.Contains(out, "hunter2") {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 	if got := commitCount(e, b.dir); got == before {
@@ -152,6 +152,34 @@ func TestBackupFailures(t *testing.T) {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 	if subject := strings.TrimSpace(e.must(b.remote, "git", "log", "-1", "--format=%s")); subject != "elsewhere" {
+		t.Fatalf("the remote's latest commit is %q", subject)
+	}
+	// Fetching it, as an editor might in the background, does not let salt
+	// overwrite it either.
+	e.must(b.dir, "git", "fetch", "-q", "origin")
+	out, code = e.run(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	if code != 1 || !strings.Contains(out, "salt will not overwrite it") {
+		t.Fatalf("after a fetch: exit %d:\n%s", code, out)
+	}
+	if subject := strings.TrimSpace(e.must(b.remote, "git", "log", "-1", "--format=%s")); subject != "elsewhere" {
+		t.Fatalf("after a fetch, the remote's latest commit is %q", subject)
+	}
+}
+
+// A commit pushed by hand from this machine is already in the local branch,
+// so salt backup pushes on top of it.
+func TestBackupAfterAPushByHand(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "x"), "a file")
+	e.must(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	write(t, filepath.Join(b.dir, "README.md"), "my backups")
+	e.must(b.dir, "git", "add", "README.md")
+	e.must(b.dir, "git", "commit", "-qm", "readme")
+	e.must(b.dir, "git", "push", "-q", "origin", "HEAD")
+	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "y"), "another file")
+	e.must(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	if subject := strings.TrimSpace(e.must(b.remote, "git", "log", "-1", "--format=%s")); subject != "salt backup" {
 		t.Fatalf("the remote's latest commit is %q", subject)
 	}
 }

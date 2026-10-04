@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -264,5 +265,68 @@ func TestBackupInterruptedPush(t *testing.T) {
 	e.git.calls = nil
 	if err := e.app.Backup(BackupOptions{Repo: e.root, Presets: presets, KeepDays: 1, Context: ctx}); !errors.Is(err, ErrInterrupted) || len(e.git.calls) != 0 {
 		t.Fatalf("backup = %v, calls %v", err, e.git.calls)
+	}
+}
+
+// Each push is told the commits this machine pushed, or tried to push, to
+// origin since its last successful push, so a push whose answer was lost
+// still counts as this machine's on the next run.
+func TestBackupRemembersPushes(t *testing.T) {
+	e, _, presets := backupEnv(t)
+	boom := errors.New("connection dropped")
+	steps := []struct {
+		head   string
+		failed error
+	}{{"h1", nil}, {"h2", boom}, {"h3", boom}, {"h4", nil}, {"h5", nil}}
+	for _, st := range steps {
+		e.git.head = st.head
+		e.git.push = func(context.Context) error { return st.failed }
+		if err := e.backup(presets); !errors.Is(err, st.failed) {
+			t.Fatalf("%s: backup = %v", st.head, err)
+		}
+	}
+	want := [][]string{nil, {"h1"}, {"h1", "h2"}, {"h1", "h2", "h3"}, {"h4"}}
+	if len(e.git.known) != len(want) {
+		t.Fatalf("pushes were told %v", e.git.known)
+	}
+	for i := range want {
+		if !slices.Equal(e.git.known[i], want[i]) {
+			t.Errorf("push %d was told %v, want %v", i+1, e.git.known[i], want[i])
+		}
+	}
+}
+
+// A damaged record of pushes is set aside, and the remote-tracking branch is
+// used; a record that cannot be written stops the push before it starts.
+func TestBackupPushRecordProblems(t *testing.T) {
+	e, _, presets := backupEnv(t)
+	p, err := seal.RepoFile(e.app.CacheDir, e.root, "pushed-", ".json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Dir(p), 0o700)
+	os.WriteFile(p, []byte("{not json"), 0o600)
+	if err := e.backup(presets); err != nil || e.git.known[0] != nil {
+		t.Fatalf("backup = %v, push told %v", err, e.git.known)
+	}
+	os.Remove(p)
+	os.Mkdir(p, 0o700) // a folder where the record goes cannot be replaced
+	os.WriteFile(filepath.Join(p, "x"), nil, 0o600)
+	e.git.calls = nil
+	if err := e.backup(presets); err == nil || slices.Contains(e.git.calls, "push") {
+		t.Fatalf("backup = %v, calls %v", err, e.git.calls)
+	}
+}
+
+// The record holds at most maxKnownPushes commits.
+func TestBackupCapsThePushRecord(t *testing.T) {
+	e, _, presets := backupEnv(t)
+	e.git.push = func(context.Context) error { return errors.New("offline") }
+	for i := range maxKnownPushes + 5 {
+		e.git.head = fmt.Sprint("h", i)
+		e.backup(presets)
+	}
+	if last := e.git.known[len(e.git.known)-1]; len(last) != maxKnownPushes || last[len(last)-1] != fmt.Sprint("h", maxKnownPushes+3) {
+		t.Fatalf("last push was told %d commits, ending %v", len(last), last[len(last)-1])
 	}
 }

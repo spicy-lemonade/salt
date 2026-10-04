@@ -71,8 +71,11 @@ type GitOps interface {
 	Stage(repoRoot string) error
 	// Commit commits what is staged, and nothing when nothing is.
 	Commit(ctx context.Context, repoRoot, msg string) error
-	// Push pushes the checked-out branch to origin (see gitx.Push).
-	Push(ctx context.Context, repoRoot string) error
+	// Head returns the commit checked out.
+	Head(repoRoot string) (string, error)
+	// Push pushes the checked-out branch to origin if origin's branch is at
+	// one of known, or nothing there is lost (see gitx.Push).
+	Push(ctx context.Context, repoRoot string, known []string) error
 }
 
 // RealGit runs git through gitx (hooks disabled).
@@ -101,7 +104,10 @@ func (RealGit) Stage(root string) error            { return gitx.StageAll(root) 
 func (RealGit) Commit(ctx context.Context, root, msg string) error {
 	return gitx.CommitStaged(ctx, root, msg)
 }
-func (RealGit) Push(ctx context.Context, root string) error { return gitx.Push(ctx, root) }
+func (RealGit) Head(root string) (string, error) { return gitx.Head(root) }
+func (RealGit) Push(ctx context.Context, root string, known []string) error {
+	return gitx.Push(ctx, root, known)
+}
 
 // HookSearchPath is where the pre-commit hook looks for salt: the caller's
 // PATH plus Homebrew's locations (see hook.Script).
