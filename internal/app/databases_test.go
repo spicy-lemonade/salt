@@ -208,7 +208,7 @@ func TestSealDatabaseNameClash(t *testing.T) {
 	}{
 		"two databases": {[]source.Database{fc.db(db), fc.db(other)},
 			"the databases ~/agent/memory.db and ~/agent2/memory.db would both be backed up as memory.db; give one of them another name with --name NAME just before its --fake"},
-		"same db, twice": {fc.dbs(db, db), "the databases ~/agent/memory.db and ~/agent/memory.db would both be backed up as memory.db"},
+		"same db, twice": {fc.dbs(db, db), "the database ~/agent/memory.db is given twice; give it once"},
 		"chosen name":    {[]source.Database{fc.db(db), chosen}, "would both be backed up as memory.db"},
 		"folder above": {[]source.Database{fc.db(db), named(t, fc.db(other), "memory.db/agent2.db")},
 			"the databases ~/agent/memory.db and ~/agent2/memory.db would be backed up as memory.db and memory.db/agent2.db, which clash"},

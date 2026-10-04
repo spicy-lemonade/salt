@@ -173,6 +173,9 @@ func (a *App) copyDatabases(ctx context.Context, repoRoot string, dbs []source.D
 			if !seal.Clash(prev.Name(), db.Name()) {
 				continue
 			}
+			if prev.String() == db.String() && prev.Name() == db.Name() {
+				return nil, nil, fmt.Errorf("the database %s is given twice; give it once", a.short(db.String()))
+			}
 			if prev.Name() == db.Name() {
 				return nil, nil, fmt.Errorf("the databases %s and %s would both be backed up as %s; give one of them another name with --name NAME just before its %s",
 					a.short(prev.String()), a.short(db.String()), db.Name(), db.Flag())
