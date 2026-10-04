@@ -102,8 +102,8 @@ type SealOptions struct {
 	Src, Repo string
 	// Prune removes everything in Repo that salt did not write.
 	Prune bool
-	// Databases lists live databases to copy safely and seal at the top of
-	// the backup, each under its own name.
+	// Databases lists live databases to copy safely and seal, each under its
+	// own name.
 	Databases []source.Database
 	// Context stops the database copies early. Nil means never.
 	Context context.Context
@@ -134,7 +134,7 @@ func (a *App) Seal(o SealOptions) error {
 	defer cleanup()
 	res, err := seal.Seal(o.Src, r, seal.Options{CacheDir: a.CacheDir, Signer: signer, Prune: o.Prune, Show: a.short, Extra: extra})
 	if errors.Is(err, seal.ErrDuplicatePath) && len(extra) > 0 {
-		return fmt.Errorf("%w; each database salt copies is backed up under its own name, which must not be used by another database or by a file or folder at the top of %s", err, a.short(o.Src))
+		return fmt.Errorf("%w; each database salt copies is backed up under its own name, which must not be used by another database or by a file or folder in %s. Give the database another name with --name NAME just before its option", err, a.short(o.Src))
 	}
 	if err != nil {
 		return err
@@ -164,6 +164,18 @@ func (a *App) Seal(o SealOptions) error {
 func (a *App) copyDatabases(ctx context.Context, repoRoot string, dbs []source.Database) (extra []seal.Extra, cleanup func(), err error) {
 	if len(dbs) == 0 {
 		return nil, func() {}, nil
+	}
+	// Two databases under one name are refused before any copy is made,
+	// since a copy can take a long time. A clash with a source file is only
+	// known once seal reads the source.
+	seen := make(map[string]source.Database, len(dbs))
+	for _, db := range dbs {
+		name := db.Name()
+		if prev, ok := seen[name]; ok {
+			return nil, nil, fmt.Errorf("the databases %s and %s would both be backed up as %s; give one of them another name with --name NAME just before its %s",
+				a.short(prev.String()), a.short(db.String()), name, db.Flag())
+		}
+		seen[name] = db
 	}
 	if ctx == nil {
 		ctx = context.Background()

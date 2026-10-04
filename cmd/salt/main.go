@@ -57,6 +57,9 @@ Nightly (in your backup script):
       environment variable VAR, so its password never shows in a process
       list. Without a password in the connection, pg_dump looks in ~/.pgpass
       or PGPASSWORD.
+      --name NAME, just before a database option, backs that database up
+      as NAME instead, such as honcho.sql or agent/state.db. Use it when two
+      databases have the same name.
   salt prune [--keep-days N] REPO
       Keep only the backups from the last N days on which anything in REPO
       changed (default 5), counted over the whole repo, and drop older ones
@@ -123,6 +126,9 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+// nameAlone is the error for a --name that names no database option.
+const nameAlone = "--name must be followed by the database option it names"
 
 type usageError struct{ msg string }
 
@@ -210,9 +216,22 @@ func run(cmd string, args []string) error {
 		// would repeat the value, password and all.
 		var dbs []source.Database
 		var dbErr error
+		// name is the --name waiting for the next database option.
+		var name *string
+		fs.Func("name", "the name the next database option is backed up under", func(arg string) error {
+			if name != nil {
+				return errors.New(nameAlone)
+			}
+			name = &arg
+			return nil
+		})
 		for _, k := range databaseKinds {
 			fs.Func(k.Flag, k.Usage, func(arg string) error {
 				db, err := k.New(arg)
+				if err == nil && name != nil {
+					db, err = source.Named(db, *name)
+				}
+				name = nil
 				dbs = append(dbs, db)
 				dbErr = cmp.Or(dbErr, err)
 				return nil
@@ -221,6 +240,9 @@ func run(cmd string, args []string) error {
 		pos, err := parse(fs, args, 2, 2)
 		if err != nil {
 			return err
+		}
+		if name != nil {
+			return usageError{"seal: " + nameAlone}
 		}
 		if dbErr != nil {
 			return dbErr

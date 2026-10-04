@@ -425,9 +425,7 @@ save until the backup ends, so salt leaves it out: the agent never waits for
 salt, and a save during the copy only makes the copy start again. Two copies of an unchanged database
 are identical, so an unchanged database makes no commit. Before starting
 `sqlite3`, salt refuses a path that is missing or is not a SQLite database,
-because `sqlite3` would create an empty database at a missing path. A
-database name that clashes with another database, or with a file or folder
-at the top of SRC, is refused.
+because `sqlite3` would create an empty database at a missing path.
 
 For Postgres, `salt seal --postgres CONN SRC REPO` dumps the database with
 `pg_dump --no-password --format=plain --lock-wait-timeout=30000
@@ -472,6 +470,33 @@ make the copy. `source.Kinds` maps each `salt seal` option to one, so adding
 another database means adding one type and one entry there. Salt's commands
 handle every kind the same way: the temporary folder, cleaning up, name
 clashes, Ctrl-C, and the per-repo key.
+
+### Database names
+
+Each kind picks the name its copy is backed up under: a SQLite file keeps its
+file name, and a Postgres dump is the database's name with `.sql`. Two
+databases can have the same name, such as two agents that each keep a
+`state.db`, or two servers that both use Postgres's default database,
+`postgres`. Salt never asks anyone to rename their own data, so `--name NAME`,
+given just before a database option, backs that database up as NAME instead:
+
+```bash
+salt seal --sqlite ~/agent1/state.db --name agent2/state.db --sqlite ~/agent2/state.db SRC REPO
+salt seal --name honcho.sql --postgres-env HONCHO_DB SRC REPO
+```
+
+NAME is a slash path in the backup, so it can put the copy in a folder, beside
+that agent's other files. It works the same for every kind, through
+`source.Named`, which changes only the name. Without `--name`, nothing
+changes. A NAME that could lead outside the backup (empty, absolute, with
+`..` above the top or a backslash) is refused before anything is copied. A
+`--name` not followed by a database option is a usage error.
+
+Two databases backed up under one name are refused before any copy is made,
+since a dump can take a long time, and the message names both and points to
+`--name`. A name that is a file or folder in SRC, or a folder above one, is
+only known once salt reads SRC, so that clash is refused after the copies are
+made, which are then removed, with the same advice.
 
 The backup gets the live database file's permissions and last-modified date.
 They are read before the copy, because the copy can change them: after a

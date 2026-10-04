@@ -215,6 +215,45 @@ func TestRunSealVerifyRestore(t *testing.T) {
 			t.Fatalf("restored %s = %q, want %q", rel, b, want)
 		}
 	}
+	// --name backs the database option after it up under the chosen name, so
+	// two databases called state.db are both backed up and restored.
+	other := filepath.Join(base, "agent2", "state.db")
+	os.MkdirAll(filepath.Dir(other), 0o755)
+	os.WriteFile(other, []byte("other state"), 0o644)
+	if err := run("seal", []string{"--sqlite", filepath.Join(dbs, "state.db"), "--name", "agent2/state.db", "--sqlite", other, src, root}); err != nil {
+		t.Fatalf("seal --name: %v", err)
+	}
+	named := filepath.Join(base, "named")
+	if err := run("restore", []string{root, "--to", named}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	for rel, want := range map[string]string{"state.db": "state", "agent2/state.db": "other state"} {
+		if b, _ := os.ReadFile(filepath.Join(named, rel)); string(b) != want {
+			t.Fatalf("restored %s = %q, want %q", rel, b, want)
+		}
+	}
+	// A --name that names no database option is a usage error. A name that
+	// is unsafe or already taken is refused, without repeating a password.
+	for _, args := range [][]string{
+		{"--sqlite", other, "--name", "spare.db"},
+		{"--name", "a.db", "--name", "b.db", "--sqlite", other},
+	} {
+		var ue usageError
+		if err := run("seal", append(args, src, root)); !errors.As(err, &ue) || !strings.Contains(err.Error(), "--name must be followed by the database option it names") {
+			t.Fatalf("seal %v: %v", args, err)
+		}
+	}
+	for want, args := range map[string][]string{
+		"given to --name cannot be used in the backup":              {"--name", "../state.db", "--postgres", "postgresql://agent:hunter2@localhost:5432/postgres"},
+		"would both be backed up as state.db":                       {"--sqlite", other, "--name", "state.db", "--sqlite", filepath.Join(dbs, "state.db")},
+		"each database salt copies is backed up under its own name": {"--name", "memories/USER.md", "--sqlite", other},
+	} {
+		err := run("seal", append(args, src, root))
+		var ue usageError
+		if err == nil || errors.As(err, &ue) || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "hunter2") {
+			t.Fatalf("seal %v: %v", args, err)
+		}
+	}
 	// trust --yes set up this machine's signing key next to the approvals.
 	if _, err := (keys.FileStore{Dir: filepath.Join(cfg, "salt", "signing")}).Get(rcpt); err != nil {
 		t.Fatalf("no signing key saved: %v", err)

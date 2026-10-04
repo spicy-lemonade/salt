@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/source"
 )
 
@@ -179,26 +180,97 @@ func TestSealDatabaseRemovesCopiesWhenSealFails(t *testing.T) {
 	assertNoCopiesLeft(t, fc)
 }
 
-// Two databases, or a database and a top-level source file, with the same
-// name are refused with advice.
+// Two databases with the same name are refused before any copy is made,
+// naming both and saying how to give one another name.
 func TestSealDatabaseNameClash(t *testing.T) {
 	e, fc, src, db := sqliteEnv(t)
-	other := filepath.Join(t.TempDir(), "memory.db")
+	other := filepath.Join(e.app.Home, "agent2", "memory.db")
+	os.MkdirAll(filepath.Dir(other), 0o755)
 	os.WriteFile(other, []byte("SQLite format 3\x00"), 0o644)
-	os.WriteFile(filepath.Join(src, "state.db"), []byte("old copy"), 0o644)
-	state := filepath.Join(filepath.Dir(db), "state.db")
-	os.WriteFile(state, []byte("SQLite format 3\x00"), 0o644)
-	for name, dbs := range map[string][]string{
-		"two databases":  {db, other},
-		"source file":    {state},
-		"same db, twice": {db, db},
+	chosen, err := source.Named(fc.db(other), "memory.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		dbs  []source.Database
+		want string
+	}{
+		"two databases": {[]source.Database{fc.db(db), fc.db(other)},
+			"the databases ~/agent/memory.db and ~/agent2/memory.db would both be backed up as memory.db; give one of them another name with --name NAME just before its --fake"},
+		"same db, twice": {fc.dbs(db, db), "the databases ~/agent/memory.db and ~/agent/memory.db would both be backed up as memory.db"},
+		"chosen name":    {[]source.Database{fc.db(db), chosen}, "would both be backed up as memory.db"},
 	} {
-		err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: fc.dbs(dbs...)})
-		if err == nil || !strings.Contains(err.Error(), "each database salt copies is backed up under its own name") {
+		err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: tc.dbs})
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	if len(fc.made) != 0 {
+		t.Fatalf("copies made before refusing: %v", fc.made)
+	}
 	assertNoCopiesLeft(t, fc)
+}
+
+// A database whose name, its own or a chosen one, is a file or folder in the
+// source is refused with advice.
+func TestSealDatabaseSourceClash(t *testing.T) {
+	e, fc, src, db := sqliteEnv(t)
+	os.WriteFile(filepath.Join(src, "memory.db"), []byte("old copy"), 0o644)
+	os.MkdirAll(filepath.Join(src, "agent"), 0o755)
+	os.WriteFile(filepath.Join(src, "agent", "SOUL.md"), []byte("be kind"), 0o644)
+	for _, name := range []string{"", "agent", "agent/SOUL.md", "memory.db/state.db"} {
+		d := source.Database(fc.db(db))
+		if name != "" {
+			var err error
+			if d, err = source.Named(d, name); err != nil {
+				t.Fatal(err)
+			}
+		}
+		err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: []source.Database{d}})
+		if !errors.Is(err, seal.ErrDuplicatePath) || !strings.Contains(err.Error(), "each database salt copies is backed up under its own name") ||
+			!strings.Contains(err.Error(), "Give the database another name with --name NAME just before its option") {
+			t.Errorf("named %q: %v", name, err)
+		}
+	}
+	assertNoCopiesLeft(t, fc)
+}
+
+// Two databases with the same name are both backed up and restored when one
+// is given another name, also inside a source folder beside other files.
+func TestSealNamedDatabases(t *testing.T) {
+	e, fc, src, db := sqliteEnv(t)
+	os.MkdirAll(filepath.Join(src, "agent2"), 0o755)
+	os.WriteFile(filepath.Join(src, "agent2", "SOUL.md"), []byte("be brave"), 0o644)
+	other := filepath.Join(e.app.Home, "agent2", "memory.db")
+	os.MkdirAll(filepath.Dir(other), 0o755)
+	os.WriteFile(other, []byte("SQLite format 3\x00other memories"), 0o600)
+	want := map[string]string{
+		"memory.db":           "SQLite format 3\x00memories",
+		"agent2/memory.db":    "SQLite format 3\x00other memories",
+		"agent2/SOUL.md":      "be brave",
+		"copies/again/one.db": "SQLite format 3\x00memories",
+	}
+	dbs := []source.Database{fc.db(db)}
+	for _, n := range []struct{ path, name string }{{other, "agent2/memory.db"}, {db, "copies/again/one.db"}} {
+		d, err := source.Named(fc.db(n.path), n.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dbs = append(dbs, d)
+	}
+	if err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: dbs}); err != nil {
+		t.Fatal(err)
+	}
+	assertNoCopiesLeft(t, fc)
+	dest := filepath.Join(t.TempDir(), "restored")
+	if err := e.app.Restore(RestoreOptions{Repo: e.root, To: dest}); err != nil {
+		t.Fatal(err)
+	}
+	for rel, content := range want {
+		if b, err := os.ReadFile(filepath.Join(dest, rel)); err != nil || string(b) != content {
+			t.Errorf("restored %s = %q, %v; want %q", rel, b, err, content)
+		}
+	}
 }
 
 // Stopping salt (Ctrl-C or SIGTERM) during a copy removes the copies and

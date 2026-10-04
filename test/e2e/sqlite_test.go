@@ -248,6 +248,42 @@ func TestSealSQLiteAfterACrash(t *testing.T) {
 	assertDate(t, assertRestoredDB(t, e, sqlite, b, "state.db", 500), at)
 }
 
+// Two agents that both keep a state.db are both backed up and restored when
+// one is given another name with --name. A name that is taken or unsafe is
+// refused before sqlite3 runs, and a --name with no database is a usage
+// error.
+func TestSealSQLiteNamed(t *testing.T) {
+	sqlite := realSQLite(t)
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	write(t, filepath.Join(b.src, "agent2", "SOUL.md"), "be brave\n")
+	first := filepath.Join(t.TempDir(), "state.db")
+	second := filepath.Join(t.TempDir(), "state.db")
+	startAgent(t, e, sqlite, first, 100)
+	startAgent(t, e, sqlite, second, 200)
+
+	salt, tmp := withTemp(t, e)
+	salt.must(b.base, "salt", "seal", "--sqlite", first, "--name", "agent2/state.db", "--sqlite", second, b.src, b.dir)
+	assertEmpty(t, tmp)
+	assertRestoredDB(t, e, sqlite, b, "state.db", 100)
+	assertRestoredDB(t, e, sqlite, b, "agent2/state.db", 200)
+	e.must(b.dir, "git", "add", "-A")
+	e.must(b.dir, "git", "commit", "-q", "-m", "backup")
+
+	// sqlite3 is never started for a name that is refused.
+	saltOnly := e.with("PATH=" + filepath.Dir(e.bin))
+	for want, args := range map[string][]string{
+		"would both be backed up as state.db; give one of them another name with --name NAME just before its --sqlite": {"--sqlite", first, "--sqlite", second},
+		"the name \"../state.db\" given to --name cannot be used in the backup":                                        {"--name", "../state.db", "--sqlite", second},
+	} {
+		assertSealFails(t, saltOnly, b, want, args...)
+	}
+	assertSealFails(t, e, b, "Give the database another name with --name NAME just before its option", "--name", "agent2/SOUL.md", "--sqlite", second)
+	if out, code := e.run(b.base, "salt", "seal", "--sqlite", first, "--name", "spare.db", b.src, b.dir); code != 2 || !strings.Contains(out, "--name must be followed by the database option it names") {
+		t.Fatalf("exit %d, want 2:\n%s", code, out)
+	}
+}
+
 // When the copy cannot be made, salt stops before sealing, says why, and
 // leaves no copy behind.
 func TestSealSQLiteFailures(t *testing.T) {

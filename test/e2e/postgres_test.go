@@ -173,6 +173,45 @@ func TestSealPostgres(t *testing.T) {
 	assertEmpty(t, tmp)
 }
 
+// Two servers whose memory is in Postgres's default database, postgres, are
+// both backed up and restored when one is given another name with --name,
+// which works the same with --postgres-env.
+func TestSealPostgresNamed(t *testing.T) {
+	e := newEnv(t)
+	first, second := startPostgres(t, e), startPostgres(t, e)
+	first.psql(t, "postgres", memorySQL)
+	second.psql(t, "postgres", memorySQL+"INSERT INTO memories (peer, body) VALUES ('peer9', 'only on the second server');")
+	b := newBackupRepo(t, e)
+	os.MkdirAll(b.src, 0o755)
+
+	salt, tmp := withTemp(t, saltWithPg(e, first))
+	salt = salt.with("HONCHO_DB=" + second.url("postgres"))
+	out := salt.must(b.base, "salt", "seal", "--postgres", first.url("postgres"), "--name", "honcho/postgres.sql", "--postgres-env", "HONCHO_DB", b.src, b.dir)
+	if strings.Contains(out, "s3cret") {
+		t.Fatalf("seal output shows the password:\n%s", out)
+	}
+	assertEmpty(t, tmp)
+	e.must(b.dir, "git", "add", "-A")
+	e.must(b.dir, "git", "commit", "-q", "-m", "backup")
+	dest := filepath.Join(t.TempDir(), "restored")
+	e.must(b.base, "salt", "restore", b.dir, "--to", dest)
+	for rel, onSecond := range map[string]bool{"postgres.sql": false, "honcho/postgres.sql": true} {
+		data, err := os.ReadFile(filepath.Join(dest, rel))
+		if err != nil || !strings.Contains(string(data), "remembered thing 300") || strings.Contains(string(data), "only on the second server") != onSecond {
+			t.Fatalf("restored %s: %v\n%.300s", rel, err, data)
+		}
+	}
+
+	// Without --name the two are refused before pg_dump runs, without
+	// showing a password.
+	out = assertSealFails(t, e.with("PATH="+filepath.Dir(e.bin), "HONCHO_DB="+second.url("postgres")), b,
+		"would both be backed up as postgres.sql; give one of them another name with --name NAME just before its --postgres-env",
+		"--postgres", first.url("postgres"), "--postgres-env", "HONCHO_DB")
+	if strings.Contains(out, "s3cret") || strings.Contains(out, "pa:ss") {
+		t.Fatalf("the output shows the password:\n%s", out)
+	}
+}
+
 // Every way of giving the password works: in the URL given to --postgres,
 // in PGPASSWORD, and in ~/.pgpass. libpq settings work like a URL.
 func TestSealPostgresPasswords(t *testing.T) {
