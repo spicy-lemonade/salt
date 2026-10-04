@@ -143,3 +143,25 @@ func TestRestoreFromURLWithoutADownloadFolder(t *testing.T) {
 		t.Fatalf("cloned without a folder: %q", e.git.cloned)
 	}
 }
+
+func TestOpenRepo(t *testing.T) {
+	e := remoteEnv(t)
+	r, done, err := e.app.openRepo(context.Background(), e.root)
+	if err != nil || r.Root != e.root {
+		t.Fatalf("openRepo(folder) = %v, %v", r, err)
+	}
+	done()
+	if _, err := os.Stat(e.root); err != nil || len(e.git.cloned) != 0 {
+		t.Fatalf("a folder was downloaded or removed: %v, %q", err, e.git.cloned)
+	}
+
+	r, done, err = e.app.openRepo(context.Background(), backupURL)
+	if err != nil || filepath.Dir(r.Root) != e.app.Home {
+		t.Fatalf("openRepo(URL) = %v, %v", r, err)
+	}
+	if _, err := os.Stat(filepath.Join(r.Root, "index.age")); err != nil {
+		t.Fatalf("the download is not usable before done: %v", err)
+	}
+	done()
+	noDownloadsLeft(t, e)
+}
