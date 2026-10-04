@@ -249,9 +249,9 @@ func TestSealSQLiteAfterACrash(t *testing.T) {
 }
 
 // Two agents that both keep a state.db are both backed up and restored when
-// one is given another name with --name. A name that is taken or unsafe is
-// refused before sqlite3 runs, and a --name with no database is a usage
-// error.
+// one is given another name with --name. A name that is taken is refused
+// before sqlite3 runs, and an unsafe name or a --name with no database is a
+// usage error.
 func TestSealSQLiteNamed(t *testing.T) {
 	sqlite := realSQLite(t)
 	e := newEnv(t)
@@ -272,15 +272,17 @@ func TestSealSQLiteNamed(t *testing.T) {
 
 	// sqlite3 is never started for a name that is refused.
 	saltOnly := e.with("PATH=" + filepath.Dir(e.bin))
-	for want, args := range map[string][]string{
-		"would both be backed up as state.db; give one of them another name with --name NAME just before its --sqlite": {"--sqlite", first, "--sqlite", second},
-		"the name \"../state.db\" cannot be used in the backup. Give --name a relative path":                           {"--name", "../state.db", "--sqlite", second},
-	} {
-		assertSealFails(t, saltOnly, b, want, args...)
-	}
+	assertSealFails(t, saltOnly, b, "would both be backed up as state.db; give one of them another name with --name NAME just before its --sqlite",
+		"--sqlite", first, "--sqlite", second)
 	assertSealFails(t, e, b, "Give the database another name with --name NAME just before its option", "--name", "agent2/SOUL.md", "--sqlite", second)
-	if out, code := e.run(b.base, "salt", "seal", "--sqlite", first, "--name", "spare.db", b.src, b.dir); code != 2 || !strings.Contains(out, "--name must be followed by the database option it names") {
-		t.Fatalf("exit %d, want 2:\n%s", code, out)
+	// An unsafe name, or a --name with no database, is a usage error.
+	for want, args := range map[string][]string{
+		"the name \"../state.db\" cannot be used in the backup. Give --name a relative path": {"--name", "../state.db", "--sqlite", second},
+		"--name must be followed by the database option it names":                            {"--sqlite", first, "--name", "spare.db"},
+	} {
+		if out, code := saltOnly.run(b.base, "salt", append(append([]string{"seal"}, args...), b.src, b.dir)...); code != 2 || !strings.Contains(out, want) {
+			t.Fatalf("seal %v: exit %d, want 2:\n%s", args, code, out)
+		}
 	}
 }
 

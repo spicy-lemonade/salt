@@ -489,9 +489,10 @@ NAME is a slash path in the backup, so it can put the copy in a folder, beside
 that agent's other files. It works the same for every kind, through
 `source.Named`, which changes only the name. Without `--name`, nothing
 changes. A NAME that could lead outside the backup (empty, absolute, with
-`..` above the top or a backslash) is refused before anything is copied, and
-so is one ending in `/`, which names a folder rather than the file the copy is
-backed up as. A `--name` not followed by a database option is a usage error.
+`..` above the top or a backslash) is a usage error, refused before anything
+is copied, and so is one ending in `/`, which names a folder rather than the
+file the copy is backed up as. So is a `--name` not followed by a database
+option.
 
 Two names clash when they are the same, or when one is a folder above the
 other, since a file cannot also be a folder. Case is ignored, because macOS

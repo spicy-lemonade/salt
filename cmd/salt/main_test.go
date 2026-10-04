@@ -232,19 +232,19 @@ func TestRunSealVerifyRestore(t *testing.T) {
 			t.Fatalf("restored %s = %q, want %q", rel, b, want)
 		}
 	}
-	// A --name that names no database option is a usage error. A name that
-	// is unsafe or already taken is refused, without repeating a password.
-	for _, args := range [][]string{
-		{"--sqlite", other, "--name", "spare.db"},
-		{"--name", "a.db", "--name", "b.db", "--sqlite", other},
+	// A --name that names no database option, or that is unsafe, is a usage
+	// error, without repeating a password. A name already taken is refused.
+	for want, args := range map[string][]string{
+		"seal: --name must be followed by the database option it names": {"--sqlite", other, "--name", "spare.db"},
+		"seal: invalid value \"b.db\" for flag -name: --name must be":   {"--name", "a.db", "--name", "b.db", "--sqlite", other},
+		"seal: the name \"../state.db\" cannot be used in the backup":   {"--name", "../state.db", "--postgres", "postgresql://agent:hunter2@localhost:5432/postgres"},
 	} {
 		var ue usageError
-		if err := run("seal", append(args, src, root)); !errors.As(err, &ue) || !strings.Contains(err.Error(), "--name must be followed by the database option it names") {
+		if err := run("seal", append(args, src, root)); !errors.As(err, &ue) || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "hunter2") {
 			t.Fatalf("seal %v: %v", args, err)
 		}
 	}
 	for want, args := range map[string][]string{
-		"cannot be used in the backup. Give --name a relative path": {"--name", "../state.db", "--postgres", "postgresql://agent:hunter2@localhost:5432/postgres"},
 		"would both be backed up as state.db":                       {"--sqlite", other, "--name", "state.db", "--sqlite", filepath.Join(dbs, "state.db")},
 		"each database salt copies is backed up under its own name": {"--name", "memories/USER.md", "--sqlite", other},
 	} {
