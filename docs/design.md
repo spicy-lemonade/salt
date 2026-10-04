@@ -496,16 +496,14 @@ file the copy is backed up as. So is a `--name` not followed by a database
 option.
 
 Two names clash when they are the same, or when one is a folder above the
-other, since a file cannot also be a folder. Case is ignored, because macOS
-and Windows ignore it, so a backup made on Linux still restores there. Two
+other, since a file cannot also be a folder. Names are compared exactly,
+case included, as salt keeps every name as it was given: `state.db` and
+`State.db` are two names, and both are backed up. Two
 databases whose names clash are refused before any copy is made, since a dump
 can take a long time, and the message names both and points to `--name`. A
 name that clashes with a file or folder in SRC is only known once salt reads
 SRC, so that clash is refused after the copies are made, which are then
 removed, with the same advice. `seal.Clash` holds the rule for both checks.
-When names clash only because case is ignored, such as a database `state.db`
-and a file `State.db` in SRC, the message names both and says so, since such
-a backup would restore on Linux and it is not obvious why it is refused.
 
 The backup gets the live database file's permissions and last-modified date.
 They are read before the copy, because the copy can change them: after a

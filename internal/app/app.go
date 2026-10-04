@@ -180,12 +180,8 @@ func (a *App) copyDatabases(ctx context.Context, repoRoot string, dbs []source.D
 				return nil, nil, fmt.Errorf("the databases %s and %s would both be backed up as %s. Give one of them another name with --name NAME before its %s",
 					a.short(prev.String()), a.short(db.String()), db.Name(), db.Flag())
 			}
-			why := "a file cannot also be a folder"
-			if seal.CaseOnly(prev.Name(), db.Name()) {
-				why = "macOS and Windows ignore case"
-			}
-			return nil, nil, fmt.Errorf("the databases %s and %s would be backed up as %s and %s, which clash because %s. Give one of them another name with --name NAME before its %s",
-				a.short(prev.String()), a.short(db.String()), prev.Name(), db.Name(), why, db.Flag())
+			return nil, nil, fmt.Errorf("the databases %s and %s would be backed up as %s and %s, which clash because a file cannot also be a folder. Give one of them another name with --name NAME before its %s",
+				a.short(prev.String()), a.short(db.String()), prev.Name(), db.Name(), db.Flag())
 		}
 	}
 	if ctx == nil {

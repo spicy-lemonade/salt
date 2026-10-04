@@ -394,14 +394,6 @@ func addExtra(items []item, extra []Extra) ([]item, error) {
 			return nil, err
 		}
 		for _, it := range items {
-			if CaseOnly(it.rel, rel) {
-				// When rel clashes with a folder above a source file, name the
-				// folder: as many of the file's parts as rel has.
-				depth := strings.Count(rel, "/") + 1
-				parts := strings.SplitN(it.rel, "/", depth+1)
-				other := strings.Join(parts[:min(len(parts), depth)], "/")
-				return nil, fmt.Errorf("%w: %s and %s would clash on macOS and Windows, since those ignore case", ErrDuplicatePath, other, rel)
-			}
 			if Clash(it.rel, rel) {
 				return nil, fmt.Errorf("%w: %s", ErrDuplicatePath, rel)
 			}
@@ -414,34 +406,13 @@ func addExtra(items []item, extra []Extra) ([]item, error) {
 
 // Clash reports whether the cleaned slash paths a and b cannot both be in a
 // backup, because they are the same path or one is a folder above the other.
-// Case is ignored, as macOS and Windows ignore it, so a backup made elsewhere
-// still restores there.
+// Paths are compared exactly, case included, as salt keeps every name as it
+// was given: state.db and State.db are two names.
 func Clash(a, b string) bool {
-	return clash(a, b, strings.EqualFold)
-}
-
-// CaseOnly reports whether a and b clash only because case is ignored, such
-// as State.db and state.db. They could both be backed up and restored on
-// Linux, but not on macOS or Windows.
-func CaseOnly(a, b string) bool {
-	return Clash(a, b) && !clash(a, b, func(x, y string) bool { return x == y })
-}
-
-// clash is Clash with equal deciding whether two path parts are the same.
-// The paths are compared part by part, never by length in bytes, since case
-// folding can change a letter's length: the Kelvin sign folds to k.
-func clash(a, b string, equal func(x, y string) bool) bool {
-	for {
-		pa, restA, moreA := strings.Cut(a, "/")
-		pb, restB, moreB := strings.Cut(b, "/")
-		if !equal(pa, pb) {
-			return false
-		}
-		if !moreA || !moreB {
-			return true
-		}
-		a, b = restA, restB
+	if len(a) > len(b) {
+		a, b = b, a
 	}
+	return strings.HasPrefix(b, a) && (len(a) == len(b) || b[len(a)] == '/')
 }
 
 // removeStale deletes ciphertext no longer referenced by the index, leftover

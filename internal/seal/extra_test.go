@@ -91,8 +91,8 @@ func TestSealExtraUnchangedChangesNothing(t *testing.T) {
 }
 
 // An extra file may not take a path the source tree already uses, as a file
-// or as a folder, nor one another extra file uses, nor an unsafe one, also
-// when only the case differs. Nothing is written to the repo.
+// or as a folder, nor one another extra file uses, nor an unsafe one. Nothing
+// is written to the repo.
 func TestSealExtraRefusesClashes(t *testing.T) {
 	f := newFixture(t, true)
 	copy := extraCopy(t, "SQLite format 3\x00")
@@ -104,25 +104,10 @@ func TestSealExtraRefusesClashes(t *testing.T) {
 		"two extra files":     {x("state.db"), x("state.db")},
 		"extra folder":        {x("dbs/state.db"), x("dbs")},
 		"cleaned path":        {x("./memories/USER.md")},
-		"source file, case":   {x("soul.md")},
-		"source folder, case": {x("MEMORIES")},
-		"under a file, case":  {x("Soul.md/state.db")},
-		"two extra, case":     {x("state.db"), x("State.DB")},
-		"extra folder, case":  {x("dbs/state.db"), x("DBS")},
 	} {
 		if _, err := f.sealExtra(extra...); !errors.Is(err, ErrDuplicatePath) {
 			t.Errorf("%s: %v, want ErrDuplicatePath", name, err)
 		}
-	}
-	// A clash only because case is ignored names both paths and says why, so
-	// a backup refused for it is easy to fix.
-	if _, err := f.sealExtra(x("Soul.md")); err == nil || !strings.Contains(err.Error(), "SOUL.md and Soul.md would clash on macOS and Windows, since those ignore case") {
-		t.Errorf("case only: %v", err)
-	}
-	// The folder named is the source's, whole, also when case folding
-	// changes a letter's length in bytes.
-	if _, err := f.sealExtra(x("Memorie\u017f")); err == nil || !strings.Contains(err.Error(), "memories and Memorie\u017f would clash on macOS and Windows") {
-		t.Errorf("case only, long s: %v", err)
 	}
 	for _, rel := range []string{"", "/abs.db", "../up.db", "."} {
 		if _, err := f.sealExtra(x(rel)); err == nil || !strings.Contains(err.Error(), "unsafe path") {
@@ -131,6 +116,33 @@ func TestSealExtraRefusesClashes(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(f.root, "index.age")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a refused seal wrote the index: %v", err)
+	}
+}
+
+// Names are compared exactly, case included: an extra file whose path
+// differs from a source file or folder, or another extra file, only by case
+// is sealed and restores beside it.
+func TestSealExtraKeepsCase(t *testing.T) {
+	f := newFixture(t, true)
+	x := func(rel, content string) Extra {
+		return Extra{Rel: rel, Path: extraCopy(t, content), Mode: 0o644}
+	}
+	want := map[string]string{"soul.md": "lower", "MEMORIES/state.db": "upper", "state.db": "a", "State.DB": "b"}
+	var extra []Extra
+	for rel, content := range want {
+		extra = append(extra, x(rel, content))
+	}
+	if _, err := f.sealExtra(extra...); err != nil {
+		t.Fatal(err)
+	}
+	dest := f.restore(RestoreOptions{})
+	for rel, content := range want {
+		if b, err := os.ReadFile(filepath.Join(dest, rel)); err != nil || string(b) != content {
+			t.Errorf("restored %s = %q, %v; want %q", rel, b, err, content)
+		}
+	}
+	if b, err := os.ReadFile(filepath.Join(dest, "SOUL.md")); err != nil || string(b) != "be kind\n" {
+		t.Errorf("restored SOUL.md = %q, %v", b, err)
 	}
 }
 
@@ -144,37 +156,31 @@ func TestSealExtraMissingFile(t *testing.T) {
 }
 
 // Two paths clash when they are the same or one is a folder above the
-// other, ignoring case, and clash only by case when they would not clash
-// with case kept. Paths that only share a folder, or a beginning, do not
-// clash.
+// other, compared exactly, case included. Paths that differ only by case,
+// only share a folder, or only share a beginning do not clash.
 func TestClash(t *testing.T) {
 	for _, tc := range []struct {
-		a, b            string
-		clash, caseOnly bool
+		a, b  string
+		clash bool
 	}{
-		{"state.db", "state.db", true, false},
-		{"state.db", "State.DB", true, true},
-		{"agent", "agent/state.db", true, false},
-		{"Agent/state.db", "agent", true, true},
-		{"a/b/c.db", "A/B", true, true},
-		{"agent/state.db", "agent/SOUL.md", false, false},
-		{"agent", "agent2/state.db", false, false},
-		{"state.db", "state.db2", false, false},
-		{"state", "state.db", false, false},
-		{"a.db", "b.db", false, false},
-		// Case folding can change a letter's length in bytes: the Kelvin
-		// sign (3 bytes) folds to k (1 byte), and long s (2 bytes) to s.
-		{"\u212a.db", "k.db", true, true},
-		{"\u212a/x.db", "k", true, true},
-		{"\u017ftate.db", "State.db", true, true},
-		{"\u212a", "kk/x.db", false, false},
+		{"state.db", "state.db", true},
+		{"agent", "agent/state.db", true},
+		{"a/b/c.db", "a/b", true},
+		{"state.db", "State.DB", false},
+		{"Agent/state.db", "agent", false},
+		{"a/b/c.db", "A/B", false},
+		// The Kelvin sign and long s are not k and s.
+		{"\u212a.db", "k.db", false},
+		{"\u017ftate.db", "state.db", false},
+		{"agent/state.db", "agent/SOUL.md", false},
+		{"agent", "agent2/state.db", false},
+		{"state.db", "state.db2", false},
+		{"state", "state.db", false},
+		{"a.db", "b.db", false},
 	} {
 		for _, p := range [][2]string{{tc.a, tc.b}, {tc.b, tc.a}} {
 			if got := Clash(p[0], p[1]); got != tc.clash {
 				t.Errorf("Clash(%q, %q) = %v, want %v", p[0], p[1], got, tc.clash)
-			}
-			if got := CaseOnly(p[0], p[1]); got != tc.caseOnly {
-				t.Errorf("CaseOnly(%q, %q) = %v, want %v", p[0], p[1], got, tc.caseOnly)
 			}
 		}
 	}
