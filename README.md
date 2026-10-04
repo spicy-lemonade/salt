@@ -141,18 +141,19 @@ Your key is saved on the laptop where you set up Salt, so restoring there takes 
 salt restore ~/my-backup-repo --to ~/restored-files
 ```
 
-On a new laptop, install Salt, download your backup, and restore it. Salt asks for your 12 words or passphrase, then offers to save the key so you aren't asked again.
+On a new laptop, install Salt and restore straight from your backup repo's URL. Salt downloads only the latest backup, still encrypted, so it's quick even with a long history, then removes the download once your files are restored. It asks for your 12 words or passphrase, then offers to save the key so you aren't asked again.
 
 ```bash
-git clone --depth 1 https://github.com/you/my-backup-repo.git
-salt restore my-backup-repo --to ~/restored-files
+salt restore https://github.com/you/my-backup-repo.git --to ~/restored-files
 ```
+
+The SSH form `git@github.com:you/my-backup-repo.git` and `ssh://` URLs work too. Salt downloads with `git`, so a private repo uses the login git already has, such as an SSH key or a credential helper. Avoid putting a token in the URL, since other programs on your laptop can see the command line.
 
 Salt puts your files in a new folder with their original names and folders. It never overwrites anything, so you can check them before copying them back.
 
 Backing up only needs the public key in your repo and a signing key Salt keeps in a private file on your laptop. The signing key can sign backups but cannot unlock them. The private key is only needed to restore, so you can delete it from your laptop (see [Uninstall](#-uninstall)) and keep just your 12 words.
 
-To start backing up from the new laptop, run `salt trust my-backup-repo` once. Salt shows which keys your backups are locked with and asks you to approve them. It won't back up until you do. If your key isn't saved on the new laptop, Salt asks for your 12 words or passphrase once, to set up the signing key.
+To start backing up from the new laptop, clone your backup repo with `git clone https://github.com/you/my-backup-repo.git`, then run `salt trust my-backup-repo` once. Salt shows which keys your backups are locked with and asks you to approve them. It won't back up until you do. If your key isn't saved on the new laptop, Salt asks for your 12 words or passphrase once, to set up the signing key.
 
 ## 🩺 Checking everything works
 

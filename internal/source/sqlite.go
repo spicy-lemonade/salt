@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+
+	"github.com/spicy-lemonade/salt/internal/proc"
 )
 
 // sqliteHeader starts every SQLite database file.
@@ -107,7 +109,7 @@ func CopySQLite(ctx context.Context, live, dst string) error {
 	if err != nil {
 		return err
 	}
-	return run(ctx, cmd)
+	return proc.Run(ctx, cmd)
 }
 
 // sqliteCommand builds the sqlite3 command that backs up live into dst. It

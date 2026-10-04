@@ -13,7 +13,7 @@ import (
 
 // execAllowed lists the directories (relative to the module root) whose
 // non-test code may start processes.
-var execAllowed = []string{"internal/gitx", "internal/source"}
+var execAllowed = []string{"internal/gitx", "internal/source", "internal/proc"}
 
 // banned calls: package name -> function -> reason.
 var banned = map[string]map[string]string{

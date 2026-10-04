@@ -1,3 +1,6 @@
+// Package source makes safe copies of live databases for salt to seal. With
+// gitx, it is the only package that starts other programs, and it runs them
+// through proc.
 package source
 
 import (

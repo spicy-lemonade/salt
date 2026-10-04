@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/spicy-lemonade/salt/internal/proc"
 )
 
 func writeFile(t *testing.T, path, content string) string {
@@ -113,7 +115,7 @@ func TestCopySQLiteWithoutSQLite3(t *testing.T) {
 	dir := t.TempDir()
 	db := writeFile(t, filepath.Join(dir, "live.db"), sqliteHeader)
 	err := CopySQLite(context.Background(), db, filepath.Join(dir, "copy.db"))
-	if !errors.Is(err, ErrMissingProgram) || err.Error() != "salt needs the sqlite3 program, which is not installed or not on PATH" {
+	if !errors.Is(err, proc.ErrMissingProgram) || err.Error() != "salt needs the sqlite3 program, which is not installed or not on PATH" {
 		t.Fatalf("CopySQLite: %v", err)
 	}
 }
@@ -183,7 +185,7 @@ func TestSQLiteCopyWithoutSQLite3(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	dir := t.TempDir()
 	db, _ := NewSQLite(writeFile(t, filepath.Join(dir, "live.db"), sqliteHeader))
-	if _, err := db.Copy(context.Background(), CopyOptions{Dst: filepath.Join(dir, "0")}); !errors.Is(err, ErrMissingProgram) {
+	if _, err := db.Copy(context.Background(), CopyOptions{Dst: filepath.Join(dir, "0")}); !errors.Is(err, proc.ErrMissingProgram) {
 		t.Fatalf("Copy: %v", err)
 	}
 }

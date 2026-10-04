@@ -71,10 +71,13 @@ Nightly (in your backup script):
 
 Restoring:
   salt restore REPO --to DIR [--force] [--allow-unsigned] [PATH...]
-      Decrypt the backup (or only PATHs) into DIR. Refuses a backup whose
-      index is not signed by your key, since someone who can push to the
-      repo could have planted files in it; --allow-unsigned restores it
-      anyway.
+      Decrypt the backup (or only PATHs) into DIR. REPO is the backup repo's
+      folder, or its https or ssh URL, such as
+      https://github.com/you/backup.git or git@github.com:you/backup.git;
+      only the latest backup on its default branch is downloaded, and
+      removed once it is restored. Refuses a backup whose index is not
+      signed by your key, since someone who can push to the repo could have
+      planted files in it; --allow-unsigned restores it anyway.
   salt recovery test REPO
       Check your recovery phrase or passphrase opens this backup.
   salt recovery show REPO

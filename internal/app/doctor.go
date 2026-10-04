@@ -83,6 +83,7 @@ func (a *App) Doctor(repoRoot string) error {
 	}
 
 	a.doctorRestores(r)
+	a.doctorDownloads(r)
 
 	if err := a.requireGitRepo(root); err != nil {
 		r.add(fail, "%v", err)

@@ -290,6 +290,22 @@ func TestSealDatabaseInterrupted(t *testing.T) {
 	assertNoCopiesLeft(t, fc)
 }
 
+// Ctrl-C can stop the copying program before salt cancels its context. The
+// program's context.Canceled still counts as an interruption.
+func TestSealDatabaseStoppedBeforeSaltIs(t *testing.T) {
+	e, fc, src, db := sqliteEnv(t)
+	d := fc.db(db)
+	d.copy = func(_ context.Context, o source.CopyOptions) (source.Meta, error) {
+		d.plainCopy(o)
+		return source.Meta{}, context.Canceled
+	}
+	err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: []source.Database{d}, Context: context.Background()})
+	if !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "seal interrupted") {
+		t.Fatalf("Seal: %v", err)
+	}
+	assertNoCopiesLeft(t, fc)
+}
+
 // A signal after the copies are made lets the seal finish and remove them,
 // but still fails, so the backup script does not go on to commit.
 func TestSealDatabaseInterruptedWhileSealing(t *testing.T) {

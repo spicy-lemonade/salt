@@ -75,6 +75,8 @@ func (a *App) RecoveryShow(repoRoot string) error {
 
 // RestoreOptions configures Restore.
 type RestoreOptions struct {
+	// Repo is the backup repo's folder, or its https or SSH URL, from which
+	// only the latest backup is downloaded.
 	Repo  string
 	To    string
 	Paths []string
@@ -86,11 +88,19 @@ type RestoreOptions struct {
 }
 
 // Restore decrypts a backup into o.To.
-func (a *App) Restore(o RestoreOptions) error {
-	r, err := repo.Open(o.Repo)
+func (a *App) Restore(o RestoreOptions) (err error) {
+	ctx := o.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r, done, err := a.openRepo(ctx, o.Repo)
+	if errors.Is(err, errDownloadStopped) {
+		return fmt.Errorf("restore %w: %s was not changed", ErrInterrupted, a.short(o.To))
+	}
 	if err != nil {
 		return err
 	}
+	defer func() { err = done(err) }()
 	ids, err := a.identities(r)
 	if err != nil {
 		return err
