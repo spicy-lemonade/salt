@@ -32,7 +32,7 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - BIP39 12-word recovery phrases; the age key is derived from the phrase with HKDF-SHA256
 - OS keychain via `github.com/zalando/go-keyring`, with a 0600 file fallback (`SALT_KEYSTORE=file`)
 
-**Commands:** `init`, `seal [--sqlite DB] [--postgres CONN] [--postgres-env VAR] [--name NAME]`, `prune`, `check`, `restore [--allow-unsigned]`, `verify [--allow-unsigned]`, `doctor`, `trust`, `recovery test|show`, `hook install`, `version`.
+**Commands:** `init`, `seal [--sqlite DB] [--postgres CONN] [--postgres-env VAR] [--name NAME]`, `backup --preset NAME [--keep-days N]`, `prune`, `check`, `restore [--allow-unsigned]`, `verify [--allow-unsigned]`, `doctor`, `trust`, `recovery test|show`, `hook install`, `version`.
 
 **Package layout:**
 - `cmd/salt`: CLI entry point and flag parsing
@@ -44,7 +44,8 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - `internal/hook`: pre-commit hook script and installation
 - `internal/gitx`: the only way salt runs git (hooks always disabled)
 - `internal/source`: safe copies of live databases (runs `sqlite3` and `pg_dump`); each kind is a `Database` listed in `Kinds`; with `gitx` and `proc`, the only packages that start programs
-- `internal/proc`: runs the programs `gitx` and `source` may stop part way; caps their error output and how long a stopped one is waited for
+- `internal/proc`: runs the programs `gitx` and `source` may stop part way (`git clone`, `git push`, `sqlite3`, `pg_dump`); caps their error output and how long a stopped one is waited for
+- `internal/preset`: presets for `salt backup`, one embedded JSON file per tool in `presets/`, read by the same tool-agnostic code; finds each preset's files and SQLite databases and leaves out files holding secrets
 - `internal/guard`: refuses nested salt processes; sets a soft memory limit
 - `internal/prune`: keeps only the backups from the last N days with a change (counted for the whole repo, not per file) by rewriting the branch's history
 - `internal/trust`: this machine's approved copy of each repo's keys and settings; seal refuses if the repo differs
@@ -104,7 +105,8 @@ go test ./internal/seal -run TestRoundTrip
 - Salt prints to stderr only. Scheduled jobs (cron, agent schedulers) often send any stdout on as an email or message, so success must be silent on stdout.
 - Decided out of scope is Touch ID gating, and switching recovery method from the 12 word passphrase to the user chosen passphrase or vice versa.
 - `salt seal --sqlite DB` makes a safe copy of a live SQLite database itself (`internal/source` runs `sqlite3 .backup`). `salt seal --postgres CONN` (or `--postgres-env VAR`) dumps a Postgres database as plain SQL with `pg_dump`, with the password passed in `PGPASSWORD` and never shown. See `docs/design.md`, "Databases".
-- Not yet built: OpenViking support and a `salt backup` preset.
+- `salt backup --preset NAME REPO` gathers what the presets name, seals it (the repo then holds only that), commits with hooks off after running the `salt check` logic in-process, prunes and pushes with `--force-with-lease`. It prints nothing on success. See `docs/design.md`, "One-command backup".
+- Not yet built: OpenViking support, and presets other than `mnemosyne` (Hermes, OpenClaw, Honcho, Hindsight).
 
 ### Agent contributing rules
 

@@ -203,3 +203,25 @@ func TestNewSQLiteWithoutCurrentFolder(t *testing.T) {
 		t.Fatal("NewSQLite without a current folder succeeded")
 	}
 }
+
+func TestIsSQLite(t *testing.T) {
+	dir := t.TempDir()
+	for content, want := range map[string]bool{
+		sqliteHeader + "pages": true,
+		sqliteHeader:           true,
+		"":                     false,
+		"SQLite":               false,
+		"not a database file":  false,
+	} {
+		ok, err := IsSQLite(writeFile(t, filepath.Join(dir, "x"), content))
+		if ok != want || err != nil {
+			t.Errorf("IsSQLite(%q) = %v, %v", content, ok, err)
+		}
+	}
+	if _, err := IsSQLite(filepath.Join(dir, "missing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("missing: %v", err)
+	}
+	if _, err := IsSQLite(dir); err == nil {
+		t.Error("IsSQLite read a folder")
+	}
+}

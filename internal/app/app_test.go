@@ -78,6 +78,12 @@ type fakeGit struct {
 	clone      func(ctx context.Context, dir string) error
 	cloned     []string
 	clonedInto string
+	// calls records Stage, Commit and Push in order; each fails with its
+	// error.
+	calls     []string
+	stageErr  error
+	commitErr error
+	push      func(ctx context.Context) error
 }
 
 func (f *fakeGit) HookPath(string) (string, error) { return f.hook, nil }
@@ -109,6 +115,24 @@ func (f *fakeGit) Clone(ctx context.Context, url, dir string) error {
 		return errors.New("no clone in this test")
 	}
 	return f.clone(ctx, dir)
+}
+
+func (f *fakeGit) Stage(string) error {
+	f.calls = append(f.calls, "stage")
+	return f.stageErr
+}
+
+func (f *fakeGit) Commit(_, msg string) error {
+	f.calls = append(f.calls, "commit "+msg)
+	return f.commitErr
+}
+
+func (f *fakeGit) Push(ctx context.Context, _ string) error {
+	f.calls = append(f.calls, "push")
+	if f.push == nil {
+		return nil
+	}
+	return f.push(ctx)
 }
 
 func newEnv(t *testing.T) *testEnv {

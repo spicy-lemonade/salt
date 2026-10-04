@@ -33,9 +33,14 @@ func (a *App) Prune(repoRoot string, keepDays int) error {
 			res.Kept, res.Days, res.Dropped)
 		a.UI.Printf("salt: history was rewritten, so push with `git push --force-with-lease`\n")
 	}
-	// The branch has already moved, so a failed clean-up leaves every kept
-	// backup complete; it only leaves the dropped ones on this disk until the
-	// next prune. It is a warning, so a backup script still goes on to push.
+	return a.pruneCleanup(err)
+}
+
+// pruneCleanup turns a failed clean-up after a prune into a warning. The
+// branch has already moved, so every kept backup is complete; the dropped
+// ones only stay on this disk until the next prune. A backup script still
+// goes on to push.
+func (a *App) pruneCleanup(err error) error {
 	if errors.Is(err, prune.ErrCleanup) {
 		a.UI.Printf("salt: warning: %v; they take up space on this machine until the next prune removes them\n", err)
 		return nil

@@ -263,3 +263,31 @@ func TestClash(t *testing.T) {
 		}
 	}
 }
+
+// With no source folder, only the extra files are sealed, and they restore
+// in their own folders.
+func TestSealOnlyExtra(t *testing.T) {
+	f := newFixture(t, true)
+	at := time.Date(2025, 4, 5, 6, 7, 8, 0, time.UTC)
+	res, err := Seal("", f.repo, Options{CacheDir: f.cache, Signer: f.signer, Extra: []Extra{
+		{Rel: "tool/notes.md", Path: extraCopy(t, "notes"), Mode: 0o644, ModTime: at},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Files != 1 || res.Encrypted != 1 {
+		t.Fatalf("seal: %+v", res)
+	}
+	dest := f.restore(RestoreOptions{})
+	b, err := os.ReadFile(filepath.Join(dest, "tool", "notes.md"))
+	if err != nil || string(b) != "notes" {
+		t.Fatalf("restored notes.md = %q, %v", b, err)
+	}
+	// The file limit names the backup when there is no source folder.
+	old := MaxIndexEntries
+	MaxIndexEntries = 0
+	t.Cleanup(func() { MaxIndexEntries = old })
+	if _, err := Seal("", f.repo, Options{CacheDir: f.cache, Signer: f.signer, Extra: []Extra{{Rel: "a", Path: extraCopy(t, "a")}}}); err == nil || !strings.HasPrefix(err.Error(), "the backup has 1 files") {
+		t.Fatalf("seal over the limit: %v", err)
+	}
+}

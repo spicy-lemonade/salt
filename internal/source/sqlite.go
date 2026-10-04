@@ -94,6 +94,25 @@ func checkSQLite(path string) (wal bool, err error) {
 	return n == len(head) && head[18] == walVersion && head[19] == walVersion, nil
 }
 
+// IsSQLite reports whether the regular file at path starts with SQLite's
+// header. Unlike checkSQLite, an empty file does not count, so only files
+// that are already databases are found.
+func IsSQLite(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	head := make([]byte, len(sqliteHeader))
+	if _, err := io.ReadFull(f, head); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return false, nil
+		}
+		return false, err
+	}
+	return string(head) == sqliteHeader, nil
+}
+
 // CopySQLite writes a consistent copy of the SQLite database at live to dst
 // with SQLite's own backup, which is safe while other programs write to the
 // database. live must be an absolute path. sqlite3 copies it page by page,

@@ -271,7 +271,8 @@ git push --force-with-lease
 
 `--force-with-lease` only overwrites the remote if it still holds what this
 machine last saw there, so a backup pushed from another machine in the
-meantime is not lost. Salt never pushes by itself.
+meantime is not lost. `salt prune` never pushes by itself. `salt backup`
+pushes this way after it prunes (see "One-command backup").
 
 - **Other clones.** Any other clone of the backup repo, such as on another
   laptop, still has the old history. Before backing up from it, run
@@ -405,7 +406,7 @@ start another until the machine runs out of memory. These rules prevent that:
 3. Every git command salt runs has git hooks switched off (`internal/gitx`).
 4. Only `internal/gitx`, `internal/source` and `internal/proc` may start other
    programs. `internal/proc` runs the ones salt may stop part way (`git clone`,
-   `sqlite3` and `pg_dump`). It keeps at most 4 KiB of their error output and
+   `git push`, `sqlite3` and `pg_dump`). It keeps at most 4 KiB of their error output and
    waits at most 5 seconds for the output of one that was stopped, since a
    program it started can hold that output open. Unit tests never start any.
    `internal/rules` enforces rules 1 and 4.
@@ -558,6 +559,94 @@ dump names must exist there first too. With `ON_ERROR_STOP` and
 `--single-transaction`, a failed restore stops at the first error and leaves
 the new database empty.
 
+## One-command backup
+
+`salt backup --preset NAME REPO` does a whole nightly backup with no script.
+It is meant for a cron line, so it prints nothing when it works. In order, it:
+
+1. opens REPO and refuses, as `salt seal` does, if this machine has not
+   approved its keys or has no signing key. It also refuses if REPO is not a
+   git repo or has no remote named `origin`, before any work is done;
+2. gathers what each preset names (see "Presets"), and refuses if a preset
+   finds nothing, naming where it looked;
+3. makes a safe copy of each SQLite database found, as `--sqlite` does, and
+   seals the copies and every other file found into REPO, which then holds
+   only them. Anything else in REPO is removed, as with `salt seal --prune`;
+4. stages everything with `git add --all`, runs the same check as the
+   pre-commit hook (`salt check`) inside salt, and commits as `salt backup`
+   if anything changed. The commit runs with git hooks off, like every git
+   command salt runs (see "Process and memory safety"), so salt checks it
+   itself instead;
+5. drops old backups as `salt prune` does, keeping `--keep-days N` days with
+   a change (5 by default);
+6. pushes the branch to `origin` with `git push --force-with-lease`. git
+   never waits for a password to be typed (`GIT_TERMINAL_PROMPT=0`), and
+   errors never show credentials from origin's URL. If origin holds a backup
+   this machine has not seen, such as one pushed from another machine, the
+   push is refused and nothing there is lost.
+
+A failure stops the steps that follow. A backup committed but not pushed is
+pushed by the next run. Ctrl-C or SIGTERM stops a database copy or the push.
+
+### Presets
+
+A preset says where one tool keeps the files needed to restore its memory.
+Each is a JSON file in `internal/preset/presets`, built into salt, and the
+same code reads them all, so adding a tool means adding one file:
+
+```json
+{
+  "name": "example",
+  "about": "one line shown to people",
+  "paths": [
+    {"from": "${TOOL_HOME:-~/.tool}/data", "to": "tool/data"},
+    {"from": "${TOOL_HOME:-~/.tool}/profiles/*/data", "to": "tool/profiles/*/data"}
+  ],
+  "skip": ["*.log", "cache"],
+  "secrets": [{"files": ["config.yaml"], "keys": ["*api_key", "*token"]}]
+}
+```
+
+- `name` is the file's name without `.json`.
+- `from` is where a file or folder is. `${VAR}` is an environment variable,
+  and the path is skipped when it is unset or empty. `${VAR:-DEFAULT}` uses
+  DEFAULT then. A leading `~` is the home folder. A part that is only `*`
+  matches every folder there, such as each profile, leaving out hidden ones.
+  A `*` held by a variable is part of a name, never matched.
+- `to` is where it goes in the backup. It has a `*` for each `*` in `from`,
+  which takes the name that `*` matched. Paths that do not exist are skipped.
+- `skip` lists name patterns of files and folders never backed up, such as
+  caches, logs and downloaded models. `.DS_Store` and `.git` are always
+  skipped, as in `salt seal`.
+- `secrets` lists files that may hold secrets, and the settings in them that
+  do. Such a file is read as YAML (which includes JSON), every document in
+  it, and every setting at any depth is checked, its name in lower case. If
+  one named in `keys` holds a value, the file is left out and salt prints
+  one line naming the file and the setting, never its value. A file that
+  cannot be read, cannot be read as YAML, or is over 1 MiB is left out too.
+  Salt never changes the file to remove the secret.
+
+Inside a folder, a file that starts with SQLite's header is a database and
+gets a safe copy. Its `-wal`, `-shm` and `-journal` files are not backed up,
+since the copy already holds what is in them. Every other file is sealed as
+it is, with its permissions and last-modified date, read in place without a
+copy. A symlink inside a folder is not followed or backed up, and salt
+prints one line about it. A `from` that is itself a symlink is followed.
+
+A place found twice, such as a folder named both by a variable and by its
+default, or a file inside a folder already found, is backed up once, under
+the first path. A place that contains the backup repo, or is inside it, is
+refused, comparing real paths with symlinks followed.
+
+The `mnemosyne` preset covers Mnemosyne's data folder (its main database,
+memory banks and shared database), its `config.yaml`, and its attached files
+(`blobs`), in the Hermes folder (`$HERMES_HOME` or `~/.hermes`), in each
+Hermes profile, and where `MNEMOSYNE_DATA_DIR`, `MNEMOSYNE_BLOB_DIR`,
+`MNEMOSYNE_SHARED_DB_PATH` and `MNEMOSYNE_HOME` point. It leaves out models,
+logs, Mnemosyne's own backups and `.env` files. Its `config.yaml` can hold API
+keys (`mnemosyne config set`, or `mnemosyne config migrate`, which copies
+every `MNEMOSYNE_*` variable into it), so it is checked for them.
+
 ## Out of scope
 
 Touch ID, and switching recovery method.
@@ -565,4 +654,4 @@ Touch ID, and switching recovery method.
 ## Still to build
 
 - OpenViking support. Its data format has not been checked yet.
-- a one-command `salt backup`, which will also run `salt prune`
+- Presets for more tools, such as Hermes, OpenClaw, Honcho and Hindsight.

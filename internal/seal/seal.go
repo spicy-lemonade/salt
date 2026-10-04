@@ -115,7 +115,8 @@ var (
 	hashedHook  func(path string)
 )
 
-// Seal encrypts the tree at src into the repository r.
+// Seal encrypts the tree at src into the repository r. An empty src seals
+// only opt.Extra.
 func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	if opt.CacheDir == "" {
 		return nil, errors.New("seal: no cache directory")
@@ -123,8 +124,10 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	if len(opt.Signer) != ed25519.PrivateKeySize {
 		return nil, errors.New("seal: no signing key")
 	}
-	if err := checkDisjoint(src, r.Root, opt.Show); err != nil {
-		return nil, err
+	if src != "" {
+		if err := CheckDisjoint(src, r.Root, opt.Show); err != nil {
+			return nil, err
+		}
 	}
 	if err := CheckNoSymlinks(r.Root); err != nil {
 		return nil, err
@@ -134,15 +137,22 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		exclude = DefaultExclude
 	}
 	res := &Result{}
-	items, err := walkSource(src, exclude, res, opt.Show)
-	if err != nil {
-		return nil, err
+	var items []item
+	var err error
+	if src != "" {
+		if items, err = walkSource(src, exclude, res, opt.Show); err != nil {
+			return nil, err
+		}
 	}
 	if items, err = addExtra(items, opt.Extra, ClashRule(r.Format.EncryptPaths)); err != nil {
 		return nil, err
 	}
 	if len(items) > MaxIndexEntries {
-		return nil, fmt.Errorf("%s has %d files; salt supports at most %d per backup", show(opt.Show, src), len(items), MaxIndexEntries)
+		what := "the backup"
+		if src != "" {
+			what = show(opt.Show, src)
+		}
+		return nil, fmt.Errorf("%s has %d files; salt supports at most %d per backup", what, len(items), MaxIndexEntries)
 	}
 
 	// All repo writes go through rt, which refuses paths that lead outside
@@ -501,9 +511,9 @@ func removeEmptyDirs(rt *os.Root, dir string) {
 	rt.Remove(filepath.FromSlash(dir)) // fails, harmlessly, unless empty
 }
 
-// checkDisjoint refuses a source inside the repo or a repo inside the source:
+// CheckDisjoint refuses a source inside the repo or a repo inside the source:
 // either would seal ciphertext into itself or leak plaintext into the repo.
-func checkDisjoint(src, root string, fn func(string) string) error {
+func CheckDisjoint(src, root string, fn func(string) string) error {
 	a, err := filepath.Abs(src)
 	if err != nil {
 		return err
@@ -512,13 +522,14 @@ func checkDisjoint(src, root string, fn func(string) string) error {
 	if err != nil {
 		return err
 	}
-	if within(a, b) || within(b, a) {
+	if Within(a, b) || Within(b, a) {
 		return fmt.Errorf("source %s and repository %s must not contain each other", show(fn, a), show(fn, b))
 	}
 	return nil
 }
 
-func within(p, dir string) bool {
+// Within reports whether the path p is dir or inside it.
+func Within(p, dir string) bool {
 	rel, err := filepath.Rel(dir, p)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

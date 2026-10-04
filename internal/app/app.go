@@ -5,11 +5,13 @@ package app
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"time"
 
@@ -39,6 +41,9 @@ type App struct {
 	LookPath func(name string) (string, bool)
 	Now      func() time.Time
 	Version  string
+	// Getenv reads an environment variable. Nil reads none, as if every
+	// variable were unset.
+	Getenv func(string) string
 	// Home is the user's home folder. Messages show paths inside it as "~/…";
 	// empty means paths are shown in full.
 	Home string
@@ -60,6 +65,12 @@ type GitOps interface {
 	// Clone downloads only the latest commit of url into the empty folder
 	// dir (see gitx.Clone).
 	Clone(ctx context.Context, url, dir string) error
+	// Stage stages every change, removed files included.
+	Stage(repoRoot string) error
+	// Commit commits what is staged, and nothing when nothing is.
+	Commit(repoRoot, msg string) error
+	// Push pushes the checked-out branch to origin (see gitx.Push).
+	Push(ctx context.Context, repoRoot string) error
 }
 
 // RealGit runs git through gitx (hooks disabled).
@@ -83,6 +94,9 @@ func (RealGit) Prune(root string, keepDays int) (*prune.Result, error) {
 func (RealGit) Clone(ctx context.Context, url, dir string) error {
 	return gitx.Clone(ctx, url, dir)
 }
+func (RealGit) Stage(root string) error                     { return gitx.StageAll(root) }
+func (RealGit) Commit(root, msg string) error               { return gitx.CommitStaged(root, msg) }
+func (RealGit) Push(ctx context.Context, root string) error { return gitx.Push(ctx, root) }
 
 // HookSearchPath is where the pre-commit hook looks for salt: the caller's
 // PATH plus Homebrew's locations (see hook.Script).
@@ -111,6 +125,8 @@ type SealOptions struct {
 	// Databases lists live databases to copy safely and seal, each under its
 	// own name.
 	Databases []source.Database
+	// Files lists files to seal as they are, each under its own name.
+	Files []seal.Extra
 	// Context stops the database copies early. Nil means never.
 	Context context.Context
 }
@@ -118,37 +134,13 @@ type SealOptions struct {
 // Seal encrypts o.Src, and safe copies of o.Databases, into the salt repository
 // at o.Repo.
 func (a *App) Seal(o SealOptions) error {
-	r, err := repo.Open(o.Repo)
+	r, signer, err := a.openToSeal(o.Repo)
 	if err != nil {
 		return err
 	}
-	if err := a.checkTrusted(r); err != nil {
-		return err
-	}
-	signer, err := a.signingKey(r)
-	if errors.Is(err, errNoSigningKey) {
-		return fmt.Errorf("this machine has no key to sign backups to %s. salt now signs every backup, so restore can tell if someone planted files in it. Run `salt trust %q` once to set it up",
-			a.short(r.Root), r.Root)
-	}
-	if err != nil {
-		return fmt.Errorf("reading the signing key: %w", err)
-	}
-	extra, cleanup, err := a.copyDatabases(o.Context, r, o.Databases)
+	res, err := a.seal(r, signer, o)
 	if err != nil {
 		return err
-	}
-	defer cleanup()
-	res, err := seal.Seal(o.Src, r, seal.Options{CacheDir: a.CacheDir, Signer: signer, Prune: o.Prune, Show: a.short, Extra: extra})
-	if errors.Is(err, seal.ErrDuplicatePath) && len(extra) > 0 {
-		return fmt.Errorf("%w; each database salt copies is backed up under its own name, which must not be used by another database or by a file or folder in %s. Give the database another name with --name NAME before its option", err, a.short(o.Src))
-	}
-	if err != nil {
-		return err
-	}
-	// A signal during sealing lets it finish, so the copies are removed, but
-	// still stops the backup script before it commits.
-	if o.Context != nil && o.Context.Err() != nil {
-		return fmt.Errorf("seal %w: the backup was sealed and the database copies were removed, but do not commit it without checking", ErrInterrupted)
 	}
 	a.UI.Printf("salt: sealed %d files and %d symlinks: %d encrypted, %d unchanged, %d removed\n",
 		res.Files, res.Symlinks, res.Encrypted, res.Reused, len(res.Removed))
@@ -162,6 +154,50 @@ func (a *App) Seal(o SealOptions) error {
 		return nil // not a git repo, so nothing is pushed
 	}
 	return a.checkStorage(r.Root, "salt: the backup was sealed, but")
+}
+
+// openToSeal opens the salt repository at path for sealing. It refuses one
+// whose keys or settings this machine has not approved, or with no key on
+// this machine to sign its backups.
+func (a *App) openToSeal(path string) (*repo.Repo, ed25519.PrivateKey, error) {
+	r, err := repo.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := a.checkTrusted(r); err != nil {
+		return nil, nil, err
+	}
+	signer, err := a.signingKey(r)
+	if errors.Is(err, errNoSigningKey) {
+		return nil, nil, fmt.Errorf("this machine has no key to sign backups to %s. salt now signs every backup, so restore can tell if someone planted files in it. Run `salt trust %q` once to set it up",
+			a.short(r.Root), r.Root)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading the signing key: %w", err)
+	}
+	return r, signer, nil
+}
+
+// seal copies o.Databases safely, then seals them, o.Src and o.Files into r.
+func (a *App) seal(r *repo.Repo, signer ed25519.PrivateKey, o SealOptions) (*seal.Result, error) {
+	extra, cleanup, err := a.copyDatabases(o.Context, r, o.Databases)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	res, err := seal.Seal(o.Src, r, seal.Options{CacheDir: a.CacheDir, Signer: signer, Prune: o.Prune, Show: a.short, Extra: slices.Concat(o.Files, extra)})
+	if errors.Is(err, seal.ErrDuplicatePath) && len(extra) > 0 && o.Src != "" {
+		return nil, fmt.Errorf("%w; each database salt copies is backed up under its own name, which must not be used by another database or by a file or folder in %s. Give the database another name with --name NAME before its option", err, a.short(o.Src))
+	}
+	if err != nil {
+		return nil, err
+	}
+	// A signal during sealing lets it finish, so the copies are removed, but
+	// still stops the backup script before it commits.
+	if o.Context != nil && o.Context.Err() != nil {
+		return nil, fmt.Errorf("seal %w: the backup was sealed and the database copies were removed, but do not commit it without checking", ErrInterrupted)
+	}
+	return res, nil
 }
 
 // copyDatabases makes a safe copy of each live database in a new private

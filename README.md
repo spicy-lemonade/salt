@@ -52,9 +52,52 @@ salt seal --prune ~/agent-files ~/my-backup-repo
 
 Commit and push as normal. Your backup always matches your files: unchanged files stay the same, deleted files are removed, and a backup with no changes makes no commit. Each file's last-modified date is saved too, and `salt restore` puts it back. `--prune` also clears out anything Salt didn't put there. Older versions stay in your git history, so you can check out an older commit and run `salt restore` on it. `salt prune` keeps that history to the last few days (see [Keeping only recent backups](#-keeping-only-recent-backups)).
 
+## ⚡ One-command backups
+
+If Salt has a preset for your agent's memory, one command does the whole daily backup. Salt finds the files and databases, makes a safe copy of each database, locks everything into your repo, commits, drops old backups and pushes.
+
+```bash
+salt backup --preset mnemosyne ~/my-backup-repo
+```
+
+Run `crontab -e` and add this line to run it every day at 6am. Use the path that `which salt` prints, since cron doesn't search Homebrew's folder.
+
+```
+0 6 * * * /opt/homebrew/bin/salt backup --preset mnemosyne "$HOME/my-backup-repo" >> "$HOME/backup.log" 2>&1
+```
+
+- Your repo then holds only what the presets find, and anything else in it is removed, as `salt seal --prune` does. Give `salt backup` a repo of its own, and repeat `--preset` for each tool you use.
+- A settings file that holds an API key or other secret is left out, and Salt prints one line saying which file and which setting. Keep the secret in an environment variable instead and the file is backed up again.
+- `--keep-days N` sets how many days with a change to keep. The default is 5, as with `salt prune`.
+- The repo needs a remote named `origin`, and `git push` must work without asking for a password. Running `gh auth setup-git` once is an easy way to do this. If a backup was pushed from another machine in the meantime, Salt never overwrites it and stops with a message instead.
+- Salt prints nothing when the backup works.
+
+### Presets
+
+| Preset | What it backs up |
+|---|---|
+| `mnemosyne` | [Mnemosyne](https://github.com/mnemosyne-oss/mnemosyne) memory, in Hermes and each Hermes profile, or on its own |
+
+The `mnemosyne` preset backs up these folders and files, where they exist.
+
+| On your machine | In the backup |
+|---|---|
+| `~/.hermes/mnemosyne/data` and `config.yaml` (or under `$HERMES_HOME`) | `hermes/mnemosyne/` |
+| `~/.hermes/profiles/<name>/mnemosyne/data` and `config.yaml` | `hermes/profiles/<name>/mnemosyne/` |
+| `~/.hermes/mnemosyne/blobs` (or `$MNEMOSYNE_BLOB_DIR`) | `mnemosyne-blobs/` |
+| `$MNEMOSYNE_DATA_DIR` | `mnemosyne-data/` |
+| `$MNEMOSYNE_SHARED_DB_PATH` | `mnemosyne-shared.db` |
+| `~/.mnemosyne/data` (or `$MNEMOSYNE_HOME/data`) | `mnemosyne-home/data/` |
+
+Every database in these folders, including each memory bank, gets a safe copy. Downloaded models, logs, Mnemosyne's own backups and `.env` files are left out. If you set any of these variables for Mnemosyne, set them in the cron line too, such as `MNEMOSYNE_DATA_DIR=/srv/memory /opt/homebrew/bin/salt backup ...`.
+
+To get your memory back, restore into a new folder (see [Getting your files back](#-getting-your-files-back)), stop the agent, then copy each folder back to where it came from, such as `hermes/` to `~/.hermes/`.
+
+Each preset is a small JSON file in [`internal/preset/presets`](internal/preset/presets). To add one for another tool, copy `mnemosyne.json`, change the paths, and open a pull request. The [design doc](docs/design.md#one-command-backup) explains the format.
+
 ## ⏰ Daily backups
 
-Most people run Salt from a small script once a day. Here is an example of a daily backup for Hermes. Just change the paths to match your setup.
+For files without a preset, most people run Salt from a small script once a day. Here is an example of a daily backup for Hermes. Just change the paths to match your setup.
 
 ```bash
 #!/bin/bash
