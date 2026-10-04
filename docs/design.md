@@ -122,7 +122,9 @@ If you lose them and this laptop, your backups cannot be recovered.
   restores from it as from a local repo and removes it, whether the restore
   worked or not. The download holds only encrypted
   files; nothing is decrypted until it is complete. Messages never show a
-  user name or password given in the URL.
+  user name or password given in the URL. A download that could not be
+  removed, or that a killed salt left behind, is pointed out by the next
+  restore from a URL and by `salt doctor`.
 - `salt restore` and `salt verify` first check the index is signed by the
   signing key of one of the keys that decrypts it, and refuse it if not.
   `--allow-unsigned` goes ahead anyway, with a warning, for example to look

@@ -95,7 +95,7 @@ func (a *App) Restore(o RestoreOptions) error {
 	}
 	r, done, err := a.openRepo(ctx, o.Repo)
 	if errors.Is(err, errDownloadStopped) {
-		return fmt.Errorf("restore %w: the download was removed and %s was not changed", ErrInterrupted, a.short(o.To))
+		return fmt.Errorf("restore %w: %s was not changed", ErrInterrupted, a.short(o.To))
 	}
 	if err != nil {
 		return err

@@ -114,7 +114,7 @@ func TestRestoreFromURLInterrupted(t *testing.T) {
 	}
 	dest := filepath.Join(t.TempDir(), "restored")
 	err := e.app.Restore(RestoreOptions{Repo: backupURL, To: dest, Context: ctx})
-	if !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "the download was removed") {
+	if !errors.Is(err, ErrInterrupted) || err.Error() != "restore interrupted: "+e.app.short(dest)+" was not changed" {
 		t.Fatalf("Restore: %v", err)
 	}
 	if _, err := os.Lstat(dest); !os.IsNotExist(err) {
@@ -181,4 +181,69 @@ func TestRestoreFromURLRefusesOtherSchemes(t *testing.T) {
 		t.Fatalf("cloned %q", e.git.cloned)
 	}
 	noDownloadsLeft(t, e)
+}
+
+func TestRestoreFromURLPointsOutLeftovers(t *testing.T) {
+	e := remoteEnv(t)
+	old := filepath.Join(e.app.Home, "salt-download-123")
+	if err := os.Mkdir(old, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.app.Restore(RestoreOptions{Repo: backupURL, To: filepath.Join(t.TempDir(), "r")}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	want := "salt: " + e.app.short(old) + " was left by a download that did not finish. It holds only encrypted files and the URL they came from, so delete it once you have checked it\n"
+	if out := e.ui.out.String(); !strings.HasPrefix(out, want) {
+		t.Fatalf("no warning about %s:\n%s", old, out)
+	}
+	// It is pointed out, never removed.
+	if entries, _ := os.ReadDir(e.app.Home); len(entries) != 1 || entries[0].Name() != "salt-download-123" {
+		t.Fatalf("left in the home folder: %v", entries)
+	}
+}
+
+func TestRestoreFromURLCannotRemoveTheDownload(t *testing.T) {
+	e := remoteEnv(t)
+	var locked string
+	e.git.clone = func(_ context.Context, dir string) error {
+		if err := os.CopyFS(dir, os.DirFS(e.root)); err != nil {
+			return err
+		}
+		// A folder whose files cannot be deleted stops the removal.
+		locked = filepath.Join(dir, "locked")
+		os.Mkdir(locked, 0o700)
+		os.WriteFile(filepath.Join(locked, "f"), nil, 0o600)
+		return os.Chmod(locked, 0o500)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o700) })
+	if err := e.app.Restore(RestoreOptions{Repo: backupURL, To: filepath.Join(t.TempDir(), "r")}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	want := "salt: could not remove the download in " + e.app.short(filepath.Dir(locked)) + " ("
+	if out := e.ui.out.String(); !strings.Contains(out, want) || !strings.Contains(out, "so delete it yourself\n") {
+		t.Fatalf("no warning that the download is still there:\n%s", out)
+	}
+}
+
+func TestDoctorPointsOutLeftoverDownloads(t *testing.T) {
+	e := remoteEnv(t)
+	old := filepath.Join(e.app.Home, "salt-download-123")
+	if err := os.Mkdir(old, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e.app.Doctor(e.root)
+	if out := e.ui.out.String(); !strings.Contains(out, "! "+e.app.short(old)+" was left by a download that did not finish.") {
+		t.Fatalf("doctor did not point out %s:\n%s", old, out)
+	}
+}
+
+func TestDownloadDir(t *testing.T) {
+	a := &App{Home: "/home/you"}
+	if got := a.downloadDir(); got != "/home/you" {
+		t.Fatalf("downloadDir = %q", got)
+	}
+	a.Home = ""
+	if got := a.downloadDir(); got != os.TempDir() {
+		t.Fatalf("downloadDir without a home folder = %q, want %q", got, os.TempDir())
+	}
 }
