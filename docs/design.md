@@ -640,8 +640,11 @@ same code reads them all, so adding a tool means adding one file:
 - `secrets` lists files that may hold secrets, and the settings in them that
   do. Such a file is read as YAML (which includes JSON), every document in
   it, and every setting at any depth is checked, its name in lower case. If
-  one named in `keys` holds a value, the file is left out and salt prints
-  one line naming the file and the setting, never its value. A file that
+  one named in `keys` holds text (a string that is not empty, at any depth
+  below the setting, or a YAML alias, which salt does not follow), the file
+  is left out and salt prints one line naming the file and the setting,
+  never its value. Numbers, true or false, and null never count, so
+  `max_tokens: 512` is not taken for a secret. A file that
   cannot be read, cannot be read as YAML, or is over 1 MiB is left out too.
   Salt never changes the file to remove the secret.
 
@@ -669,8 +672,15 @@ The `mnemosyne` preset covers Mnemosyne's data folder (its main database,
 memory banks and shared database), its `config.yaml`, and its attached files
 (`blobs`), in the Hermes folder (`$HERMES_HOME` or `~/.hermes`), in each
 Hermes profile, and where `MNEMOSYNE_DATA_DIR`, `MNEMOSYNE_BLOB_DIR`,
-`MNEMOSYNE_SHARED_DB_PATH` and `MNEMOSYNE_HOME` point. It leaves out models,
-logs, Mnemosyne's own backups and `.env` files. Its `config.yaml` can hold API
+`MNEMOSYNE_SHARED_DB_PATH` and `MNEMOSYNE_HOME` point. Mnemosyne keeps its
+downloaded models, logs and `backups` folder beside these folders, not in
+them, so they are not backed up. Inside them, the preset leaves out `.env`
+files, the copies Mnemosyne makes of a database before migrating it
+(`*.pre_*_backup`) and its unfinished repairs (`.mnemosyne-repair-*`).
+A folder that `MNEMOSYNE_MODEL_CACHE_DIR` or `MNEMOSYNE_BACKUP_DIR` points to
+inside one of them is backed up with it. Mnemosyne's default blob folder,
+`~/.hermes/mnemosyne/blobs`, does not follow `HERMES_HOME`, so the preset's
+does not either. Its `config.yaml` can hold API
 keys (`mnemosyne config set`, or `mnemosyne config migrate`, which copies
 every `MNEMOSYNE_*` variable into it), so it is checked for them.
 

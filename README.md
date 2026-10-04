@@ -69,7 +69,7 @@ Run `crontab -e` and add this line to run it every day at 6am. Use the path that
 - Your repo then holds only what the presets find, and anything else in it is removed, as `salt seal --prune` does. Give `salt backup` a repo of its own, and repeat `--preset` for each tool you use.
 - A settings file that holds an API key or other secret is left out, and Salt prints one line saying which file and which setting. Keep the secret in an environment variable instead and the file is backed up again.
 - `--keep-days N` sets how many days with a change to keep. The default is 5, as with `salt prune`.
-- The repo needs a remote named `origin`, and `git push` must work without asking for a password. Running `gh auth setup-git` once is an easy way to do this. If a backup was pushed from another machine in the meantime, Salt never overwrites it and stops with a message instead.
+- The repo needs a remote named `origin`, and `git push` must work without asking for a password. Running `gh auth setup-git` once is an easy way to do this. If a backup was pushed from another machine in the meantime, Salt never overwrites it and stops with a message instead. Salt pushes only when origin's branch is at a commit this machine pushed, or one your local branch already holds, so this is true even after a `git fetch` has brought the other machine's commit into your repo.
 - If a folder that was in the last backup isn't found, such as one on a drive that isn't mounted, Salt prints one line naming it and backs up the rest.
 - Salt prints nothing when the backup works.
 
@@ -90,7 +90,7 @@ The `mnemosyne` preset backs up these folders and files, where they exist.
 | `$MNEMOSYNE_SHARED_DB_PATH` | `mnemosyne-shared.db` |
 | `~/.mnemosyne/data` (or `$MNEMOSYNE_HOME/data`) | `mnemosyne-home/data/` |
 
-Every database in these folders, including each memory bank, gets a safe copy. Downloaded models, logs, Mnemosyne's own backups and `.env` files are left out. If you set any of these variables for Mnemosyne, set them in the cron line too, such as `MNEMOSYNE_DATA_DIR=/srv/memory /opt/homebrew/bin/salt backup ...`.
+Every database in these folders, including each memory bank, gets a safe copy. Mnemosyne keeps its downloaded models, logs and own backups beside these folders, so they aren't backed up, and `.env` files inside them are left out. If you set `HERMES_HOME` or any of these variables for Mnemosyne, set them in the cron line too, such as `HERMES_HOME=/srv/hermes MNEMOSYNE_DATA_DIR=/srv/memory /opt/homebrew/bin/salt backup ...`.
 
 To get your memory back, restore into a new folder (see [Getting your files back](#-getting-your-files-back)), stop the agent, then copy each folder back to where it came from, such as `hermes/` to `~/.hermes/`.
 
