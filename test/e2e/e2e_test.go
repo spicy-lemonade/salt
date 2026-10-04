@@ -22,7 +22,11 @@ func TestMain(m *testing.M) {
 		os.Stderr.WriteString("e2e tests only run through `make e2e`\n")
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if templateDir != "" {
+		os.RemoveAll(templateDir)
+	}
+	os.Exit(code)
 }
 
 type env struct {
@@ -34,11 +38,16 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
+	return newEnvAt(t, t.TempDir())
+}
+
+// newEnvAt is newEnv with home as the home folder.
+func newEnvAt(t *testing.T, home string) *env {
+	t.Helper()
 	bin := os.Getenv("SALT_BIN")
 	if bin == "" || !filepath.IsAbs(bin) {
 		t.Fatalf("SALT_BIN must be an absolute path to a prebuilt salt, got %q", bin)
 	}
-	home := t.TempDir()
 	e := &env{t: t, bin: bin, home: home, vars: []string{
 		"PATH=" + filepath.Dir(bin) + ":/usr/local/go/bin:/usr/bin:/bin",
 		"HOME=" + home,
@@ -403,23 +412,14 @@ func TestSealRefusesAKeyAddedByAnotherPusher(t *testing.T) {
 // itself. Seal once "cleaned up" .git through it. It must refuse instead.
 func TestSealRefusesAPushedSymlink(t *testing.T) {
 	e := newEnv(t)
-	base := t.TempDir()
-	remote := filepath.Join(base, "remote.git")
-	mine := filepath.Join(base, "mine")
+	b := newBackupRepo(t, e)
+	base, mine, src := b.base, b.dir, b.src
 	theirs := filepath.Join(base, "theirs")
-	src := filepath.Join(base, "stage")
-	e.must(base, "git", "init", "-q", "--bare", "-b", "main", remote)
-	e.must(base, "git", "clone", "-q", remote, mine)
-	passFile := filepath.Join(base, "pass")
-	write(t, passFile, "correct horse battery staple\n")
-	e.must(base, "salt", "init", mine, "--recovery", "passphrase", "--passphrase-file", passFile)
-	write(t, filepath.Join(src, "USER.md"), "secret\n")
-	e.must(base, "salt", "seal", "--prune", src, mine)
-	e.must(mine, "git", "add", "-A")
-	e.must(mine, "git", "commit", "-q", "-m", "backup 1")
+	b.files["USER.md"] = "secret\n"
+	b.backup(t, "2026-09-01")
 	e.must(mine, "git", "push", "-q", "origin", "main")
 
-	e.must(base, "git", "clone", "-q", remote, theirs)
+	e.must(base, "git", "clone", "-q", b.remote, theirs)
 	e.must(theirs, "git", "rm", "-rq", "objects")
 	if err := os.Symlink(".", filepath.Join(theirs, "objects")); err != nil {
 		t.Fatal(err)
@@ -483,24 +483,14 @@ func TestInitRefusesASymlinkedSaltFolder(t *testing.T) {
 // It returns the owner's clone and the snapshot directory.
 func pushedChange(t *testing.T, e *env, file, line string) (mine, src string) {
 	t.Helper()
-	base := t.TempDir()
-	remote := filepath.Join(base, "remote.git")
-	mine = filepath.Join(base, "mine")
-	theirs := filepath.Join(base, "theirs")
-	src = filepath.Join(base, "stage")
-	e.must(base, "git", "init", "-q", "--bare", "-b", "main", remote)
-	e.must(base, "git", "clone", "-q", remote, mine)
-	passFile := filepath.Join(base, "pass")
-	write(t, passFile, "correct horse battery staple\n")
-	e.must(base, "salt", "init", mine, "--recovery", "passphrase", "--passphrase-file", passFile)
-	write(t, filepath.Join(src, "USER.md"), "secret\n")
-	e.must(base, "salt", "seal", "--prune", src, mine)
-	e.must(mine, "git", "add", "-A")
-	e.must(mine, "git", "commit", "-q", "-m", "backup 1")
-	e.must(mine, "git", "push", "-q", "origin", "main")
+	b := newBackupRepo(t, e)
+	theirs := filepath.Join(b.base, "theirs")
+	b.files["USER.md"] = "secret\n"
+	b.backup(t, "2026-09-01")
+	e.must(b.dir, "git", "push", "-q", "origin", "main")
 
 	// salt check allows the change: both files are on the public list.
-	e.must(base, "git", "clone", "-q", remote, theirs)
+	e.must(b.base, "git", "clone", "-q", b.remote, theirs)
 	f, err := os.OpenFile(filepath.Join(theirs, file), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -510,8 +500,8 @@ func pushedChange(t *testing.T, e *env, file, line string) (mine, src string) {
 	e.must(theirs, "git", "add", file)
 	e.must(theirs, "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "tidy up")
 	e.must(theirs, "git", "push", "-q", "origin", "main")
-	e.must(mine, "git", "pull", "-q", "--ff-only")
-	return mine, src
+	e.must(b.dir, "git", "pull", "-q", "--ff-only")
+	return b.dir, b.src
 }
 
 func commitCount(e *env, dir string) string {

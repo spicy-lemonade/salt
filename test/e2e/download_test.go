@@ -23,37 +23,36 @@ import (
 // GitHub. It returns the folder holding the bare repos.
 func remoteBackup(t *testing.T, e *env) string {
 	t.Helper()
-	base := t.TempDir()
-	served := filepath.Join(base, "served")
-	remote := filepath.Join(served, "backup.git")
-	repoDir := filepath.Join(base, "backup")
-	src := filepath.Join(base, "stage")
-	cfg := filepath.Join(base, "gitconfig")
+	b := newBackupRepo(t, e)
+	served := filepath.Join(b.base, "served")
+	cfg := filepath.Join(b.base, "gitconfig")
 	write(t, cfg, "[url \"file://"+served+"/\"]\n\tinsteadOf = https://example.test/\n\tinsteadOf = ssh://git@example.test/\n\tinsteadOf = git@example.test:\n")
 	e.vars = append(e.vars, "GIT_CONFIG_GLOBAL="+cfg) // the last value is used
-	e.must(base, "git", "init", "-q", "--bare", "-b", "main", remote)
+	remote := filepath.Join(served, "backup.git")
+	if err := os.Mkdir(served, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(b.remote, remote); err != nil {
+		t.Fatal(err)
+	}
+	b.remote = remote
+	e.must(b.dir, "git", "remote", "set-url", "origin", remote)
 	// Keep every pushed object loose, so the test can delete one.
 	e.must(remote, "git", "config", "receive.unpackLimit", "100000")
-	e.must(base, "git", "clone", "-q", remote, repoDir)
 
-	passFile := filepath.Join(base, "pass")
-	write(t, passFile, "correct horse battery staple\n")
-	e.must(base, "salt", "init", repoDir, "--recovery", "passphrase", "--passphrase-file", passFile)
-	for _, content := range []string{"The user lives in Dublin.\n", "The user moved to Cork.\n"} {
-		write(t, filepath.Join(src, "memories", "USER.md"), content)
-		e.must(base, "salt", "seal", "--prune", src, repoDir)
-		e.must(repoDir, "git", "add", "-A")
-		e.must(repoDir, "git", "commit", "-q", "-m", "backup")
-	}
-	e.must(repoDir, "git", "push", "-q", "origin", "main")
+	b.files["memories/USER.md"] = "The user lives in Dublin.\n"
+	b.backup(t, "2026-09-01")
+	b.files["memories/USER.md"] = "The user moved to Cork.\n"
+	b.backup(t, "2026-09-02")
+	e.must(b.dir, "git", "push", "-q", "origin", "main")
 
 	// Break the older backup on the remote. A full clone now fails, so a
 	// restore that works proves only the latest backup was downloaded.
-	old := strings.TrimSpace(e.must(repoDir, "git", "rev-parse", "HEAD~1"))
+	old := strings.TrimSpace(e.must(b.dir, "git", "rev-parse", "HEAD~1"))
 	if err := os.Remove(filepath.Join(remote, "objects", old[:2], old[2:])); err != nil {
 		t.Fatalf("removing the older backup's commit: %v", err)
 	}
-	if out, code := e.run(base, "git", "clone", "-q", "https://example.test/backup.git", filepath.Join(base, "full")); code == 0 {
+	if out, code := e.run(b.base, "git", "clone", "-q", "https://example.test/backup.git", filepath.Join(b.base, "full")); code == 0 {
 		t.Fatalf("a full clone worked without the older backup:\n%s", out)
 	}
 	return served

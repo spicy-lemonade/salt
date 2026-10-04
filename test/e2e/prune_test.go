@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,21 +43,70 @@ type backupRepo struct {
 	sealedDates map[string]map[string]time.Time
 }
 
-func newBackupRepo(t *testing.T, e *env) *backupRepo {
-	t.Helper()
-	base := t.TempDir()
-	b := &backupRepo{e: e, base: base, remote: filepath.Join(base, "remote.git"), dir: filepath.Join(base, "backup"),
+func emptyBackupRepo(e *env, base string) *backupRepo {
+	return &backupRepo{e: e, base: base, remote: filepath.Join(base, "remote.git"), dir: filepath.Join(base, "backup"),
 		src: filepath.Join(base, "stage"), files: map[string]string{}, dates: map[string]time.Time{},
 		sealed: map[string]map[string]string{}, sealedDates: map[string]map[string]time.Time{}}
-	e.must(base, "git", "init", "-q", "--bare", "-b", "main", b.remote)
-	e.must(base, "git", "clone", "-q", b.remote, b.dir)
-	passFile := filepath.Join(base, "pass")
-	write(t, passFile, "correct horse battery staple\n")
-	e.must(base, "salt", "init", b.dir, "--recovery", "passphrase", "--passphrase-file", passFile)
-	e.must(b.dir, "git", "add", ".salt", ".gitattributes")
-	b.commitOn(t, "2026-08-31", "Set up salt")
-	e.must(b.dir, "git", "push", "-q", "origin", "main")
+}
+
+// newBackupRepo gives the test its own copy of the template backup repo: the
+// "Set up salt" commit, dated 2026-08-31 and pushed to a bare remote, with
+// the key and signing key in e's home folder. Every copy shares the
+// template's key.
+func newBackupRepo(t *testing.T, e *env) *backupRepo {
+	t.Helper()
+	tmpl := backupTemplate(t)
+	b := emptyBackupRepo(e, t.TempDir())
+	// cp -a keeps the key files' 0600 permissions.
+	e.must(b.base, "cp", "-a", tmpl.remote, b.remote)
+	e.must(b.base, "cp", "-a", tmpl.dir, b.dir)
+	e.must(b.base, "cp", "-a", tmpl.e.home+"/.", e.home)
+	e.must(b.dir, "git", "remote", "set-url", "origin", b.remote)
+	// Salt approves a repo by its full path, so the copy needs its own
+	// approval. The signing key came with the home folder, so this asks
+	// nothing.
+	e.must(b.base, "salt", "trust", "--yes", b.dir)
 	return b
+}
+
+// templateDir holds the template backup repo, its remote and its home
+// folder. TestMain deletes it.
+var (
+	templateDir  string
+	templateOnce sync.Once
+	template     *backupRepo
+)
+
+// backupTemplate sets up the template backup repo the first time a test
+// needs one. Only this runs salt init for newBackupRepo: it locks the key
+// with scrypt at full strength, which takes seconds each time.
+func backupTemplate(t *testing.T) *backupRepo {
+	t.Helper()
+	templateOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "salt-e2e-template-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		templateDir = dir
+		home := filepath.Join(dir, "home")
+		if err := os.Mkdir(home, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		b := emptyBackupRepo(newEnvAt(t, home), dir)
+		b.e.must(dir, "git", "init", "-q", "--bare", "-b", "main", b.remote)
+		b.e.must(dir, "git", "clone", "-q", b.remote, b.dir)
+		passFile := filepath.Join(dir, "pass")
+		write(t, passFile, "correct horse battery staple\n")
+		b.e.must(dir, "salt", "init", b.dir, "--recovery", "passphrase", "--passphrase-file", passFile)
+		b.e.must(b.dir, "git", "add", ".salt", ".gitattributes")
+		b.commitOn(t, "2026-08-31", "Set up salt")
+		b.e.must(b.dir, "git", "push", "-q", "origin", "main")
+		template = b
+	})
+	if template == nil {
+		t.Fatal("setting up the template backup repo failed in an earlier test")
+	}
+	return template
 }
 
 // commitOn commits whatever is staged, dated 06:00 UTC on day.
