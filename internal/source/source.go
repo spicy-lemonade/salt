@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"strings"
 	"time"
 
 	"github.com/spicy-lemonade/salt/internal/repo"
@@ -75,11 +76,12 @@ func (n named) Name() string { return n.name }
 // Named returns db backed up under name, a slash path in the backup, in place
 // of the name db picks itself. It works the same for every kind, so two
 // databases with the same name can both be backed up without renaming either.
-// A name that could lead outside the backup is refused.
+// A name that could lead outside the backup is refused, and so is one ending
+// in "/", which names a folder rather than the file to back the copy up as.
 func Named(db Database, name string) (Database, error) {
 	clean, err := repo.CleanPath(name)
-	if err != nil {
-		return nil, fmt.Errorf(`the name %q given to --name cannot be used in the backup; give a relative path such as honcho.sql or agent/state.db, without "..", "\" or a leading "/"`, name)
+	if err != nil || strings.HasSuffix(name, "/") {
+		return nil, fmt.Errorf(`the name %q given to --name cannot be used in the backup; give a relative path such as honcho.sql or agent/state.db, without "..", "\", a leading "/" or a trailing "/"`, name)
 	}
 	return named{Database: db, name: clean}, nil
 }

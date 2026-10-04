@@ -21,10 +21,10 @@ func (c *copyRecorder) Copy(_ context.Context, o CopyOptions) (Meta, error) {
 // otherwise the database it names.
 func TestNamed(t *testing.T) {
 	for given, want := range map[string]string{
-		"honcho.sql":           "honcho.sql",
-		"agent2//state.db":     "agent2/state.db",
-		"./agent2/./state.db/": "agent2/state.db",
-		"a b/postgres.sql":     "a b/postgres.sql",
+		"honcho.sql":          "honcho.sql",
+		"agent2//state.db":    "agent2/state.db",
+		"./agent2/./state.db": "agent2/state.db",
+		"a b/postgres.sql":    "a b/postgres.sql",
 	} {
 		rec := &copyRecorder{}
 		db, err := Named(rec, given)
@@ -49,7 +49,7 @@ func TestNamedRefusesUnsafeNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"", ".", "..", "../state.db", "a/../../state.db", "/etc/state.db", `agent\state.db`, "state\x00.db"} {
+	for _, name := range []string{"", ".", "..", "../state.db", "a/../../state.db", "/etc/state.db", `agent\state.db`, "state\x00.db", "agent2/", "agent2/state.db/"} {
 		_, err := Named(pg, name)
 		if err == nil || !strings.Contains(err.Error(), "given to --name cannot be used in the backup; give a relative path such as honcho.sql") || strings.Contains(err.Error(), "hunter2") {
 			t.Errorf("Named(%q): %v", name, err)
