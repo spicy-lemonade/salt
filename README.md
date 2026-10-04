@@ -70,6 +70,7 @@ Run `crontab -e` and add this line to run it every day at 6am. Use the path that
 - A settings file that holds an API key or other secret is left out, and Salt prints one line saying which file and which setting. Keep the secret in an environment variable instead and the file is backed up again.
 - `--keep-days N` sets how many days with a change to keep. The default is 5, as with `salt prune`.
 - The repo needs a remote named `origin`, and `git push` must work without asking for a password. Running `gh auth setup-git` once is an easy way to do this. If a backup was pushed from another machine in the meantime, Salt never overwrites it and stops with a message instead.
+- If a folder that was in the last backup isn't found, such as one on a drive that isn't mounted, Salt prints one line naming it and backs up the rest.
 - Salt prints nothing when the backup works.
 
 ### Presets

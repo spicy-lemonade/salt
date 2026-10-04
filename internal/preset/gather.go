@@ -43,6 +43,9 @@ type Found struct {
 	LeftOut []LeftOut
 	// Skipped lists what is neither a file nor a folder, such as a symlink.
 	Skipped []string
+	// Places lists the slash path of every place found, so one backed up
+	// last time and missing now can be named.
+	Places []string
 }
 
 // Paths lists the slash path every file and database is backed up under.
@@ -96,6 +99,7 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 				return nil, err
 			}
 			for _, pl := range places {
+				f.Places = append(f.Places, pl.Rel)
 				real, err := filepath.EvalSymlinks(pl.Abs)
 				if err != nil {
 					return nil, err

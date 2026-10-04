@@ -111,6 +111,9 @@ func TestGather(t *testing.T) {
 	if len(f.Skipped) != 1 || !strings.HasSuffix(f.Skipped[0], "link.md") {
 		t.Errorf("skipped = %v", f.Skipped)
 	}
+	if want := []string{"tool", "profiles/work/tool", "single.txt"}; !slices.Equal(f.Places, want) {
+		t.Errorf("places = %v, want %v", f.Places, want)
+	}
 }
 
 // A place that holds the backup repo, or is inside it, is refused before

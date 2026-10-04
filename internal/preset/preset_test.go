@@ -91,3 +91,35 @@ func TestParseGoodPreset(t *testing.T) {
 		t.Fatalf("Parse = %+v", p)
 	}
 }
+
+// A backup path is in the place a preset path's To names, each * matching
+// one part, and the outermost place when they nest.
+func TestPlaceOf(t *testing.T) {
+	p, err := Parse("t", []byte(`{"name": "t", "paths": [
+		{"from": "~/tool/profiles/*/data", "to": "tool/profiles/*/data"},
+		{"from": "~/tool/settings.yaml", "to": "tool/settings.yaml"},
+		{"from": "~/inner", "to": "outer/inner"},
+		{"from": "~/outer", "to": "outer"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rel, want := range map[string]string{
+		"tool/profiles/work/data/notes.md":  "tool/profiles/work/data",
+		"tool/profiles/work/data":           "tool/profiles/work/data",
+		"tool/settings.yaml":                "tool/settings.yaml",
+		"outer/inner/a.md":                  "outer",
+		"outer/b.md":                        "outer",
+		"tool/profiles/work/other/notes.md": "",
+		"tool/profiles/work":                "",
+		"tool/settings.yaml.bak":            "",
+		"elsewhere.md":                      "",
+	} {
+		got, ok := PlaceOf([]*Preset{p}, rel)
+		if got != want || ok != (want != "") {
+			t.Errorf("PlaceOf(%s) = %q, %v, want %q", rel, got, ok, want)
+		}
+	}
+	if _, ok := PlaceOf(nil, "outer/b.md"); ok {
+		t.Error("no presets back up nothing")
+	}
+}

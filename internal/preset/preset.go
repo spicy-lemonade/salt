@@ -133,6 +133,27 @@ func (p *Preset) check(name string) error {
 	return nil
 }
 
+// PlaceOf returns the place the backup path rel is in, among the paths the
+// presets back up: as many of rel's first parts as a path's To has, each *
+// in To standing for any one part. When such places nest, the outermost is
+// taken. ok is false when no preset backs rel up.
+func PlaceOf(presets []*Preset, rel string) (place string, ok bool) {
+	parts := strings.Split(rel, "/")
+	n := 0
+	for _, p := range presets {
+		for _, x := range p.Paths {
+			to := strings.Split(x.To, "/")
+			if len(to) > len(parts) || (ok && len(to) >= n) {
+				continue
+			}
+			if slices.EqualFunc(to, parts[:len(to)], func(t, part string) bool { return t == "*" || t == part }) {
+				place, ok, n = strings.Join(parts[:len(to)], "/"), true, len(to)
+			}
+		}
+	}
+	return place, ok
+}
+
 // stars counts the parts of the slash path p that are only *.
 func stars(p string) int {
 	n := 0

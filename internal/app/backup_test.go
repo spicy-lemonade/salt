@@ -398,3 +398,42 @@ func TestRepoLock(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A place backed up last time and not found now, such as a profile whose
+// folder is gone, is named once, and the backup goes on. The next backup
+// no longer holds it, so it is not named again.
+func TestBackupWarnsOfMissingPlaces(t *testing.T) {
+	e, home, presets := backupEnv(t)
+	write := func(rel string) {
+		p := filepath.Join(home, rel)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte(rel), 0o644)
+	}
+	write("tool/profiles/home/notes.md")
+	write("tool/profiles/home/sub/more.md")
+	if err := e.backup(presets); err != nil {
+		t.Fatal(err)
+	}
+	if out := e.ui.out.String(); out != "" {
+		t.Fatalf("the first backup printed %q", out)
+	}
+	os.RemoveAll(filepath.Join(home, "tool", "profiles", "home"))
+	os.Remove(filepath.Join(home, "tool", "profiles", "work", "notes.md")) // a file gone from a place still found
+	if err := e.backup(presets); err != nil {
+		t.Fatal(err)
+	}
+	want := "salt: tool/profiles/home was in the last backup but was not found this time, so it is no longer backed up. Its earlier copies stay in history until prune drops them\n"
+	if out := e.ui.out.String(); out != want {
+		t.Fatalf("output %q, want %q", out, want)
+	}
+	if got := e.restored(); !mapsEqual(got, map[string]string{"tool/notes.md": "notes", "tool/settings.yaml": "level: 3"}) {
+		t.Fatalf("restored %v", got)
+	}
+	e.ui.out.Reset()
+	if err := e.backup(presets); err != nil {
+		t.Fatal(err)
+	}
+	if out := e.ui.out.String(); out != "" {
+		t.Fatalf("the third backup printed %q", out)
+	}
+}

@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
+	"strings"
 
 	"github.com/spicy-lemonade/salt/internal/preset"
 	"github.com/spicy-lemonade/salt/internal/seal"
@@ -72,6 +74,7 @@ func (a *App) Backup(o BackupOptions) error {
 	for _, s := range found.Skipped {
 		a.UI.Printf("salt: skipped %s (not a file)\n", s)
 	}
+	a.warnMissing(r.Root, o.Presets, found.Places)
 	// A signal stops the backup before the next step that changes the repo,
 	// saying how far it got. Prune most of all must not start after one.
 	stopped := func(done string) error {
@@ -117,6 +120,27 @@ func (a *App) Backup(o BackupOptions) error {
 		return fmt.Errorf("the backup was committed but not pushed: %w", err)
 	}
 	return nil
+}
+
+// warnMissing names each place the last backup held that was not found this
+// time, as when a drive is not mounted, or a variable set in the person's
+// shell is not set for cron. Its files are no longer backed up, so each
+// place is named once, not each file. The last backup's paths come from the
+// change cache; paths no preset names, such as those an earlier salt seal
+// sealed, are not named.
+func (a *App) warnMissing(root string, presets []*preset.Preset, places []string) {
+	missing := map[string]bool{}
+	for _, rel := range seal.CachedPaths(a.CacheDir, root) {
+		if slices.ContainsFunc(places, func(pl string) bool { return rel == pl || strings.HasPrefix(rel, pl+"/") }) {
+			continue
+		}
+		if place, ok := preset.PlaceOf(presets, rel); ok {
+			missing[place] = true
+		}
+	}
+	for _, place := range slices.Sorted(maps.Keys(missing)) {
+		a.UI.Printf("salt: %s was in the last backup but was not found this time, so it is no longer backed up. Its earlier copies stay in history until prune drops them\n", place)
+	}
 }
 
 // maxKnownPushes caps how many commits salt remembers trying to push.

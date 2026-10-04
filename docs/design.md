@@ -573,7 +573,12 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
    approved its keys or has no signing key. It also refuses if REPO is not a
    git repo or has no remote named `origin`, before any work is done;
 2. gathers what each preset names (see "Presets"), and refuses if a preset
-   finds nothing, naming where it looked;
+   finds nothing, naming where it looked. A place the last backup held that
+   is not found this time, such as a folder on a drive that is not mounted,
+   or one a variable set in the person's shell but not in cron points to,
+   is named in one line each. The backup goes on without it, and its
+   earlier copies stay in history until prune drops them. The last
+   backup's paths come from salt's change cache;
 3. makes a safe copy of each SQLite database found, as `--sqlite` does, and
    seals the copies and every other file found into REPO, which then holds
    only them. Anything else in REPO is removed, as with `salt seal --prune`;

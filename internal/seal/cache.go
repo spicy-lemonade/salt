@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -107,6 +109,25 @@ func CopyKey(dir, repoRoot string) (string, error) {
 		return "", err
 	}
 	return key, nil
+}
+
+// CachedPaths returns, sorted, the backup path of every file the last seal
+// into the repo at repoRoot sealed, as its change cache in dir records them.
+// It returns none when there is no cache or it cannot be read.
+func CachedPaths(dir, repoRoot string) []string {
+	p, err := cachePath(dir, repoRoot)
+	if err != nil {
+		return nil
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil
+	}
+	var c cache
+	if json.Unmarshal(b, &c) != nil {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(c.Files))
 }
 
 func loadCache(path, key string) *cache {
