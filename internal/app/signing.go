@@ -37,10 +37,7 @@ func (a *App) signingKey(r *repo.Repo) (ed25519.PrivateKey, error) {
 
 // saveSigningKey derives the signing key from id and saves it.
 func (a *App) saveSigningKey(id *age.X25519Identity) error {
-	k, err := keys.SigningKey(id)
-	if err != nil {
-		return err
-	}
+	k := keys.SigningKey(id)
 	if err := a.signStore().Set(id.Recipient().String(), keys.SigningSecret(k)); err != nil {
 		return fmt.Errorf("saving the signing key: %w", err)
 	}

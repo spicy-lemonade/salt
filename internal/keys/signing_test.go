@@ -15,10 +15,7 @@ func TestSigningKeyPinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	k, err := SigningKey(id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	k := SigningKey(id)
 	const want = "e4b62dcc47820129cadeb009161b76511c45c73e96175143788ca18669a39a86"
 	if got := hex.EncodeToString(k.Public().(ed25519.PublicKey)); got != want {
 		t.Fatalf("signing key for zero entropy = %s, want %s", got, want)
@@ -28,9 +25,9 @@ func TestSigningKeyPinned(t *testing.T) {
 func TestSigningKeyDiffersPerIdentity(t *testing.T) {
 	a, _ := age.GenerateX25519Identity()
 	b, _ := age.GenerateX25519Identity()
-	ka, _ := SigningKey(a)
-	kb, _ := SigningKey(b)
-	again, _ := SigningKey(a)
+	ka := SigningKey(a)
+	kb := SigningKey(b)
+	again := SigningKey(a)
 	if ka.Equal(kb) {
 		t.Fatal("two identities gave the same signing key")
 	}
@@ -41,7 +38,7 @@ func TestSigningKeyDiffersPerIdentity(t *testing.T) {
 
 func TestSigningSecret(t *testing.T) {
 	id, _ := age.GenerateX25519Identity()
-	k, _ := SigningKey(id)
+	k := SigningKey(id)
 	got, err := SigningSecret(k).SigningKey()
 	if err != nil || !got.Equal(k) {
 		t.Fatalf("round trip: %v", err)
@@ -63,7 +60,7 @@ func TestSigningSecret(t *testing.T) {
 
 func TestSigningSecretInFileStore(t *testing.T) {
 	id, _ := age.GenerateX25519Identity()
-	k, _ := SigningKey(id)
+	k := SigningKey(id)
 	fs := FileStore{Dir: t.TempDir()}
 	rcpt := id.Recipient().String()
 	if err := fs.Set(rcpt, SigningSecret(k)); err != nil {

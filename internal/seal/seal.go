@@ -197,9 +197,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		return nil, err
 	}
 	ix := &Index{Version: repo.FormatVersion, Entries: entries}
-	if err := ix.sign(opt.Signer); err != nil {
-		return nil, err
-	}
+	ix.sign(opt.Signer)
 	b, ixSHA, err := ix.marshal()
 	if err != nil {
 		return nil, err

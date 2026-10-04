@@ -43,12 +43,8 @@ func (f *fixture) plant(edit func(*Index)) {
 	}
 }
 
-func signWith(t *testing.T, k ed25519.PrivateKey) func(*Index) {
-	return func(ix *Index) {
-		if err := ix.sign(k); err != nil {
-			t.Fatal(err)
-		}
-	}
+func signWith(k ed25519.PrivateKey) func(*Index) {
+	return func(ix *Index) { ix.sign(k) }
 }
 
 func TestSealSignsIndex(t *testing.T) {
@@ -82,18 +78,18 @@ func TestSealNeedsSigner(t *testing.T) {
 // signed by the signing key of the identity that opens it.
 func TestPlantedIndexRefused(t *testing.T) {
 	other, _ := age.GenerateX25519Identity()
-	otherKey, _ := keys.SigningKey(other)
+	otherKey := keys.SigningKey(other)
 	for name, tt := range map[string]struct {
 		edit func(*testing.T, *fixture) func(*Index)
 		want string
 	}{
 		"no signature": {func(*testing.T, *fixture) func(*Index) { return func(*Index) {} }, "it has no signature"},
-		"another key":  {func(t *testing.T, _ *fixture) func(*Index) { return signWith(t, otherKey) }, "does not match"},
+		"another key":  {func(t *testing.T, _ *fixture) func(*Index) { return signWith(otherKey) }, "does not match"},
 		"not base64":   {func(*testing.T, *fixture) func(*Index) { return func(ix *Index) { ix.Signature = "!!" } }, "malformed"},
 		"short":        {func(*testing.T, *fixture) func(*Index) { return func(ix *Index) { ix.Signature = "AAAA" } }, "malformed"},
 		"edited after signing": {func(t *testing.T, f *fixture) func(*Index) {
 			return func(ix *Index) {
-				signWith(t, f.signer)(ix)
+				signWith(f.signer)(ix)
 				ix.Entries[0].Path = "SOUL.md"
 			}
 		}, "does not match"},

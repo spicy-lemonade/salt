@@ -26,12 +26,11 @@ const KindSigning = "signing"
 // identity that decrypts it. The derivation is one-way, so the signing key
 // can sign but never decrypt, and anyone who can decrypt a backup can work
 // out the matching public key to check its signature.
-func SigningKey(id *age.X25519Identity) (ed25519.PrivateKey, error) {
-	seed, err := hkdf.Key(sha256.New, []byte(id.String()), []byte(signSalt), signInfo, ed25519.SeedSize)
-	if err != nil {
-		return nil, err
-	}
-	return ed25519.NewKeyFromSeed(seed), nil
+func SigningKey(id *age.X25519Identity) ed25519.PrivateKey {
+	// hkdf.Key fails only for keys longer than 255 SHA-256 blocks, far more
+	// than the 32 bytes asked for here.
+	seed, _ := hkdf.Key(sha256.New, []byte(id.String()), []byte(signSalt), signInfo, ed25519.SeedSize)
+	return ed25519.NewKeyFromSeed(seed)
 }
 
 // SigningSecret returns the secret that keeps a signing key.

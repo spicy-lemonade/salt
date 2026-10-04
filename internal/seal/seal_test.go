@@ -44,10 +44,7 @@ func newFixture(t *testing.T, encryptPaths bool) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signer, err := keys.SigningKey(id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	signer := keys.SigningKey(id)
 	f := &fixture{
 		t:      t,
 		src:    filepath.Join(base, "src"),
@@ -78,9 +75,7 @@ func newFixture(t *testing.T, encryptPaths bool) *fixture {
 // index, as seal would. It returns the plaintext written.
 func (f *fixture) writeIndex(ix *Index) []byte {
 	f.t.Helper()
-	if err := ix.sign(f.signer); err != nil {
-		f.t.Fatal(err)
-	}
+	ix.sign(f.signer)
 	b, _, err := ix.marshal()
 	if err != nil {
 		f.t.Fatal(err)

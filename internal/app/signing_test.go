@@ -39,7 +39,7 @@ func TestInitSavesSigningKey(t *testing.T) {
 	}
 	secret, _ := e.store.Get(rcpt)
 	id, _ := secret.Identity()
-	if want, _ := keys.SigningKey(id); !got.Equal(want) {
+	if want := keys.SigningKey(id); !got.Equal(want) {
 		t.Fatal("the saved signing key is not the one derived from the key")
 	}
 	fi, err := os.Stat(signingFile(t, e))
@@ -164,7 +164,21 @@ func TestSigningKeyStoreErrors(t *testing.T) {
 		t.Fatalf("doctor with a damaged signing key:\n%s", e.ui.out.String())
 	}
 
-	// A signing store that cannot be written fails trust before approving.
+	// A signing store that cannot be made (here, a link to a missing folder)
+	// fails trust before approving, after the key was found in the keychain.
+	e.app.SignDir = filepath.Join(t.TempDir(), "signing")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), e.app.SignDir); err != nil {
+		t.Fatal(err)
+	}
+	e.app.TrustDir = filepath.Join(t.TempDir(), "fresh")
+	if err := e.app.Trust(e.root, true); err == nil || !strings.Contains(err.Error(), "saving the signing key") {
+		t.Fatalf("trust with a signing store that cannot be made: %v", err)
+	}
+	if _, err := e.app.trustStore().Load(e.root); err == nil {
+		t.Fatal("trust approved the repo without saving the signing key")
+	}
+
+	// A signing store that cannot be read fails trust before approving.
 	file := filepath.Join(t.TempDir(), "file")
 	os.WriteFile(file, []byte("x"), 0o600)
 	e.app.SignDir = filepath.Join(file, "signing")
@@ -187,7 +201,7 @@ func plantBackup(t *testing.T, e *testEnv) {
 		t.Fatal(err)
 	}
 	theirs, _ := age.GenerateX25519Identity()
-	signer, _ := keys.SigningKey(theirs)
+	signer := keys.SigningKey(theirs)
 	src := t.TempDir()
 	os.WriteFile(filepath.Join(src, "USER.md"), []byte("planted"), 0o644)
 	if _, err := seal.Seal(src, r, seal.Options{CacheDir: t.TempDir(), Signer: signer, Prune: true}); err != nil {

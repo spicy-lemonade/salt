@@ -94,43 +94,37 @@ func newIndexDigest() *indexDigest {
 	return &indexDigest{h: h, enc: json.NewEncoder(h)}
 }
 
-func (d *indexDigest) add(v any) error { return d.enc.Encode(v) }
+// add adds the index version or an entry. Encoding an int or an Entry into
+// a hash cannot fail: an Entry holds only strings and numbers, and writing to
+// a hash never returns an error.
+func (d *indexDigest) add(v any) { d.enc.Encode(v) }
 
 func (d *indexDigest) sum() []byte { return d.h.Sum(nil) }
 
 // sign sets ix.Signature. Ed25519 signatures are deterministic, so an
 // unchanged index signs to the same bytes and makes no commit.
-func (ix *Index) sign(key ed25519.PrivateKey) error {
+func (ix *Index) sign(key ed25519.PrivateKey) {
 	d := newIndexDigest()
-	if err := d.add(ix.Version); err != nil {
-		return err
-	}
+	d.add(ix.Version)
 	for _, e := range ix.Entries {
-		e, err := stored(e)
-		if err != nil {
-			return err
-		}
-		if err := d.add(&e); err != nil {
-			return err
-		}
+		e = stored(e)
+		d.add(&e)
 	}
 	ix.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(key, d.sum()))
-	return nil
 }
 
 // stored returns e as ReadIndex will decode it, so the signature covers what
 // is stored. JSON keeps a string that is not valid UTF-8, such as a file
-// name on Linux, with U+FFFD in place of each bad byte.
-func stored(e Entry) (Entry, error) {
+// name on Linux, with U+FFFD in place of each bad byte. An Entry holds only
+// strings and numbers, so neither step can fail.
+func stored(e Entry) Entry {
 	if utf8.ValidString(e.Path) && utf8.ValidString(e.Object) && utf8.ValidString(e.Symlink) && utf8.ValidString(e.SHA256) {
-		return e, nil
+		return e
 	}
-	b, err := json.Marshal(e)
-	if err != nil {
-		return e, err
-	}
+	b, _ := json.Marshal(e)
 	var out Entry
-	return out, json.Unmarshal(b, &out)
+	json.Unmarshal(b, &out)
+	return out
 }
 
 // checkSignature reports whether ix.Signature signs digest with the signing
@@ -148,10 +142,7 @@ func checkSignature(ix *Index, digest []byte, ids []age.Identity) error {
 		if !ok {
 			continue
 		}
-		k, err := keys.SigningKey(x)
-		if err != nil {
-			return err
-		}
+		k := keys.SigningKey(x)
 		if ed25519.Verify(k.Public().(ed25519.PublicKey), digest, sig) {
 			return nil
 		}
@@ -223,9 +214,7 @@ func decodeIndex(dec *json.Decoder, d *indexDigest) (*Index, error) {
 			if err := dec.Decode(&ix.Version); err != nil {
 				return nil, decodeErr(err)
 			}
-			if err := d.add(ix.Version); err != nil {
-				return nil, err
-			}
+			d.add(ix.Version)
 		case "entries":
 			if err := decodeEntries(dec, ix, d); err != nil {
 				return nil, err
@@ -253,9 +242,7 @@ func decodeEntries(dec *json.Decoder, ix *Index, d *indexDigest) error {
 		if err := dec.Decode(&e); err != nil {
 			return decodeErr(err)
 		}
-		if err := d.add(&e); err != nil {
-			return err
-		}
+		d.add(&e)
 		if err := validEntry(&e); err != nil {
 			return err
 		}
