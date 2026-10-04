@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
+	"time"
 
 	"filippo.io/age"
 	"github.com/spicy-lemonade/salt/internal/repo"
@@ -281,6 +283,12 @@ func TestSplitDamagedParts(t *testing.T) {
 				}
 			},
 			want: "none of your keys",
+		},
+		"not age": {
+			damage: func(f *fixture, e Entry) {
+				os.WriteFile(filepath.Join(f.root, filepath.FromSlash(e.Parts[1])), []byte("not an age file\n"), 0o644)
+			},
+			want: "cannot be decrypted",
 		},
 		"out of order": {
 			damage: func(f *fixture, _ Entry) {
@@ -589,5 +597,116 @@ func TestSignatureCoversInvalidUTF8Part(t *testing.T) {
 	}
 	if got := ix.Entries[0].Parts[0]; got != "objects/bb/�.age" {
 		t.Fatalf("part read back as %q", got)
+	}
+}
+
+// A part that cannot be written, as on a full disk, fails the write and
+// leaves no temporary file once aborted: a failed write of a full chunk,
+// and a failed close when a part reaches its limit or the stream ends.
+func TestPartWriterWriteFailures(t *testing.T) {
+	f := newFixture(t, true)
+	cases := map[string]func(w *partWriter) error{
+		"write": func(w *partWriter) error {
+			_, err := w.Write(noise(128 << 10))
+			return err
+		},
+		"close at the limit": func(w *partWriter) error {
+			w.limit = 1024
+			_, err := w.Write(noise(1024))
+			return err
+		},
+		"close at the end": func(w *partWriter) error {
+			return w.closePart()
+		},
+	}
+	for name, fail := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			w := &partWriter{rt: openRoot(t, dir), recipients: f.repo.Recipients}
+			if err := w.open("obj.age"); err != nil {
+				t.Fatal(err)
+			}
+			w.f.Close() // every later write to the part fails
+			if err := fail(w); err == nil {
+				t.Fatal("writing to a closed part succeeded")
+			}
+			w.abort()
+			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+				t.Fatalf("an aborted write left %v", entries)
+			}
+		})
+	}
+}
+
+// A part that cannot be created fails the write and leaves nothing behind.
+func TestEncryptToUnwritableFolder(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root can write to a read-only folder")
+	}
+	f := newFixture(t, true)
+	dir := t.TempDir()
+	ro := filepath.Join(dir, "ro")
+	os.Mkdir(ro, 0o500)
+	defer os.Chmod(ro, 0o700)
+	if _, _, err := encryptTo(openRoot(t, dir), "ro/obj.age", strings.NewReader("x"), f.repo.Recipients, 0); err == nil {
+		t.Fatal("encryptTo into a read-only folder succeeded")
+	}
+	if entries, _ := os.ReadDir(ro); len(entries) != 0 {
+		t.Fatalf("a failed encryptTo left %v", entries)
+	}
+}
+
+// A part whose last read returns data together with io.EOF still yields
+// that data, and the stream ends after it rather than reading the finished
+// part again forever.
+func TestPartReaderDataWithEOF(t *testing.T) {
+	pr := &partReader{r: iotest.DataErrReader(strings.NewReader("last bytes"))}
+	type result struct {
+		b   []byte
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		b, err := io.ReadAll(pr)
+		done <- result{b, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil || string(r.b) != "last bytes" {
+			t.Fatalf("read %q, %v", r.b, r.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("reading a finished part never ended")
+	}
+}
+
+// A file removed after seal measured it, as a live file can be, fails the
+// seal with its path, and nothing half-written is left in the repo.
+func TestSealFileRemovedWhileSealed(t *testing.T) {
+	f := newFixture(t, true)
+	hashedHook = func(p string) {
+		if filepath.Base(p) == "SOUL.md" {
+			os.Remove(p)
+		}
+	}
+	t.Cleanup(func() { hashedHook = nil })
+	_, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer})
+	if !errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), "SOUL.md") {
+		t.Fatalf("seal of a removed file: %v", err)
+	}
+	for p := range snapshot(t, f.root) {
+		if strings.Contains(p, ".salt-tmp-") {
+			t.Errorf("a failed seal left %s", p)
+		}
+	}
+}
+
+// An index that cannot be written fails the seal.
+func TestSealIndexWriteFails(t *testing.T) {
+	f := newFixture(t, true)
+	os.MkdirAll(filepath.Join(f.root, repo.IndexFile, "full"), 0o755)
+	_, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer})
+	if err == nil || !strings.Contains(err.Error(), "writing index") {
+		t.Fatalf("seal with an index that cannot be written: %v", err)
 	}
 }

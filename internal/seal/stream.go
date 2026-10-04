@@ -267,11 +267,13 @@ func (p *partReader) Read(b []byte) (int, error) {
 	}
 }
 
+// close closes the open part, if any. It always forgets the part's reader,
+// so Read moves on to the next part rather than reading a finished one again.
 func (p *partReader) close() {
 	if p.f != nil {
 		p.f.Close()
-		p.f, p.r = nil, nil
 	}
+	p.f, p.r = nil, nil
 }
 
 // hashFile streams a file through SHA-256.

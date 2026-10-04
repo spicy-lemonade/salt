@@ -13,6 +13,7 @@ import (
 	"hash"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -132,7 +133,8 @@ func (ix *Index) sign(key ed25519.PrivateKey) {
 // name on Linux, with U+FFFD in place of each bad byte. An Entry holds only
 // strings, numbers and a list of strings, so neither step can fail.
 func stored(e Entry) Entry {
-	if utf8.ValidString(e.Path) && utf8.ValidString(e.Object) && utf8.ValidString(e.Symlink) && utf8.ValidString(e.SHA256) {
+	validParts := !slices.ContainsFunc(e.Parts, func(p string) bool { return !utf8.ValidString(p) })
+	if validParts && utf8.ValidString(e.Path) && utf8.ValidString(e.Object) && utf8.ValidString(e.Symlink) && utf8.ValidString(e.SHA256) {
 		return e
 	}
 	b, _ := json.Marshal(e)
