@@ -114,11 +114,13 @@ If you lose them and this laptop, your backups cannot be recovered.
   ciphertext; only `index.age` is rewritten. Backups made before salt recorded
   dates restore with the time of the restore, and the first seal with a salt
   that records dates rewrites `index.age` once to add them.
-- `salt restore` also takes the backup repo's https URL or SSH form
-  (`git@github.com:you/backup.git`). It downloads only the latest backup
-  (`git clone --depth 1`, hooks off) into a private `salt-download-*` folder
-  in the home folder, then restores from it as from a local repo and removes
-  it, whether the restore worked or not. The download holds only encrypted
+- `salt restore` also takes the backup repo's https or ssh URL, or its SSH
+  form (`git@github.com:you/backup.git`). Other URLs are refused. `http://`
+  would send a password or token in the clear, and a folder is given by its
+  path. It downloads only the latest backup (`git clone --depth 1`, hooks
+  off) into a private `salt-download-*` folder in the home folder, then
+  restores from it as from a local repo and removes it, whether the restore
+  worked or not. The download holds only encrypted
   files; nothing is decrypted until it is complete. Messages never show a
   user name or password given in the URL.
 - `salt restore` and `salt verify` first check the index is signed by the

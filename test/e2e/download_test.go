@@ -15,7 +15,8 @@ import (
 )
 
 // remoteBackup pushes two backups to a bare repo and has git fetch the
-// URLs https://example.test/NAME and git@example.test:NAME from it, through
+// URLs https://example.test/NAME, ssh://git@example.test/NAME and
+// git@example.test:NAME from it, through
 // url.insteadOf in a git config of the test's own. Salt only sees the https
 // or SSH URL; git fetches over file://, where --depth applies as it would on
 // GitHub. It returns the folder holding the bare repos.
@@ -27,7 +28,7 @@ func remoteBackup(t *testing.T, e *env) string {
 	repoDir := filepath.Join(base, "backup")
 	src := filepath.Join(base, "stage")
 	cfg := filepath.Join(base, "gitconfig")
-	write(t, cfg, "[url \"file://"+served+"/\"]\n\tinsteadOf = https://example.test/\n\tinsteadOf = git@example.test:\n")
+	write(t, cfg, "[url \"file://"+served+"/\"]\n\tinsteadOf = https://example.test/\n\tinsteadOf = ssh://git@example.test/\n\tinsteadOf = git@example.test:\n")
 	e.vars = append(e.vars, "GIT_CONFIG_GLOBAL="+cfg) // the last value is used
 	e.must(base, "git", "init", "-q", "--bare", "-b", "main", remote)
 	// Keep every pushed object loose, so the test can delete one.
@@ -68,10 +69,14 @@ func noDownloadsLeft(t *testing.T, e *env) {
 func TestRestoreFromURL(t *testing.T) {
 	e := newEnv(t)
 	remoteBackup(t, e)
-	for _, url := range []string{"https://example.test/backup.git", "git@example.test:backup.git"} {
+	for url, shown := range map[string]string{
+		"https://example.test/backup.git":   "https://example.test/backup.git",
+		"ssh://git@example.test/backup.git": "ssh://example.test/backup.git",
+		"git@example.test:backup.git":       "git@example.test:backup.git",
+	} {
 		dest := filepath.Join(t.TempDir(), "restored")
 		out := e.must(e.home, "salt", "restore", url, "--to", dest)
-		if !strings.Contains(out, "salt: downloading the latest backup from "+url) {
+		if !strings.Contains(out, "salt: downloading the latest backup from "+shown+"\n") {
 			t.Fatalf("restore %s:\n%s", url, out)
 		}
 		if b, err := os.ReadFile(filepath.Join(dest, "memories", "USER.md")); err != nil || string(b) != "The user moved to Cork.\n" {
@@ -91,6 +96,7 @@ func TestRestoreFromURLFailures(t *testing.T) {
 	}{
 		{"https://example.test/missing.git", "salt: downloading the backup: git clone https://example.test/missing.git"},
 		{"https://example.test/empty.git", "salt: https://example.test/empty.git is not a salt backup repo (it has no .salt/format.json)"},
+		{"http://you:s3cret@example.test/backup.git", "salt: salt cannot download a backup from http://example.test/backup.git."},
 		// Nothing listens on port 1, so this fails at once.
 		{"https://you:s3cret@127.0.0.1:1/backup.git", "salt: downloading the backup: git clone https://127.0.0.1:1/backup.git"},
 	} {

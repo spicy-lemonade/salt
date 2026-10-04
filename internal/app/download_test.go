@@ -37,8 +37,13 @@ func noDownloadsLeft(t *testing.T, e *testEnv) {
 
 func TestRestoreFromURL(t *testing.T) {
 	// Named, not by URL: t.TempDir would put the token in the restore path.
-	for name, url := range map[string]string{"https": backupURL, "ssh": "git@github.com:me/backup.git"} {
-		t.Run(name, func(t *testing.T) {
+	for _, tt := range []struct{ name, url, shown string }{
+		{"https", backupURL, "https://github.com/me/backup.git"},
+		{"ssh", "ssh://git@github.com/me/backup.git", "ssh://github.com/me/backup.git"},
+		{"ssh form", "git@github.com:me/backup.git", "git@github.com:me/backup.git"},
+	} {
+		url := tt.url
+		t.Run(tt.name, func(t *testing.T) {
 			e := remoteEnv(t)
 			var downloaded string
 			e.git.clone = func(_ context.Context, dir string) error {
@@ -59,7 +64,7 @@ func TestRestoreFromURL(t *testing.T) {
 				t.Fatalf("downloaded into %s, want a salt-download- folder in %s", downloaded, e.app.Home)
 			}
 			out := e.ui.out.String()
-			if !strings.Contains(out, "salt: downloading the latest backup from "+strings.Replace(url, "ghp_secret@", "", 1)+"\n") {
+			if !strings.Contains(out, "salt: downloading the latest backup from "+tt.shown+"\n") {
 				t.Fatalf("no download message:\n%s", out)
 			}
 			if strings.Contains(out, "secret") {
@@ -163,5 +168,17 @@ func TestOpenRepo(t *testing.T) {
 		t.Fatalf("the download is not usable before done: %v", err)
 	}
 	done()
+	noDownloadsLeft(t, e)
+}
+
+func TestRestoreFromURLRefusesOtherSchemes(t *testing.T) {
+	e := remoteEnv(t)
+	err := e.app.Restore(RestoreOptions{Repo: "http://ghp_secret@github.com/me/backup.git", To: filepath.Join(t.TempDir(), "r")})
+	if err == nil || !strings.HasPrefix(err.Error(), "salt cannot download a backup from http://github.com/me/backup.git.") {
+		t.Fatalf("Restore: %v", err)
+	}
+	if len(e.git.cloned) != 0 {
+		t.Fatalf("cloned %q", e.git.cloned)
+	}
 	noDownloadsLeft(t, e)
 }

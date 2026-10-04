@@ -20,7 +20,11 @@ var errDownloadStopped = fmt.Errorf("the download was stopped: %w", context.Canc
 // decrypted until the download is complete. done removes the download once
 // the repo is no longer needed, and does nothing for a folder.
 func (a *App) openRepo(ctx context.Context, spec string) (r *repo.Repo, done func(), err error) {
-	if !gitx.IsRemote(spec) {
+	remote, err := gitx.IsRemote(spec)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !remote {
 		r, err := repo.Open(spec)
 		return r, func() {}, err
 	}

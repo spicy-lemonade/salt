@@ -3,9 +3,11 @@ package gitx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/spicy-lemonade/salt/internal/proc"
@@ -16,16 +18,26 @@ import (
 // as a/b@c:d is never taken for it.
 var sshForm = regexp.MustCompile(`^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:.+$`)
 
-const httpsPrefix = "https://"
+// scheme matches the start of a URL such as https://host or ssh://host. A
+// scheme has at least two letters, so a Windows drive (C://) is a folder.
+var scheme = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9+.-]+)://.`)
 
-// IsRemote reports whether s is a backup repo's URL rather than a folder: an
-// https URL or the SSH form user@host:path.
-func IsRemote(s string) bool {
-	return hasHTTPS(s) || sshForm.MatchString(s)
-}
+// downloadSchemes are the URL schemes salt downloads a backup over. Both are
+// encrypted, so a password or token in the URL is never sent in the clear.
+var downloadSchemes = []string{"https", "ssh"}
 
-func hasHTTPS(s string) bool {
-	return len(s) > len(httpsPrefix) && strings.EqualFold(s[:len(httpsPrefix)], httpsPrefix)
+// IsRemote reports whether s names a backup repo by URL rather than by folder:
+// anything of the form scheme://, or the SSH form user@host:path. It returns
+// an error for a URL with a scheme salt does not download over.
+func IsRemote(s string) (bool, error) {
+	m := scheme.FindStringSubmatch(s)
+	if m == nil {
+		return sshForm.MatchString(s), nil
+	}
+	if !slices.Contains(downloadSchemes, strings.ToLower(m[1])) {
+		return true, fmt.Errorf("salt cannot download a backup from %s. Give an https or ssh URL, such as https://github.com/you/backup.git or git@github.com:you/backup.git, or the path of a folder", RedactURL(s))
+	}
+	return true, nil
 }
 
 // credentials matches the "user:password@" part of every URL in a text, such

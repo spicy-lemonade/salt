@@ -4,31 +4,40 @@ import "testing"
 
 func TestIsRemote(t *testing.T) {
 	for _, tt := range []struct {
-		s    string
-		want bool
+		s       string
+		want    bool
+		refused bool
 	}{
-		{"https://github.com/you/backup.git", true},
-		{"https://github.com/you/backup", true},
-		{"HTTPS://github.com/you/backup.git", true},
-		{"https://ghp_token@github.com/you/backup.git", true},
-		{"git@github.com:you/backup.git", true},
-		{"git@github.com:/srv/backup.git", true},
-		{"https://", false},
-		{"http://github.com/you/backup.git", false},
-		{"ssh://git@github.com/you/backup.git", false},
-		{"file:///srv/backup.git", false},
-		{"~/backup", false},
-		{"/home/you/backup", false},
-		{"backup", false},
-		{"./a@b:c", false},
-		{"a/b@c:d", false},
-		{"git@github.com:", false},
-		{"C:\\Users\\you\\backup", false},
-		{"", false},
+		{"https://github.com/you/backup.git", true, false},
+		{"https://github.com/you/backup", true, false},
+		{"HTTPS://github.com/you/backup.git", true, false},
+		{"https://ghp_token@github.com/you/backup.git", true, false},
+		{"ssh://git@github.com/you/backup.git", true, false},
+		{"SSH://github.com:22/you/backup.git", true, false},
+		{"git@github.com:you/backup.git", true, false},
+		{"git@github.com:/srv/backup.git", true, false},
+		{"http://you:s3cret@github.com/you/backup.git", true, true},
+		{"file:///srv/backup.git", true, true},
+		{"git://github.com/you/backup.git", true, true},
+		{"https://", false, false},
+		{"~/backup", false, false},
+		{"/home/you/backup", false, false},
+		{"backup", false, false},
+		{"./a@b:c", false, false},
+		{"a/b@c:d", false, false},
+		{"git@github.com:", false, false},
+		{"C:\\Users\\you\\backup", false, false},
+		{"C://Users/you/backup", false, false},
+		{"", false, false},
 	} {
-		if got := IsRemote(tt.s); got != tt.want {
-			t.Errorf("IsRemote(%q) = %v, want %v", tt.s, got, tt.want)
+		got, err := IsRemote(tt.s)
+		if got != tt.want || (err != nil) != tt.refused {
+			t.Errorf("IsRemote(%q) = %v, %v; want %v, refused %v", tt.s, got, err, tt.want, tt.refused)
 		}
+	}
+	_, err := IsRemote("http://you:s3cret@github.com/you/backup.git")
+	if err == nil || err.Error() != "salt cannot download a backup from http://github.com/you/backup.git. Give an https or ssh URL, such as https://github.com/you/backup.git or git@github.com:you/backup.git, or the path of a folder" {
+		t.Fatalf("IsRemote(http URL) error = %v", err)
 	}
 }
 

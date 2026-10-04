@@ -147,7 +147,7 @@ On a new laptop, install Salt and restore straight from your backup repo's URL. 
 salt restore https://github.com/you/my-backup-repo.git --to ~/restored-files
 ```
 
-The SSH form `git@github.com:you/my-backup-repo.git` works too. Salt downloads with `git`, so a private repo uses the login git already has, such as an SSH key or a credential helper. Avoid putting a token in the URL, since other programs on your laptop can see the command line.
+The SSH form `git@github.com:you/my-backup-repo.git` and `ssh://` URLs work too. Salt downloads with `git`, so a private repo uses the login git already has, such as an SSH key or a credential helper. Avoid putting a token in the URL, since other programs on your laptop can see the command line.
 
 Salt puts your files in a new folder with their original names and folders. It never overwrites anything, so you can check them before copying them back.
 
