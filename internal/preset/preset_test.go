@@ -55,19 +55,24 @@ func TestNamesAreSorted(t *testing.T) {
 
 func TestParseRefusesBadPresets(t *testing.T) {
 	for want, body := range map[string]string{
-		"unexpected end of JSON":  `{`,
-		"not the file's name":     `{"name": "other", "paths": [{"from": "/a", "to": "a"}]}`,
-		"no paths":                `{"name": "t"}`,
-		"has no from":             `{"name": "t", "paths": [{"to": "a"}]}`,
-		`"../a" cannot be used`:   `{"name": "t", "paths": [{"from": "/a", "to": "../a"}]}`,
-		`"/a" cannot be used`:     `{"name": "t", "paths": [{"from": "/a", "to": "/a"}]}`,
-		`"a//b" cannot be used`:   `{"name": "t", "paths": [{"from": "/a", "to": "a//b"}]}`,
-		"same number of *":        `{"name": "t", "paths": [{"from": "/a/*", "to": "a"}]}`,
-		"same number of *, each":  `{"name": "t", "paths": [{"from": "/a/*", "to": "a/x*"}]}`,
-		"/a/p* and a/* must have": `{"name": "t", "paths": [{"from": "/a/p*", "to": "a/*"}]}`,
-		"needs files and keys":    `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"]}]}`,
-		`bad pattern "["`:         `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "skip": ["["]}`,
-		`bad pattern "[k"`:        `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["[k"]}]}`,
+		"unexpected end of JSON":   `{`,
+		"not the file's name":      `{"name": "other", "paths": [{"from": "/a", "to": "a"}]}`,
+		"no paths":                 `{"name": "t"}`,
+		"has no from":              `{"name": "t", "paths": [{"to": "a"}]}`,
+		`"../a" cannot be used`:    `{"name": "t", "paths": [{"from": "/a", "to": "../a"}]}`,
+		`"/a" cannot be used`:      `{"name": "t", "paths": [{"from": "/a", "to": "/a"}]}`,
+		`"a//b" cannot be used`:    `{"name": "t", "paths": [{"from": "/a", "to": "a//b"}]}`,
+		"same number of *":         `{"name": "t", "paths": [{"from": "/a/*", "to": "a"}]}`,
+		"same number of *, each":   `{"name": "t", "paths": [{"from": "/a/*", "to": "a/x*"}]}`,
+		"/a/p* and a/* must have":  `{"name": "t", "paths": [{"from": "/a/p*", "to": "a/*"}]}`,
+		"cannot start with *":      `{"name": "t", "paths": [{"from": "*/a", "to": "*/a"}]}`,
+		"${A:-${B}}: a variable":   `{"name": "t", "paths": [{"from": "${A:-${B}}", "to": "a"}]}`,
+		"${A:-$B}/a: a variable":   `{"name": "t", "paths": [{"from": "${A:-$B}/a", "to": "a"}]}`,
+		"${A:-/x/*/y}: a variable": `{"name": "t", "paths": [{"from": "${A:-/x/*/y}", "to": "a/*"}]}`,
+		"/a/${B: a variable":       `{"name": "t", "paths": [{"from": "/a/${B", "to": "a"}]}`,
+		"needs files and keys":     `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"]}]}`,
+		`bad pattern "["`:          `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "skip": ["["]}`,
+		`bad pattern "[k"`:         `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["[k"]}]}`,
 	} {
 		_, err := Parse("t", []byte(body))
 		if err == nil || !strings.Contains(err.Error(), want) || !strings.HasPrefix(err.Error(), "preset t: ") {

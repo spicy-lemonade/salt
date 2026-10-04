@@ -2,6 +2,7 @@ package preset
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -62,18 +63,7 @@ func (e Env) expand(template string) (string, bool) {
 // exists. Its parts that are only * are matched against folders, never
 // against what a variable holds, so a path holding * is taken as it is.
 func (e Env) Find(x Path) ([]Place, error) {
-	// Each * splits From into the fixed runs between them.
-	var runs []string
-	run := []string{}
-	for _, part := range strings.Split(x.From, "/") {
-		if part == "*" {
-			runs = append(runs, strings.Join(run, "/"))
-			run = []string{}
-			continue
-		}
-		run = append(run, part)
-	}
-	runs = append(runs, strings.Join(run, "/"))
+	runs := splitStars(x.From)
 	first, ok := e.expand(runs[0])
 	if !ok {
 		return nil, nil
@@ -119,6 +109,43 @@ func (e Env) Find(x Path) ([]Place, error) {
 		}
 	}
 	return found, nil
+}
+
+// splitStars splits the template from at each part that is only *, into
+// the fixed runs between them.
+func splitStars(from string) []string {
+	var runs []string
+	run := []string{}
+	for _, part := range strings.Split(from, "/") {
+		if part == "*" {
+			runs = append(runs, strings.Join(run, "/"))
+			run = []string{}
+			continue
+		}
+		run = append(run, part)
+	}
+	return append(runs, strings.Join(run, "/"))
+}
+
+// checkFrom refuses a template whose variables expand cannot read: one
+// nested in another's default, a $ that starts no variable, a * inside a
+// variable, or a * as the first part, which would match from the current
+// folder.
+func checkFrom(from string) error {
+	runs := splitStars(from)
+	if runs[0] == "" {
+		return fmt.Errorf("%s cannot start with *", from)
+	}
+	for _, run := range runs {
+		bad := strings.ContainsAny(variable.ReplaceAllString(run, ""), "${}")
+		for _, m := range variable.FindAllStringSubmatch(run, -1) {
+			bad = bad || strings.ContainsAny(m[3], "${")
+		}
+		if bad {
+			return fmt.Errorf("%s: a variable must be ${NAME} or ${NAME:-DEFAULT}, with no $, { or } in DEFAULT and no * in either", from)
+		}
+	}
+	return nil
 }
 
 // fill returns the slash path to with each part that is only * replaced by

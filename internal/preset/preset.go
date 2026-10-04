@@ -109,6 +109,9 @@ func (p *Preset) check(name string) error {
 		if x.From == "" {
 			return fmt.Errorf("a path has no from")
 		}
+		if err := checkFrom(x.From); err != nil {
+			return err
+		}
 		clean, err := repo.CleanPath(x.To)
 		if err != nil || clean != x.To {
 			return fmt.Errorf("the path %q cannot be used in the backup", x.To)
