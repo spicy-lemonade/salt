@@ -119,6 +119,11 @@ func TestSealExtraRefusesClashes(t *testing.T) {
 	if _, err := f.sealExtra(x("Soul.md")); err == nil || !strings.Contains(err.Error(), "SOUL.md and Soul.md would clash on macOS and Windows, since those ignore case") {
 		t.Errorf("case only: %v", err)
 	}
+	// The folder named is the source's, whole, also when case folding
+	// changes a letter's length in bytes.
+	if _, err := f.sealExtra(x("Memorie\u017f")); err == nil || !strings.Contains(err.Error(), "memories and Memorie\u017f would clash on macOS and Windows") {
+		t.Errorf("case only, long s: %v", err)
+	}
 	for _, rel := range []string{"", "/abs.db", "../up.db", "."} {
 		if _, err := f.sealExtra(x(rel)); err == nil || !strings.Contains(err.Error(), "unsafe path") {
 			t.Errorf("%q: %v, want unsafe path", rel, err)
@@ -157,6 +162,12 @@ func TestClash(t *testing.T) {
 		{"state.db", "state.db2", false, false},
 		{"state", "state.db", false, false},
 		{"a.db", "b.db", false, false},
+		// Case folding can change a letter's length in bytes: the Kelvin
+		// sign (3 bytes) folds to k (1 byte), and long s (2 bytes) to s.
+		{"\u212a.db", "k.db", true, true},
+		{"\u212a/x.db", "k", true, true},
+		{"\u017ftate.db", "State.db", true, true},
+		{"\u212a", "kk/x.db", false, false},
 	} {
 		for _, p := range [][2]string{{tc.a, tc.b}, {tc.b, tc.a}} {
 			if got := Clash(p[0], p[1]); got != tc.clash {

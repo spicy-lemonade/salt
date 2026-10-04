@@ -395,8 +395,11 @@ func addExtra(items []item, extra []Extra) ([]item, error) {
 		}
 		for _, it := range items {
 			if CaseOnly(it.rel, rel) {
-				// When rel clashes with a folder above a source file, name the folder.
-				other := it.rel[:min(len(it.rel), len(rel))]
+				// When rel clashes with a folder above a source file, name the
+				// folder: as many of the file's parts as rel has.
+				depth := strings.Count(rel, "/") + 1
+				parts := strings.SplitN(it.rel, "/", depth+1)
+				other := strings.Join(parts[:min(len(parts), depth)], "/")
 				return nil, fmt.Errorf("%w: %s and %s would clash on macOS and Windows, since those ignore case", ErrDuplicatePath, other, rel)
 			}
 			if Clash(it.rel, rel) {
@@ -424,15 +427,21 @@ func CaseOnly(a, b string) bool {
 	return Clash(a, b) && !clash(a, b, func(x, y string) bool { return x == y })
 }
 
-// clash is Clash with equal deciding whether two paths are the same.
+// clash is Clash with equal deciding whether two path parts are the same.
+// The paths are compared part by part, never by length in bytes, since case
+// folding can change a letter's length: the Kelvin sign folds to k.
 func clash(a, b string, equal func(x, y string) bool) bool {
-	if len(a) > len(b) {
-		a, b = b, a
+	for {
+		pa, restA, moreA := strings.Cut(a, "/")
+		pb, restB, moreB := strings.Cut(b, "/")
+		if !equal(pa, pb) {
+			return false
+		}
+		if !moreA || !moreB {
+			return true
+		}
+		a, b = restA, restB
 	}
-	if len(a) == len(b) {
-		return equal(a, b)
-	}
-	return b[len(a)] == '/' && equal(a, b[:len(a)])
 }
 
 // removeStale deletes ciphertext no longer referenced by the index, leftover
