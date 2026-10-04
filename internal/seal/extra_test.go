@@ -22,7 +22,7 @@ func extraCopy(t *testing.T, content string) string {
 
 func (f *fixture) sealExtra(extra ...Extra) (*Result, error) {
 	f.t.Helper()
-	return Seal(f.src, f.repo, Options{CacheDir: f.cache, Extra: extra})
+	return Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer, Extra: extra})
 }
 
 // An extra file is sealed at its own path with the given permissions and
@@ -49,7 +49,7 @@ func TestSealExtraRoundTrip(t *testing.T) {
 			t.Fatalf("restored state.db is dated %v, want %v", got, at)
 		}
 		// Restore makes files owner-only, so the mode is checked in the index.
-		ix, err := ReadIndex(f.root, f.ids())
+		ix, err := ReadIndex(f.root, f.ids(), false)
 		if err != nil {
 			t.Fatal(err)
 		}

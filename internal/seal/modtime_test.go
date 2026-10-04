@@ -53,21 +53,14 @@ func (f *fixture) restoredModTime(rel string) time.Time {
 // rewriteIndex applies fn to every entry in the repo's index.
 func (f *fixture) rewriteIndex(fn func(*Entry)) []byte {
 	f.t.Helper()
-	ix, err := ReadIndex(f.root, f.ids())
+	ix, err := ReadIndex(f.root, f.ids(), false)
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	for i := range ix.Entries {
 		fn(&ix.Entries[i])
 	}
-	b, _, err := ix.marshal()
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
-		f.t.Fatal(err)
-	}
-	return b
+	return f.writeIndex(ix)
 }
 
 func TestRestoreKeepsModTimes(t *testing.T) {
@@ -100,7 +93,7 @@ func TestRestoreKeepsModTimes(t *testing.T) {
 			if target, err := os.Readlink(filepath.Join(dest, "soul-link")); err != nil || target != "SOUL.md" {
 				t.Errorf("soul-link = %q, %v", target, err)
 			}
-			ix, err := ReadIndex(f.root, f.ids())
+			ix, err := ReadIndex(f.root, f.ids(), false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -203,7 +196,7 @@ func TestUnixNano(t *testing.T) {
 func TestIndexRecordsDates(t *testing.T) {
 	f := newFixture(t, true)
 	f.seal(false)
-	ix, err := ReadIndex(f.root, f.ids())
+	ix, err := ReadIndex(f.root, f.ids(), false)
 	if err != nil {
 		t.Fatal(err)
 	}

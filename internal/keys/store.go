@@ -16,11 +16,13 @@ import (
 
 // Secret is what salt keeps in the keychain for one key. Phrase-based keys
 // store the entropy, so the phrase can be shown again (salt recovery show);
-// passphrase-based keys store the identity itself.
+// passphrase-based keys store the identity itself. Signing keys (see
+// SigningKey) are kept apart from both, in their own store.
 type Secret struct {
-	Kind    string `json:"kind"` // KindPhrase or KindIdentity
+	Kind    string `json:"kind"` // KindPhrase, KindIdentity or KindSigning
 	Entropy string `json:"entropy,omitempty"`
 	Key     string `json:"identity,omitempty"`
+	Signing string `json:"signing,omitempty"` // ed25519 seed in hex
 }
 
 const (

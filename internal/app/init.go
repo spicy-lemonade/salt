@@ -126,6 +126,9 @@ func (a *App) Init(o InitOptions) error {
 	if err := a.Store.Set(rcpt, secret); err != nil {
 		return fmt.Errorf("saving your key: %w", err)
 	}
+	if err := a.saveSigningKey(id); err != nil {
+		return err
+	}
 	if keyFile != nil {
 		if err := writeKeyFile(root, keyFile); err != nil {
 			return err

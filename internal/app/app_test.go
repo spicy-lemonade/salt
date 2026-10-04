@@ -113,6 +113,7 @@ func newEnv(t *testing.T) *testEnv {
 		StoreName: "test store",
 		CacheDir:  filepath.Join(base, "cache"),
 		TrustDir:  filepath.Join(base, "trusted"),
+		SignDir:   filepath.Join(base, "signing"),
 		Git:       e.git,
 		LookPath:  func(name string) (string, bool) { return "/usr/local/bin/" + name, true },
 		Now:       func() time.Time { return e.now },
@@ -242,6 +243,9 @@ func TestInitAbortSavesNothing(t *testing.T) {
 	}
 	if e.store.Len() != 0 {
 		t.Fatal("aborted init saved a key")
+	}
+	if _, err := os.Stat(e.app.SignDir); !os.IsNotExist(err) {
+		t.Fatal("aborted init saved a signing key")
 	}
 }
 
@@ -506,7 +510,7 @@ func TestDoctorPassphraseKeyFile(t *testing.T) {
 func TestVerifyCommand(t *testing.T) {
 	e := newEnv(t)
 	healthyRepo(t, e)
-	if err := e.app.Verify(e.root); err != nil {
+	if err := e.app.Verify(e.root, false); err != nil {
 		t.Fatalf("Verify: %v\n%s", err, e.ui.out.String())
 	}
 	if !strings.Contains(e.ui.out.String(), "All 1 files") {
@@ -520,7 +524,7 @@ func TestVerifyCommand(t *testing.T) {
 		return nil
 	})
 	e.ui.out.Reset()
-	if err := e.app.Verify(e.root); !errors.Is(err, ErrReported) || !strings.Contains(e.ui.out.String(), "1 of 1 files cannot be restored") {
+	if err := e.app.Verify(e.root, false); !errors.Is(err, ErrReported) || !strings.Contains(e.ui.out.String(), "1 of 1 files cannot be restored") {
 		t.Fatalf("verify corrupted: %v\n%s", err, e.ui.out.String())
 	}
 }

@@ -144,16 +144,18 @@ salt restore my-backup-repo --to ~/restored-files
 
 Salt puts your files in a new folder with their original names and folders. It never overwrites anything, so you can check them before copying them back.
 
-Backing up only needs the public key in your repo. The private key is only needed to restore, so you can delete it from your laptop (see [Uninstall](#-uninstall)) and keep just your 12 words.
+Backing up only needs the public key in your repo and a signing key Salt keeps in a private file on your laptop. The signing key can sign backups but cannot unlock them. The private key is only needed to restore, so you can delete it from your laptop (see [Uninstall](#-uninstall)) and keep just your 12 words.
 
-To start backing up from the new laptop, run `salt trust my-backup-repo` once. Salt shows which keys your backups are locked with and asks you to approve them. It won't back up until you do.
+To start backing up from the new laptop, run `salt trust my-backup-repo` once. Salt shows which keys your backups are locked with and asks you to approve them. It won't back up until you do. If your key isn't saved on the new laptop, Salt asks for your 12 words or passphrase once, to set up the signing key.
 
 ## 🩺 Checking everything works
 
 - `salt doctor` checks your setup and tells you if anything needs fixing.
-- `salt verify` makes sure every file in your backup can be unlocked.
+- `salt verify` makes sure every file in your backup can be unlocked, and that the backup was signed with your key.
 - `salt recovery test` checks your recovery words or passphrase still work.
 - `salt trust` approves your backup repo's keys on your laptop. If someone else adds a key to your repo, Salt refuses to back up and tells you. Only run `salt trust` if you made the change yourself.
+
+Anyone can lock a file with your public key, so Salt signs every backup it makes. `salt restore` and `salt verify` refuse a backup that isn't signed with your key, so files someone else planted in your repo are never restored without you knowing.
 
 ## 👋 Uninstall
 

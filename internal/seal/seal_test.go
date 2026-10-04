@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -22,16 +23,18 @@ import (
 	"testing"
 
 	"filippo.io/age"
+	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
 )
 
 type fixture struct {
-	t     *testing.T
-	src   string
-	root  string
-	cache string
-	id    *age.X25519Identity
-	repo  *repo.Repo
+	t      *testing.T
+	src    string
+	root   string
+	cache  string
+	id     *age.X25519Identity
+	signer ed25519.PrivateKey
+	repo   *repo.Repo
 }
 
 func newFixture(t *testing.T, encryptPaths bool) *fixture {
@@ -41,12 +44,17 @@ func newFixture(t *testing.T, encryptPaths bool) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	signer, err := keys.SigningKey(id)
+	if err != nil {
+		t.Fatal(err)
+	}
 	f := &fixture{
-		t:     t,
-		src:   filepath.Join(base, "src"),
-		root:  filepath.Join(base, "repo"),
-		cache: filepath.Join(base, "cache"),
-		id:    id,
+		t:      t,
+		src:    filepath.Join(base, "src"),
+		root:   filepath.Join(base, "repo"),
+		cache:  filepath.Join(base, "cache"),
+		id:     id,
+		signer: signer,
 	}
 	if err := repo.Write(f.root, repo.Format{Version: repo.FormatVersion, EncryptPaths: encryptPaths, Recovery: repo.RecoveryPhrase},
 		[]string{id.Recipient().String()}); err != nil {
@@ -66,6 +74,23 @@ func newFixture(t *testing.T, encryptPaths bool) *fixture {
 	return f
 }
 
+// writeIndex signs ix with the fixture's key and writes it as the repo's
+// index, as seal would. It returns the plaintext written.
+func (f *fixture) writeIndex(ix *Index) []byte {
+	f.t.Helper()
+	if err := ix.sign(f.signer); err != nil {
+		f.t.Fatal(err)
+	}
+	b, _, err := ix.marshal()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
+		f.t.Fatal(err)
+	}
+	return b
+}
+
 func (f *fixture) write(rel, content string) {
 	f.t.Helper()
 	p := filepath.Join(f.src, filepath.FromSlash(rel))
@@ -79,7 +104,7 @@ func (f *fixture) write(rel, content string) {
 
 func (f *fixture) seal(prune bool) *Result {
 	f.t.Helper()
-	res, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Prune: prune})
+	res, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer, Prune: prune})
 	if err != nil {
 		f.t.Fatalf("Seal: %v", err)
 	}
@@ -292,13 +317,13 @@ func TestPrune(t *testing.T) {
 
 func TestSealRefusesOverlap(t *testing.T) {
 	f := newFixture(t, true)
-	if _, err := Seal(f.root, f.repo, Options{CacheDir: f.cache}); err == nil {
+	if _, err := Seal(f.root, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); err == nil {
 		t.Fatal("sealed a repo into itself")
 	}
 	inner := filepath.Join(f.src, "backup")
 	os.MkdirAll(inner, 0o755)
 	f.repo.Root = inner
-	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); err == nil {
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); err == nil {
 		t.Fatal("sealed into a repo inside the source")
 	}
 }
@@ -373,7 +398,7 @@ func TestReadIndexRejectsUnsafePaths(t *testing.T) {
 		if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := ReadIndex(f.root, f.ids()); err == nil {
+		if _, err := ReadIndex(f.root, f.ids(), false); err == nil {
 			t.Errorf("index path %q accepted", bad)
 		}
 	}
@@ -435,7 +460,7 @@ func TestLargeFileStreams(t *testing.T) {
 func TestVerify(t *testing.T) {
 	f := newFixture(t, true)
 	f.seal(false)
-	res, err := Verify(f.root, f.ids(), 0)
+	res, err := Verify(f.root, f.ids(), VerifyOptions{Workers: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +484,7 @@ func TestVerify(t *testing.T) {
 	os.MkdirAll(filepath.Dir(stray), 0o755)
 	os.WriteFile(stray, []byte("age-encryption.org/v1\n"), 0o644)
 
-	res, err = Verify(f.root, f.ids(), 0)
+	res, err = Verify(f.root, f.ids(), VerifyOptions{Workers: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +500,7 @@ func TestVerify(t *testing.T) {
 	}
 
 	other, _ := age.GenerateX25519Identity()
-	if _, err := Verify(f.root, []age.Identity{other}, 0); err == nil {
+	if _, err := Verify(f.root, []age.Identity{other}, VerifyOptions{Workers: 0}); err == nil {
 		t.Fatal("verify with the wrong key succeeded")
 	}
 }
@@ -487,14 +512,14 @@ func TestSealErrors(t *testing.T) {
 	}
 	file := filepath.Join(t.TempDir(), "file")
 	os.WriteFile(file, []byte("x"), 0o644)
-	if _, err := Seal(file, f.repo, Options{CacheDir: f.cache}); err == nil {
+	if _, err := Seal(file, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); err == nil {
 		t.Error("Seal of a file (not a dir) succeeded")
 	}
-	if _, err := Seal(filepath.Join(t.TempDir(), "missing"), f.repo, Options{CacheDir: f.cache}); err == nil {
+	if _, err := Seal(filepath.Join(t.TempDir(), "missing"), f.repo, Options{CacheDir: f.cache, Signer: f.signer}); err == nil {
 		t.Error("Seal of a missing dir succeeded")
 	}
 	// The cache dir cannot be created (its parent is a file).
-	if _, err := Seal(f.src, f.repo, Options{CacheDir: filepath.Join(file, "cache")}); err == nil {
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: filepath.Join(file, "cache"), Signer: f.signer}); err == nil {
 		t.Error("Seal with an unwritable cache succeeded")
 	}
 }
@@ -507,7 +532,7 @@ func TestSealSkipsSpecialFilesAndExcludes(t *testing.T) {
 	os.MkdirAll(filepath.Join(f.src, ".git"), 0o755)
 	os.WriteFile(filepath.Join(f.src, ".git", "config"), []byte("x"), 0o644)
 	os.WriteFile(filepath.Join(f.src, ".DS_Store"), []byte("x"), 0o644)
-	res, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Workers: 1})
+	res, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer, Workers: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,10 +548,7 @@ func TestRestoreRefusesSymlinkParent(t *testing.T) {
 		{Path: "x", Symlink: outside},
 		{Path: "x/y", Symlink: "z"},
 	}}
-	b, _, _ := ix.marshal()
-	if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
-		t.Fatal(err)
-	}
+	f.writeIndex(ix)
 	_, err := Restore(f.root, f.ids(), filepath.Join(t.TempDir(), "r"), RestoreOptions{})
 	if err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("restore through a symlink: %v", err)
@@ -555,7 +577,7 @@ func TestRestoreEdgeCases(t *testing.T) {
 	if _, err := Restore(f.root, f.ids(), filepath.Join(t.TempDir(), "r"), RestoreOptions{}); err == nil {
 		t.Fatal("restore without an index succeeded")
 	}
-	if _, err := Verify(f.root, f.ids(), 0); err == nil {
+	if _, err := Verify(f.root, f.ids(), VerifyOptions{Workers: 0}); err == nil {
 		t.Fatal("verify without an index succeeded")
 	}
 }
@@ -572,7 +594,7 @@ func TestReadIndexRejectsBadIndexes(t *testing.T) {
 			if err := writeIndex(f.root, []byte(body), f.repo.Recipients); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := ReadIndex(f.root, f.ids()); err == nil {
+			if _, err := ReadIndex(f.root, f.ids(), false); err == nil {
 				t.Fatalf("index %q accepted", body)
 			}
 		})
@@ -615,17 +637,10 @@ func TestReadIndexAcceptsLongEscapedPath(t *testing.T) {
 	f := newFixture(t, true)
 	p := strings.Repeat("&", maxIndexString)
 	ix := &Index{Version: repo.FormatVersion, Entries: []Entry{{Path: p, Object: "objects/aa/b.age", SHA256: strings.Repeat("0", 64)}}}
-	b, _, err := ix.marshal()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(b, []byte(strings.Repeat(`\u0026`, maxIndexString))) {
+	if b := f.writeIndex(ix); !bytes.Contains(b, []byte(strings.Repeat(`\u0026`, maxIndexString))) {
 		t.Fatal("json.Marshal no longer escapes &; this test needs another character")
 	}
-	if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
-		t.Fatal(err)
-	}
-	got, err := ReadIndex(f.root, f.ids())
+	got, err := ReadIndex(f.root, f.ids(), false)
 	if err != nil {
 		t.Fatalf("ReadIndex: %v", err)
 	}
@@ -680,7 +695,7 @@ func TestSealRefusesEntriesRestoreWouldRefuse(t *testing.T) {
 	indexPath := filepath.Join(f.root, repo.IndexFile)
 
 	entriesHook = breakEntries
-	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); err == nil || !strings.Contains(err.Error(), "entry longer than 4096 bytes") {
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); err == nil || !strings.Contains(err.Error(), "entry longer than 4096 bytes") {
 		t.Fatalf("Seal error = %v, want entry longer than 4096 bytes", err)
 	}
 	if _, err := os.Lstat(indexPath); !os.IsNotExist(err) {
@@ -696,7 +711,7 @@ func TestSealRefusesEntriesRestoreWouldRefuse(t *testing.T) {
 	}
 	f.write("SOUL.md", "be kinder\n")
 	entriesHook = breakEntries
-	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); err == nil {
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); err == nil {
 		t.Fatal("Seal accepted a bad entry")
 	}
 	if after, _ := os.ReadFile(indexPath); !bytes.Equal(before, after) {
@@ -717,7 +732,7 @@ func TestSealRefusesOversizedIndex(t *testing.T) {
 		}
 		return entries
 	}
-	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); err == nil || !strings.Contains(err.Error(), "salt supports at most 33554432") {
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); err == nil || !strings.Contains(err.Error(), "salt supports at most 33554432") {
 		t.Fatalf("Seal error = %v, want the index size limit", err)
 	}
 	if _, err := os.Lstat(filepath.Join(f.root, repo.IndexFile)); !os.IsNotExist(err) {
@@ -742,7 +757,7 @@ func TestReadIndexRejectsUnexpectedTokens(t *testing.T) {
 			if err := writeIndex(f.root, []byte(tt.body), f.repo.Recipients); err != nil {
 				t.Fatal(err)
 			}
-			_, err := ReadIndex(f.root, f.ids())
+			_, err := ReadIndex(f.root, f.ids(), false)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("ReadIndex error = %.300v, want %q", err, tt.want)
 			}
@@ -757,7 +772,7 @@ func TestReadIndexRejectsUnexpectedTokens(t *testing.T) {
 // alone however long they are.
 func TestDecodeErrors(t *testing.T) {
 	decode := func(body string) error {
-		_, err := decodeIndex(json.NewDecoder(strings.NewReader(body)))
+		_, err := decodeIndex(json.NewDecoder(strings.NewReader(body)), newIndexDigest())
 		return err
 	}
 
@@ -939,14 +954,8 @@ func TestVerifyCapsProblems(t *testing.T) {
 		p := fmt.Sprintf("%03d/%s", i, strings.Repeat("a", maxIndexString-4))
 		ix.Entries = append(ix.Entries, Entry{Path: p, Object: fmt.Sprintf("objects/aa/missing%d.age", i), SHA256: strings.Repeat("0", 64), Size: 1})
 	}
-	b, _, err := ix.marshal()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
-		t.Fatal(err)
-	}
-	res, err := Verify(f.root, f.ids(), 0)
+	f.writeIndex(ix)
+	res, err := Verify(f.root, f.ids(), VerifyOptions{Workers: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -964,7 +973,7 @@ func TestVerifyCapsProblems(t *testing.T) {
 	}
 	// The same list on every run, whatever order the workers finish in.
 	for run := 0; run < 3; run++ {
-		again, err := Verify(f.root, f.ids(), 4)
+		again, err := Verify(f.root, f.ids(), VerifyOptions{Workers: 4})
 		if err != nil || !slices.Equal(again.Problems, res.Problems) {
 			t.Fatalf("run %d gave a different list: %v", run, err)
 		}
@@ -1004,7 +1013,7 @@ func TestSealAndRestoreFileErrors(t *testing.T) {
 	f := newFixture(t, true)
 	locked := filepath.Join(f.src, "locked.md")
 	os.WriteFile(locked, []byte("x"), 0o000)
-	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); err == nil {
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); err == nil {
 		t.Fatal("Seal of an unreadable file succeeded")
 	}
 	os.Remove(locked)
@@ -1035,7 +1044,7 @@ func TestSealAndRestoreFileErrors(t *testing.T) {
 func TestRestoreSizeMismatch(t *testing.T) {
 	f := newFixture(t, true)
 	f.seal(false)
-	ix, err := ReadIndex(f.root, f.ids())
+	ix, err := ReadIndex(f.root, f.ids(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1045,8 +1054,7 @@ func TestRestoreSizeMismatch(t *testing.T) {
 			break
 		}
 	}
-	b, _, _ := ix.marshal()
-	writeIndex(f.root, b, f.repo.Recipients)
+	f.writeIndex(ix)
 	_, err = Restore(f.root, f.ids(), filepath.Join(t.TempDir(), "r"), RestoreOptions{})
 	if err == nil || !strings.Contains(err.Error(), "does not match the index") {
 		t.Fatalf("restore with a wrong size: %v", err)
@@ -1191,7 +1199,7 @@ func TestIndexBombs(t *testing.T) {
 			f := newFixture(t, true)
 			writeBombIndex(t, f, tt.gen)
 			var err error
-			used := allocDuring(func() { _, err = ReadIndex(f.root, f.ids()) })
+			used := allocDuring(func() { _, err = ReadIndex(f.root, f.ids(), false) })
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("ReadIndex error = %.200s, want %q", err, tt.want)
 			}
@@ -1211,7 +1219,7 @@ func TestSealRefusesTooManyFiles(t *testing.T) {
 	f := newFixture(t, true)
 	old := MaxIndexEntriesForTest(3)
 	defer MaxIndexEntriesForTest(old)
-	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); err == nil || !strings.Contains(err.Error(), "at most 3") {
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); err == nil || !strings.Contains(err.Error(), "at most 3") {
 		t.Fatalf("Seal with too many files: %v", err)
 	}
 }
@@ -1241,7 +1249,7 @@ func TestSealRefusesSymlinkedObjectFolders(t *testing.T) {
 			if err := os.Symlink(outside, filepath.Join(f.root, dir)); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); err == nil {
+			if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); err == nil {
 				t.Fatal("Seal wrote through a symlinked folder")
 			}
 			entries, _ := os.ReadDir(outside)
@@ -1267,7 +1275,7 @@ func TestSealRefusesSymlinkInsideObjects(t *testing.T) {
 		os.Symlink(outside, filepath.Join(f.root, repo.ObjectsDir, fmt.Sprintf("%02x", i)))
 	}
 	os.RemoveAll(f.cache)
-	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); err == nil {
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); err == nil {
 		t.Fatal("Seal wrote through a symlinked shard folder")
 	}
 	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
@@ -1288,7 +1296,7 @@ func TestRestoreRefusesSymlinkedObjects(t *testing.T) {
 	if _, err := Restore(f.root, f.ids(), filepath.Join(t.TempDir(), "r"), RestoreOptions{}); err == nil {
 		t.Fatal("restore read objects from outside the repo")
 	}
-	if _, err := Verify(f.root, f.ids(), 0); !errors.Is(err, ErrForeignSymlink) {
+	if _, err := Verify(f.root, f.ids(), VerifyOptions{Workers: 0}); !errors.Is(err, ErrForeignSymlink) {
 		t.Fatalf("verify with a symlinked files/: %v", err)
 	}
 }
@@ -1303,7 +1311,7 @@ func TestSymlinkPointingInsideTheRepo(t *testing.T) {
 	os.RemoveAll(filepath.Join(f.root, repo.ObjectsDir))
 	os.Symlink(".", filepath.Join(f.root, repo.ObjectsDir))
 
-	_, err := Seal(f.src, f.repo, Options{CacheDir: f.cache})
+	_, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer})
 	if !errors.Is(err, ErrForeignSymlink) || !strings.Contains(err.Error(), "at objects") {
 		t.Fatalf("seal: %v", err)
 	}
@@ -1315,7 +1323,7 @@ func TestSymlinkPointingInsideTheRepo(t *testing.T) {
 	if _, err := Restore(f.root, f.ids(), filepath.Join(t.TempDir(), "r"), RestoreOptions{}); !errors.Is(err, ErrForeignSymlink) {
 		t.Errorf("restore: %v", err)
 	}
-	if _, err := Verify(f.root, f.ids(), 0); !errors.Is(err, ErrForeignSymlink) {
+	if _, err := Verify(f.root, f.ids(), VerifyOptions{Workers: 0}); !errors.Is(err, ErrForeignSymlink) {
 		t.Errorf("verify: %v", err)
 	}
 }
@@ -1332,7 +1340,7 @@ func TestForeignSymlinksAnywhereManaged(t *testing.T) {
 			if err := os.Symlink(t.TempDir(), p); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache}); !errors.Is(err, ErrForeignSymlink) {
+			if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); !errors.Is(err, ErrForeignSymlink) {
 				t.Fatalf("seal with a symlink at %s: %v", link, err)
 			}
 		})
@@ -1369,7 +1377,7 @@ func TestIndexEntryChecks(t *testing.T) {
 			if err := writeIndex(f.root, []byte(body), f.repo.Recipients); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := ReadIndex(f.root, f.ids()); err == nil || !strings.Contains(err.Error(), tt.want) {
+			if _, err := ReadIndex(f.root, f.ids(), false); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("ReadIndex error = %v, want %q", err, tt.want)
 			}
 		})
@@ -1382,8 +1390,8 @@ func TestIndexEntryChecks(t *testing.T) {
 		`{"path":"c","object":"objects/aa/d.age","sha256":"` + sha + `","size":1,"mtime":1759233600000000000},` +
 		`{"path":"l","symlink":"a"}]}`
 	writeIndex(f.root, []byte(ok), f.repo.Recipients)
-	if _, err := ReadIndex(f.root, f.ids()); err != nil {
-		t.Fatalf("valid index refused: %v", err)
+	if ix, err := ReadIndex(f.root, f.ids(), true); err != nil || !ix.Unsigned {
+		t.Fatalf("valid unsigned index: %v", err)
 	}
 }
 

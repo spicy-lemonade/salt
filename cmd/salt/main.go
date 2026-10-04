@@ -67,23 +67,27 @@ Nightly (in your backup script):
       or if git would ignore or change any file salt wrote.
 
 Restoring:
-  salt restore REPO --to DIR [--force] [PATH...]
-      Decrypt the backup (or only PATHs) into DIR.
+  salt restore REPO --to DIR [--force] [--allow-unsigned] [PATH...]
+      Decrypt the backup (or only PATHs) into DIR. Refuses a backup whose
+      index is not signed by your key, since someone who can push to the
+      repo could have planted files in it; --allow-unsigned restores it
+      anyway.
   salt recovery test REPO
       Check your recovery phrase or passphrase opens this backup.
   salt recovery show REPO
       Show the recovery phrase saved on this machine.
 
 Checking:
-  salt verify REPO
-      Decrypt every file (nothing is written to disk) and check it against
-      the index. Needs your key.
+  salt verify [--allow-unsigned] REPO
+      Check the index is signed by your key, then decrypt every file
+      (nothing is written to disk) and check it against the index. Needs
+      your key.
   salt doctor [REPO]
       Check salt, the hook, the key and the repo are healthy. Needs no key.
   salt trust [--yes] REPO
-      Approve the repo's keys and settings for backups from this machine.
-      Needed after cloning a backup repo onto a new machine, or after you
-      change its keys yourself.
+      Approve the repo's keys and settings for backups from this machine,
+      and set up the key that signs them. Needed after cloning a backup repo
+      onto a new machine, or after you change its keys yourself.
 
 Other:
   salt hook install [REPO]
@@ -156,6 +160,7 @@ func newApp() (*app.App, error) {
 		StoreName: name,
 		CacheDir:  cache,
 		TrustDir:  filepath.Join(cfg, "salt", "trusted"),
+		SignDir:   filepath.Join(cfg, "salt", "signing"),
 		Git:       gitOps,
 		LookPath:  app.LookPath,
 		Now:       time.Now,
@@ -250,6 +255,7 @@ func run(cmd string, args []string) error {
 		fs := newFlags("restore")
 		to := fs.String("to", "", "directory to restore into")
 		force := fs.Bool("force", false, "restore over a non-empty directory (it is moved aside)")
+		unsigned := fs.Bool("allow-unsigned", false, "restore even if the index is not signed by your key")
 		pos, err := parse(fs, args, 1, -1)
 		if err != nil {
 			return err
@@ -261,7 +267,7 @@ func run(cmd string, args []string) error {
 		// restored files.
 		ctx, stop := interruptible()
 		defer stop()
-		return a.Restore(app.RestoreOptions{Repo: pos[0], To: *to, Paths: pos[1:], Force: *force, Context: ctx})
+		return a.Restore(app.RestoreOptions{Repo: pos[0], To: *to, Paths: pos[1:], Force: *force, AllowUnsigned: *unsigned, Context: ctx})
 	case "recovery":
 		if len(args) == 0 {
 			return usageError{"recovery needs a subcommand: test or show"}
@@ -278,11 +284,13 @@ func run(cmd string, args []string) error {
 		}
 		return usageError{fmt.Sprintf("unknown recovery subcommand %q", args[0])}
 	case "verify":
-		pos, err := parse(newFlags("verify"), args, 1, 1)
+		fs := newFlags("verify")
+		unsigned := fs.Bool("allow-unsigned", false, "check the files even if the index is not signed by your key")
+		pos, err := parse(fs, args, 1, 1)
 		if err != nil {
 			return err
 		}
-		return a.Verify(pos[0])
+		return a.Verify(pos[0], *unsigned)
 	case "doctor":
 		pos, err := parse(newFlags("doctor"), args, 0, 1)
 		if err != nil {

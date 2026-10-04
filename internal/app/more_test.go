@@ -548,13 +548,13 @@ func TestVerifyReportsUnreferenced(t *testing.T) {
 	stray := filepath.Join(e.root, repo.ObjectsDir, "zz", "stray.age")
 	os.MkdirAll(filepath.Dir(stray), 0o755)
 	os.WriteFile(stray, []byte("age-encryption.org/v1\n"), 0o644)
-	if err := e.app.Verify(e.root); err != nil {
+	if err := e.app.Verify(e.root, false); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(e.ui.out.String(), "stray.age is not in the index") {
 		t.Fatalf("output = %q", e.ui.out.String())
 	}
-	if err := e.app.Verify(t.TempDir()); !errors.Is(err, repo.ErrNotInitialised) {
+	if err := e.app.Verify(t.TempDir(), false); !errors.Is(err, repo.ErrNotInitialised) {
 		t.Fatalf("verify non-repo: %v", err)
 	}
 }
