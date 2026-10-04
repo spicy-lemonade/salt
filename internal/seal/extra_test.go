@@ -2,6 +2,7 @@ package seal
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -260,7 +261,35 @@ func TestClash(t *testing.T) {
 			if got := plain(p[0], p[1]); got != tc.folds {
 				t.Errorf("ClashRule(false)(%q, %q) = %v, want %v", p[0], p[1], got, tc.folds)
 			}
+			// addExtra looks paths up rather than comparing them, and must
+			// agree with the rules.
+			for fold, want := range map[bool]bool{false: tc.exact, true: tc.folds} {
+				tk := newTaken(fold)
+				tk.add(p[0])
+				if _, got := tk.clash(p[1]); got != want {
+					t.Errorf("taken(fold %v) of %q clashes with %q = %v, want %v", fold, p[0], p[1], got, want)
+				}
+			}
 		}
+	}
+}
+
+// Many extra files are added in time that grows with their number, not its
+// square. Comparing every pair of 50,000 paths took over a minute.
+func TestAddExtraScales(t *testing.T) {
+	extra := make([]Extra, 50_000)
+	for i := range extra {
+		extra[i] = Extra{Rel: fmt.Sprintf("blobs/%02x/%04x/%08x", i%256, i%65536, i)}
+	}
+	start := time.Now()
+	for _, fold := range []bool{false, true} {
+		items, err := addExtra(nil, extra, fold)
+		if err != nil || len(items) != len(extra) {
+			t.Fatalf("addExtra: %d items, %v", len(items), err)
+		}
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("adding 50,000 extra files twice took %v", d)
 	}
 }
 

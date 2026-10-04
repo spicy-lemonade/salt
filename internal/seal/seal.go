@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/spicy-lemonade/salt/internal/repo"
 )
@@ -144,7 +145,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			return nil, err
 		}
 	}
-	if items, err = addExtra(items, opt.Extra, ClashRule(r.Format.EncryptPaths)); err != nil {
+	if items, err = addExtra(items, opt.Extra, !r.Format.EncryptPaths); err != nil {
 		return nil, err
 	}
 	if len(items) > MaxIndexEntries {
@@ -393,34 +394,99 @@ func walkSource(src string, exclude []string, res *Result, fn func(string) strin
 }
 
 // addExtra adds the extra files to the source items, refusing a path that is
-// unsafe or clashes, by clashes, with a file or folder already there.
-func addExtra(items []item, extra []Extra, clashes func(a, b string) bool) ([]item, error) {
+// unsafe or clashes with a file or folder already there. With foldCase,
+// paths that differ only by case clash too (see ClashRule). Each path is
+// looked up, not compared with every other, so the time grows with the
+// number of files, not its square.
+func addExtra(items []item, extra []Extra, foldCase bool) ([]item, error) {
 	if len(extra) == 0 {
 		return items, nil
+	}
+	t := newTaken(foldCase)
+	for _, it := range items {
+		t.add(it.rel)
 	}
 	for _, x := range extra {
 		rel, err := repo.CleanPath(x.Rel)
 		if err != nil {
 			return nil, err
 		}
-		for _, it := range items {
-			if !clashes(it.rel, rel) {
-				continue
-			}
-			if !Clash(it.rel, rel) {
-				// When rel clashes with a folder above a source file, name the
-				// folder: as many of the file's parts as rel has.
-				depth := strings.Count(rel, "/") + 1
-				parts := strings.SplitN(it.rel, "/", depth+1)
-				other := strings.Join(parts[:min(len(parts), depth)], "/")
+		if other, ok := t.clash(rel); ok {
+			if !Clash(other, rel) {
 				return nil, fmt.Errorf("%w: %s and %s differ only by case, and with --plain-paths the repo would keep them as one file on macOS and Windows", ErrDuplicatePath, other, rel)
 			}
 			return nil, fmt.Errorf("%w: %s", ErrDuplicatePath, rel)
 		}
+		t.add(rel)
 		items = append(items, item{rel: rel, abs: x.Path, mode: x.Mode, modTime: x.ModTime})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].rel < items[j].rel })
 	return items, nil
+}
+
+// taken holds the paths in a backup, and every folder above them, by key, so
+// a clash is found by lookup. Each key maps to the path or folder as given.
+type taken struct {
+	key     func(string) string
+	files   map[string]string
+	folders map[string]string
+}
+
+func newTaken(foldCase bool) *taken {
+	key := func(s string) string { return s }
+	if foldCase {
+		key = foldKey
+	}
+	return &taken{key: key, files: map[string]string{}, folders: map[string]string{}}
+}
+
+// add records the cleaned slash path rel and the folders above it.
+func (t *taken) add(rel string) {
+	t.files[t.key(rel)] = rel
+	for i := range len(rel) {
+		if rel[i] == '/' {
+			t.folders[t.key(rel[:i])] = rel[:i]
+		}
+	}
+}
+
+// clash returns the path or folder already taken that rel clashes with: the
+// same path, a folder rel would be a file at, or a file above rel. When rel
+// clashes with a folder above a file, the folder is named.
+func (t *taken) clash(rel string) (string, bool) {
+	k := t.key(rel)
+	if other, ok := t.files[k]; ok {
+		return other, true
+	}
+	if other, ok := t.folders[k]; ok {
+		return other, true
+	}
+	for i := range len(rel) {
+		if rel[i] != '/' {
+			continue
+		}
+		if other, ok := t.files[t.key(rel[:i])]; ok {
+			return other, true
+		}
+	}
+	return "", false
+}
+
+// foldKey returns s with each letter replaced by the smallest of the letters
+// it equals ignoring case, so two strings are strings.EqualFold exactly when
+// their keys are equal. "/" folds only to itself, so the key keeps a path's
+// parts where they were.
+func foldKey(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		low := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			low = min(low, f)
+		}
+		b.WriteRune(low)
+	}
+	return b.String()
 }
 
 // Clash reports whether the cleaned slash paths a and b cannot both be in a
