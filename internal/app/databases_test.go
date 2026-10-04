@@ -94,6 +94,16 @@ func sqliteEnv(t *testing.T) (e *testEnv, fc *fakeCopy, src, db string) {
 	return e, fc, src, db
 }
 
+// named gives db another name, failing the test if the name is refused.
+func named(t *testing.T, db source.Database, name string) source.Database {
+	t.Helper()
+	d, err := source.Named(db, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
 // assertNoCopiesLeft checks every copy, and the temp folder, is gone.
 func assertNoCopiesLeft(t *testing.T, fc *fakeCopy) {
 	t.Helper()
@@ -180,8 +190,9 @@ func TestSealDatabaseRemovesCopiesWhenSealFails(t *testing.T) {
 	assertNoCopiesLeft(t, fc)
 }
 
-// Two databases with the same name are refused before any copy is made,
-// naming both and saying how to give one another name.
+// Two databases whose names clash, the same name, one a folder above the
+// other, or names that differ only in case, are refused before any copy is
+// made, naming both and saying how to give one another name.
 func TestSealDatabaseNameClash(t *testing.T) {
 	e, fc, src, db := sqliteEnv(t)
 	other := filepath.Join(e.app.Home, "agent2", "memory.db")
@@ -199,6 +210,10 @@ func TestSealDatabaseNameClash(t *testing.T) {
 			"the databases ~/agent/memory.db and ~/agent2/memory.db would both be backed up as memory.db; give one of them another name with --name NAME just before its --fake"},
 		"same db, twice": {fc.dbs(db, db), "the databases ~/agent/memory.db and ~/agent/memory.db would both be backed up as memory.db"},
 		"chosen name":    {[]source.Database{fc.db(db), chosen}, "would both be backed up as memory.db"},
+		"folder above": {[]source.Database{fc.db(db), named(t, fc.db(other), "memory.db/agent2.db")},
+			"the databases ~/agent/memory.db and ~/agent2/memory.db would be backed up as memory.db and memory.db/agent2.db, which clash"},
+		"case only": {[]source.Database{fc.db(db), named(t, fc.db(other), "Memory.DB")},
+			"would be backed up as memory.db and Memory.DB, which clash because a file cannot also be a folder and macOS and Windows ignore case; give one of them another name with --name NAME just before its --fake"},
 	} {
 		err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: tc.dbs})
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

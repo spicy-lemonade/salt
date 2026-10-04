@@ -383,38 +383,39 @@ func walkSource(src string, exclude []string, res *Result, fn func(string) strin
 }
 
 // addExtra adds the extra files to the source items, refusing a path that is
-// unsafe or already taken by a file or folder.
+// unsafe or clashes with a file or folder already there.
 func addExtra(items []item, extra []Extra) ([]item, error) {
 	if len(extra) == 0 {
 		return items, nil
-	}
-	files, dirs := map[string]bool{}, map[string]bool{}
-	add := func(rel string) {
-		files[rel] = true
-		for d := path.Dir(rel); d != "."; d = path.Dir(d) {
-			dirs[d] = true
-		}
-	}
-	for _, it := range items {
-		add(it.rel)
 	}
 	for _, x := range extra {
 		rel, err := repo.CleanPath(x.Rel)
 		if err != nil {
 			return nil, err
 		}
-		clash := files[rel] || dirs[rel]
-		for d := path.Dir(rel); d != "." && !clash; d = path.Dir(d) {
-			clash = files[d]
+		for _, it := range items {
+			if Clash(it.rel, rel) {
+				return nil, fmt.Errorf("%w: %s", ErrDuplicatePath, rel)
+			}
 		}
-		if clash {
-			return nil, fmt.Errorf("%w: %s", ErrDuplicatePath, rel)
-		}
-		add(rel)
 		items = append(items, item{rel: rel, abs: x.Path, mode: x.Mode, modTime: x.ModTime})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].rel < items[j].rel })
 	return items, nil
+}
+
+// Clash reports whether the cleaned slash paths a and b cannot both be in a
+// backup, because they are the same path or one is a folder above the other.
+// Case is ignored, as macOS and Windows ignore it, so a backup made elsewhere
+// still restores there.
+func Clash(a, b string) bool {
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	if len(a) == len(b) {
+		return strings.EqualFold(a, b)
+	}
+	return b[len(a)] == '/' && strings.EqualFold(a, b[:len(a)])
 }
 
 // removeStale deletes ciphertext no longer referenced by the index, leftover

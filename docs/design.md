@@ -493,11 +493,14 @@ changes. A NAME that could lead outside the backup (empty, absolute, with
 so is one ending in `/`, which names a folder rather than the file the copy is
 backed up as. A `--name` not followed by a database option is a usage error.
 
-Two databases backed up under one name are refused before any copy is made,
-since a dump can take a long time, and the message names both and points to
-`--name`. A name that is a file or folder in SRC, or a folder above one, is
-only known once salt reads SRC, so that clash is refused after the copies are
-made, which are then removed, with the same advice.
+Two names clash when they are the same, or when one is a folder above the
+other, since a file cannot also be a folder. Case is ignored, because macOS
+and Windows ignore it, so a backup made on Linux still restores there. Two
+databases whose names clash are refused before any copy is made, since a dump
+can take a long time, and the message names both and points to `--name`. A
+name that clashes with a file or folder in SRC is only known once salt reads
+SRC, so that clash is refused after the copies are made, which are then
+removed, with the same advice. `seal.Clash` holds the rule for both checks.
 
 The backup gets the live database file's permissions and last-modified date.
 They are read before the copy, because the copy can change them: after a

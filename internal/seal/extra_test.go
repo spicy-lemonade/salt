@@ -91,8 +91,8 @@ func TestSealExtraUnchangedChangesNothing(t *testing.T) {
 }
 
 // An extra file may not take a path the source tree already uses, as a file
-// or as a folder, nor one another extra file uses, nor an unsafe one. Nothing
-// is written to the repo.
+// or as a folder, nor one another extra file uses, nor an unsafe one, also
+// when only the case differs. Nothing is written to the repo.
 func TestSealExtraRefusesClashes(t *testing.T) {
 	f := newFixture(t, true)
 	copy := extraCopy(t, "SQLite format 3\x00")
@@ -104,6 +104,11 @@ func TestSealExtraRefusesClashes(t *testing.T) {
 		"two extra files":     {x("state.db"), x("state.db")},
 		"extra folder":        {x("dbs/state.db"), x("dbs")},
 		"cleaned path":        {x("./memories/USER.md")},
+		"source file, case":   {x("soul.md")},
+		"source folder, case": {x("MEMORIES")},
+		"under a file, case":  {x("Soul.md/state.db")},
+		"two extra, case":     {x("state.db"), x("State.DB")},
+		"extra folder, case":  {x("dbs/state.db"), x("DBS")},
 	} {
 		if _, err := f.sealExtra(extra...); !errors.Is(err, ErrDuplicatePath) {
 			t.Errorf("%s: %v, want ErrDuplicatePath", name, err)
@@ -125,5 +130,33 @@ func TestSealExtraMissingFile(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "gone.db")
 	if _, err := f.sealExtra(Extra{Rel: "state.db", Path: missing}); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing extra file: %v", err)
+	}
+}
+
+// Two paths clash when they are the same or one is a folder above the
+// other, ignoring case. Paths that only share a folder, or a beginning, do
+// not.
+func TestClash(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{"state.db", "state.db", true},
+		{"state.db", "State.DB", true},
+		{"agent", "agent/state.db", true},
+		{"Agent/state.db", "agent", true},
+		{"a/b/c.db", "A/B", true},
+		{"agent/state.db", "agent/SOUL.md", false},
+		{"agent", "agent2/state.db", false},
+		{"state.db", "state.db2", false},
+		{"state", "state.db", false},
+		{"a.db", "b.db", false},
+	} {
+		if got := Clash(tc.a, tc.b); got != tc.want {
+			t.Errorf("Clash(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+		if got := Clash(tc.b, tc.a); got != tc.want {
+			t.Errorf("Clash(%q, %q) = %v, want %v", tc.b, tc.a, got, tc.want)
+		}
 	}
 }

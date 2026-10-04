@@ -165,17 +165,21 @@ func (a *App) copyDatabases(ctx context.Context, repoRoot string, dbs []source.D
 	if len(dbs) == 0 {
 		return nil, func() {}, nil
 	}
-	// Two databases under one name are refused before any copy is made,
+	// Two databases whose names clash are refused before any copy is made,
 	// since a copy can take a long time. A clash with a source file is only
 	// known once seal reads the source.
-	seen := make(map[string]source.Database, len(dbs))
-	for _, db := range dbs {
-		name := db.Name()
-		if prev, ok := seen[name]; ok {
-			return nil, nil, fmt.Errorf("the databases %s and %s would both be backed up as %s; give one of them another name with --name NAME just before its %s",
-				a.short(prev.String()), a.short(db.String()), name, db.Flag())
+	for i, db := range dbs {
+		for _, prev := range dbs[:i] {
+			if !seal.Clash(prev.Name(), db.Name()) {
+				continue
+			}
+			if prev.Name() == db.Name() {
+				return nil, nil, fmt.Errorf("the databases %s and %s would both be backed up as %s; give one of them another name with --name NAME just before its %s",
+					a.short(prev.String()), a.short(db.String()), db.Name(), db.Flag())
+			}
+			return nil, nil, fmt.Errorf("the databases %s and %s would be backed up as %s and %s, which clash because a file cannot also be a folder and macOS and Windows ignore case; give one of them another name with --name NAME just before its %s",
+				a.short(prev.String()), a.short(db.String()), prev.Name(), db.Name(), db.Flag())
 		}
-		seen[name] = db
 	}
 	if ctx == nil {
 		ctx = context.Background()
