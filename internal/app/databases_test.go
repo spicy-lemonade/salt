@@ -198,10 +198,6 @@ func TestSealDatabaseNameClash(t *testing.T) {
 	other := filepath.Join(e.app.Home, "agent2", "memory.db")
 	os.MkdirAll(filepath.Dir(other), 0o755)
 	os.WriteFile(other, []byte("SQLite format 3\x00"), 0o644)
-	chosen, err := source.Named(fc.db(other), "memory.db")
-	if err != nil {
-		t.Fatal(err)
-	}
 	for name, tc := range map[string]struct {
 		dbs  []source.Database
 		want string
@@ -209,7 +205,7 @@ func TestSealDatabaseNameClash(t *testing.T) {
 		"two databases": {[]source.Database{fc.db(db), fc.db(other)},
 			"the databases ~/agent/memory.db and ~/agent2/memory.db would both be backed up as memory.db. Give one of them another name with --name NAME before its --fake"},
 		"same db, twice": {fc.dbs(db, db), "the database ~/agent/memory.db is given twice. Give it once"},
-		"chosen name":    {[]source.Database{fc.db(db), chosen}, "would both be backed up as memory.db"},
+		"chosen name":    {[]source.Database{fc.db(db), named(t, fc.db(other), "memory.db")}, "would both be backed up as memory.db"},
 		"folder above": {[]source.Database{fc.db(db), named(t, fc.db(other), "memory.db/agent2.db")},
 			"the databases ~/agent/memory.db and ~/agent2/memory.db would be backed up as memory.db and memory.db/agent2.db, which clash"},
 		"case only": {[]source.Database{fc.db(db), named(t, fc.db(other), "Memory.DB")},
@@ -236,10 +232,7 @@ func TestSealDatabaseSourceClash(t *testing.T) {
 	for _, name := range []string{"", "agent", "agent/SOUL.md", "memory.db/state.db"} {
 		d := source.Database(fc.db(db))
 		if name != "" {
-			var err error
-			if d, err = source.Named(d, name); err != nil {
-				t.Fatal(err)
-			}
+			d = named(t, d, name)
 		}
 		err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: []source.Database{d}})
 		if !errors.Is(err, seal.ErrDuplicatePath) || !strings.Contains(err.Error(), "each database salt copies is backed up under its own name") ||
@@ -265,14 +258,7 @@ func TestSealNamedDatabases(t *testing.T) {
 		"agent2/SOUL.md":      "be brave",
 		"copies/again/one.db": "SQLite format 3\x00memories",
 	}
-	dbs := []source.Database{fc.db(db)}
-	for _, n := range []struct{ path, name string }{{other, "agent2/memory.db"}, {db, "copies/again/one.db"}} {
-		d, err := source.Named(fc.db(n.path), n.name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		dbs = append(dbs, d)
-	}
+	dbs := []source.Database{fc.db(db), named(t, fc.db(other), "agent2/memory.db"), named(t, fc.db(db), "copies/again/one.db")}
 	if err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: dbs}); err != nil {
 		t.Fatal(err)
 	}

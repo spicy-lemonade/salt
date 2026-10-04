@@ -159,6 +159,27 @@ func TestRunUsageErrors(t *testing.T) {
 	}
 }
 
+// A --name that names no database option, or that is unsafe, is a usage
+// error, refused before any database is copied, that never repeats a
+// password.
+func TestRunSealNameUsage(t *testing.T) {
+	isolate(t)
+	base := t.TempDir()
+	db := filepath.Join(base, "state.db")
+	os.WriteFile(db, []byte("state"), 0o644)
+	for want, args := range map[string][]string{
+		"seal: --name must be followed by the database option it names": {"--name", "a.db", "--sqlite", db, "--name", "spare.db"},
+		"seal: invalid value \"b.db\" for flag -name: --name must be":   {"--name", "a.db", "--name", "b.db", "--sqlite", db},
+		"seal: the name \"../state.db\" cannot be used in the backup":   {"--name", "../state.db", "--postgres", "postgresql://agent:hunter2@localhost:5432/postgres"},
+		"seal: the name \"agent2/\" cannot be used in the backup":       {"--name", "agent2/", "--sqlite", db},
+	} {
+		var ue usageError
+		if err := run("seal", append(args, base, filepath.Join(base, "repo"))); !errors.As(err, &ue) || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("seal %v: %v", args, err)
+		}
+	}
+}
+
 // seal, verify and restore end to end in-process. None of them runs git.
 func TestRunSealVerifyRestore(t *testing.T) {
 	isolate(t)
@@ -230,28 +251,6 @@ func TestRunSealVerifyRestore(t *testing.T) {
 	for rel, want := range map[string]string{"state.db": "state", "agent2/state.db": "other state"} {
 		if b, _ := os.ReadFile(filepath.Join(named, rel)); string(b) != want {
 			t.Fatalf("restored %s = %q, want %q", rel, b, want)
-		}
-	}
-	// A --name that names no database option, or that is unsafe, is a usage
-	// error, without repeating a password. A name already taken is refused.
-	for want, args := range map[string][]string{
-		"seal: --name must be followed by the database option it names": {"--sqlite", other, "--name", "spare.db"},
-		"seal: invalid value \"b.db\" for flag -name: --name must be":   {"--name", "a.db", "--name", "b.db", "--sqlite", other},
-		"seal: the name \"../state.db\" cannot be used in the backup":   {"--name", "../state.db", "--postgres", "postgresql://agent:hunter2@localhost:5432/postgres"},
-	} {
-		var ue usageError
-		if err := run("seal", append(args, src, root)); !errors.As(err, &ue) || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "hunter2") {
-			t.Fatalf("seal %v: %v", args, err)
-		}
-	}
-	for want, args := range map[string][]string{
-		"would both be backed up as state.db":                       {"--sqlite", other, "--name", "state.db", "--sqlite", filepath.Join(dbs, "state.db")},
-		"each database salt copies is backed up under its own name": {"--name", "memories/USER.md", "--sqlite", other},
-	} {
-		err := run("seal", append(args, src, root))
-		var ue usageError
-		if err == nil || errors.As(err, &ue) || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "hunter2") {
-			t.Fatalf("seal %v: %v", args, err)
 		}
 	}
 	// trust --yes set up this machine's signing key next to the approvals.

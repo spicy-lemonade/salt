@@ -249,9 +249,8 @@ func TestSealSQLiteAfterACrash(t *testing.T) {
 }
 
 // Two agents that both keep a state.db are both backed up and restored when
-// one is given another name with --name. A name that is taken is refused
-// before sqlite3 runs, and an unsafe name or a --name with no database is a
-// usage error.
+// one is given another name with --name. Two with the same name are
+// refused before sqlite3 runs.
 func TestSealSQLiteNamed(t *testing.T) {
 	sqlite := realSQLite(t)
 	e := newEnv(t)
@@ -270,20 +269,9 @@ func TestSealSQLiteNamed(t *testing.T) {
 	e.must(b.dir, "git", "add", "-A")
 	e.must(b.dir, "git", "commit", "-q", "-m", "backup")
 
-	// sqlite3 is never started for a name that is refused.
-	saltOnly := e.with("PATH=" + filepath.Dir(e.bin))
-	assertSealFails(t, saltOnly, b, "would both be backed up as state.db. Give one of them another name with --name NAME before its --sqlite",
+	// sqlite3 is never started for names that clash.
+	assertSealFails(t, e.with("PATH="+filepath.Dir(e.bin)), b, "would both be backed up as state.db. Give one of them another name with --name NAME before its --sqlite",
 		"--sqlite", first, "--sqlite", second)
-	assertSealFails(t, e, b, "Give the database another name with --name NAME before its option", "--name", "agent2/SOUL.md", "--sqlite", second)
-	// An unsafe name, or a --name with no database, is a usage error.
-	for want, args := range map[string][]string{
-		"the name \"../state.db\" cannot be used in the backup. Give --name a relative path": {"--name", "../state.db", "--sqlite", second},
-		"--name must be followed by the database option it names":                            {"--sqlite", first, "--name", "spare.db"},
-	} {
-		if out, code := saltOnly.run(b.base, "salt", append(append([]string{"seal"}, args...), b.src, b.dir)...); code != 2 || !strings.Contains(out, want) {
-			t.Fatalf("seal %v: exit %d, want 2:\n%s", args, code, out)
-		}
-	}
 }
 
 // When the copy cannot be made, salt stops before sealing, says why, and
