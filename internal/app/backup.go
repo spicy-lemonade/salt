@@ -51,7 +51,11 @@ func (a *App) Backup(o BackupOptions) error {
 		return fmt.Errorf("%w: the presets would back up %s and %s, which cannot both be in one backup. This is a problem in the presets, so please report it", seal.ErrDuplicatePath, other, rel)
 	}
 	for _, l := range found.LeftOut {
-		a.UI.Printf("salt: left %s out of the backup because %s. Keep secrets in environment variables so the file can be backed up\n", a.short(l.Path), l.Why)
+		advice := ""
+		if l.Secret {
+			advice = ". Keep secrets in environment variables so the file can be backed up"
+		}
+		a.UI.Printf("salt: left %s out of the backup because %s%s\n", a.short(l.Path), l.Why, advice)
 	}
 	for _, s := range found.Skipped {
 		a.UI.Printf("salt: skipped %s (not a file)\n", s)

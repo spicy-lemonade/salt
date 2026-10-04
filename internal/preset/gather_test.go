@@ -264,6 +264,13 @@ func TestSecretIn(t *testing.T) {
 		"api_key:\n  sk-on-the-next-line\n":       "its setting api_key holds a secret",
 		"api_key: |\n  sk-block\n":                "its setting api_key holds a secret",
 		"api_key: [sk-1]\n":                       "its setting api_key holds a secret",
+		"max_token: 512\n":                        "",
+		"token: false\n":                          "",
+		"token: 0x1F\n":                           "",
+		"token:\n  enabled: true\n":               "",
+		"token:\n  value: abc\n":                  "its setting token holds a secret",
+		"token: \"512\"\n":                        "its setting token holds a secret",
+		"token: !!binary c2stMQ==\n":              "its setting token holds a secret",
 		"base: &b sk-1\napi_key: *b\n":            "its setting api_key holds a secret",
 		"a: 1\n---\ntoken: abc\n":                 "its setting token holds a secret",
 		`{"token": "abc"}`:                        "its setting token holds a secret",
@@ -273,14 +280,14 @@ func TestSecretIn(t *testing.T) {
 	} {
 		p := filepath.Join(dir, "f.yaml")
 		write(t, p, content)
-		if got := secretIn(p, keys); got != want {
+		if got, secret := secretIn(p, keys); got != want || secret != strings.HasSuffix(want, "holds a secret") {
 			t.Errorf("secretIn(%.40q) = %q, want %q", content, got, want)
 		}
 	}
-	if got := secretIn(filepath.Join(dir, "missing"), keys); !strings.Contains(got, "could not be read") {
+	if got, _ := secretIn(filepath.Join(dir, "missing"), keys); !strings.Contains(got, "could not be read") {
 		t.Errorf("missing file: %q", got)
 	}
-	if got := secretIn(dir, keys); !strings.Contains(got, "could not be read") {
+	if got, _ := secretIn(dir, keys); !strings.Contains(got, "could not be read") {
 		t.Errorf("folder: %q", got)
 	}
 }

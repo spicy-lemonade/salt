@@ -131,6 +131,20 @@ func TestBackupLeavesOutSecrets(t *testing.T) {
 	}
 }
 
+// A file left out because it could not be checked says so, without the
+// advice about secrets, since none was found.
+func TestBackupLeavesOutUncheckedFile(t *testing.T) {
+	e, home, presets := backupEnv(t)
+	os.WriteFile(filepath.Join(home, "tool", "settings.yaml"), []byte("api_key: [unclosed"), 0o644)
+	if err := e.backup(presets); err != nil {
+		t.Fatal(err)
+	}
+	want := "salt: left ~/tool/settings.yaml out of the backup because it could not be read as YAML to check it for secrets\n"
+	if out := e.ui.out.String(); out != want {
+		t.Fatalf("output %q, want %q", out, want)
+	}
+}
+
 // Nothing is sealed or sent to git when the backup cannot be pushed, is not
 // a git repo, or the presets find nothing.
 func TestBackupRefusesBeforeSealing(t *testing.T) {

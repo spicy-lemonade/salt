@@ -53,9 +53,11 @@ func (f *Found) Paths() []string {
 	return paths
 }
 
-// LeftOut is a file left out of the backup, and why.
+// LeftOut is a file left out of the backup, and why. Secret is true when a
+// setting in it holds a secret, and false when it could not be checked.
 type LeftOut struct {
 	Path, Why string
+	Secret    bool
 }
 
 // Gather finds everything the presets back up on this machine. show is how
@@ -179,8 +181,8 @@ func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, s
 			if !slices.ContainsFunc(names, func(n string) bool { return matchAny(s.Files, n) }) {
 				continue
 			}
-			if why := secretIn(at, s.Keys); why != "" {
-				f.LeftOut = append(f.LeftOut, LeftOut{Path: at, Why: why})
+			if why, secret := secretIn(at, s.Keys); why != "" {
+				f.LeftOut = append(f.LeftOut, LeftOut{Path: at, Why: why, Secret: secret})
 				return nil
 			}
 		}
@@ -224,33 +226,33 @@ func isSidecar(p string) (bool, error) {
 }
 
 // secretIn says why the file at p must be left out: one of the settings
-// keys names holds a value, or the file could not be read as YAML to check.
-// It returns "" when the file can be backed up.
-func secretIn(p string, keys []string) string {
+// keys names holds a value, and secret is true, or the file could not be
+// read as YAML to check. It returns "" when the file can be backed up.
+func secretIn(p string, keys []string) (why string, secret bool) {
 	file, err := os.Open(p)
 	if err != nil {
-		return fmt.Sprintf("it could not be read to check it for secrets (%v)", err)
+		return fmt.Sprintf("it could not be read to check it for secrets (%v)", err), false
 	}
 	defer file.Close()
 	b, err := io.ReadAll(io.LimitReader(file, maxSecretsFile+1))
 	if err != nil {
-		return fmt.Sprintf("it could not be read to check it for secrets (%v)", err)
+		return fmt.Sprintf("it could not be read to check it for secrets (%v)", err), false
 	}
 	if len(b) > maxSecretsFile {
-		return "it is too large to check for secrets"
+		return "it is too large to check for secrets", false
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	for {
 		var doc yaml.Node
 		err := dec.Decode(&doc)
 		if errors.Is(err, io.EOF) {
-			return ""
+			return "", false
 		}
 		if err != nil {
-			return "it could not be read as YAML to check it for secrets"
+			return "it could not be read as YAML to check it for secrets", false
 		}
 		if key := secretKey(&doc, keys); key != "" {
-			return fmt.Sprintf("its setting %s holds a secret", key)
+			return fmt.Sprintf("its setting %s holds a secret", key), true
 		}
 	}
 }
@@ -279,14 +281,23 @@ func secretKey(n *yaml.Node, keys []string) string {
 	return ""
 }
 
-// hasValue reports whether n holds anything. An alias counts, since what it
-// points to is not followed.
+// hasValue reports whether n holds text that could be a secret: a string
+// that is not empty, at any depth. A number, true or false, or null is a
+// setting, never a secret, so max_token: 512 is not taken for one. An alias
+// counts, since what it points to is not followed.
 func hasValue(n *yaml.Node) bool {
 	switch n.Kind {
 	case yaml.ScalarNode:
-		return n.Value != "" && n.Tag != "!!null"
+		return n.Value != "" && (n.Tag == "!!str" || n.Tag == "!!binary")
 	case yaml.AliasNode:
 		return true
+	case yaml.MappingNode:
+		for i := 1; i < len(n.Content); i += 2 {
+			if hasValue(n.Content[i]) {
+				return true
+			}
+		}
+		return false
 	}
-	return len(n.Content) > 0
+	return slices.ContainsFunc(n.Content, hasValue)
 }
