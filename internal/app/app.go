@@ -65,10 +65,12 @@ type GitOps interface {
 	// Clone downloads only the latest commit of url into the empty folder
 	// dir (see gitx.Clone).
 	Clone(ctx context.Context, url, dir string) error
+	// Branch returns the checked-out branch, or gitx.ErrDetached.
+	Branch(repoRoot string) (string, error)
 	// Stage stages every change, removed files included.
 	Stage(repoRoot string) error
 	// Commit commits what is staged, and nothing when nothing is.
-	Commit(repoRoot, msg string) error
+	Commit(ctx context.Context, repoRoot, msg string) error
 	// Push pushes the checked-out branch to origin (see gitx.Push).
 	Push(ctx context.Context, repoRoot string) error
 }
@@ -94,8 +96,11 @@ func (RealGit) Prune(root string, keepDays int) (*prune.Result, error) {
 func (RealGit) Clone(ctx context.Context, url, dir string) error {
 	return gitx.Clone(ctx, url, dir)
 }
-func (RealGit) Stage(root string) error                     { return gitx.StageAll(root) }
-func (RealGit) Commit(root, msg string) error               { return gitx.CommitStaged(root, msg) }
+func (RealGit) Branch(root string) (string, error) { return gitx.Branch(root) }
+func (RealGit) Stage(root string) error            { return gitx.StageAll(root) }
+func (RealGit) Commit(ctx context.Context, root, msg string) error {
+	return gitx.CommitStaged(ctx, root, msg)
+}
 func (RealGit) Push(ctx context.Context, root string) error { return gitx.Push(ctx, root) }
 
 // HookSearchPath is where the pre-commit hook looks for salt: the caller's

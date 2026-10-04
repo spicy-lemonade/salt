@@ -155,3 +155,27 @@ func TestBackupFailures(t *testing.T) {
 		t.Fatalf("the remote's latest commit is %q", subject)
 	}
 }
+
+// salt backup refuses to back up with no branch checked out, before it
+// commits anything, and a commit that git refuses, here because signing it
+// fails, fails with git's own reason, not a bare exit status.
+func TestBackupGitStepFailures(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "x"), "a file")
+	before := commitCount(e, b.dir)
+	e.must(b.dir, "git", "checkout", "-q", "--detach")
+	out, code := e.run(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	if code != 1 || !strings.Contains(out, "no branch is checked out (detached HEAD)") || commitCount(e, b.dir) != before {
+		t.Fatalf("detached: exit %d:\n%s", code, out)
+	}
+
+	e.must(b.dir, "git", "checkout", "-q", "-")
+	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "y"), "another file")
+	e.must(b.dir, "git", "config", "commit.gpgsign", "true")
+	e.must(b.dir, "git", "config", "gpg.program", "false")
+	out, code = e.run(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	if code != 1 || !strings.Contains(out, "committing the backup: git commit:") || !strings.Contains(out, "gpg failed to sign") {
+		t.Fatalf("commit: exit %d:\n%s", code, out)
+	}
+}

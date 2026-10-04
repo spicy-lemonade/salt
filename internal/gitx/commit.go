@@ -3,7 +3,6 @@ package gitx
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 
@@ -18,19 +17,39 @@ func StageAll(dir string) error {
 }
 
 // CommitStaged commits what is staged in the repository at dir with the
-// message msg. It commits nothing when nothing is staged.
-func CommitStaged(dir, msg string) error {
+// message msg. It commits nothing when nothing is staged. Cancelling ctx
+// stops git, which may be waiting on something the person set up, such as
+// a key to sign commits with.
+func CommitStaged(ctx context.Context, dir, msg string) error {
 	// --quiet exits 1 when something is staged, without listing it.
-	err := exec.Command("git", Args(dir, "diff", "--cached", "--quiet")...).Run()
+	_, err := Run(dir, "diff", "--cached", "--quiet")
 	var exit *exec.ExitError
 	switch {
 	case err == nil:
 		return nil
 	case !errors.As(err, &exit) || exit.ExitCode() != 1:
-		return fmt.Errorf("git diff --cached: %w", err)
+		return err
 	}
-	_, err = Run(dir, "commit", "--quiet", "-m", msg)
+	err = proc.Run(ctx, exec.CommandContext(ctx, "git", Args(dir, "commit", "--quiet", "-m", msg)...))
+	var failed *proc.Error
+	if errors.As(err, &failed) {
+		failed.Program = "git commit"
+	}
 	return err
+}
+
+// ErrDetached means no branch is checked out, so there is no branch to
+// commit a backup to or push.
+var ErrDetached = errors.New("no branch is checked out (detached HEAD); check out the branch your backups go to")
+
+// Branch returns the branch checked out in the repository at dir.
+func Branch(dir string) (string, error) {
+	branch, err := Run(dir, "symbolic-ref", "--quiet", "--short", "HEAD")
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return "", ErrDetached
+	}
+	return branch, err
 }
 
 // Push pushes the checked-out branch of the repository at dir to the same
@@ -40,9 +59,9 @@ func CommitStaged(dir, msg string) error {
 // password to be typed, and errors never show the credentials origin's URL
 // may hold. Cancelling ctx stops git.
 func Push(ctx context.Context, dir string) error {
-	branch, err := Run(dir, "symbolic-ref", "--quiet", "--short", "HEAD")
+	branch, err := Branch(dir)
 	if err != nil {
-		return errors.New("no branch is checked out, so there is nothing to push")
+		return err
 	}
 	ref := "refs/heads/" + branch
 	cmd := exec.CommandContext(ctx, "git", Args(dir, "push", "--force-with-lease", "--quiet", "origin", ref+":"+ref)...)

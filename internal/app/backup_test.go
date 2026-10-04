@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/spicy-lemonade/salt/internal/check"
+	"github.com/spicy-lemonade/salt/internal/gitx"
 	"github.com/spicy-lemonade/salt/internal/preset"
 	"github.com/spicy-lemonade/salt/internal/prune"
 	"github.com/spicy-lemonade/salt/internal/seal"
@@ -163,6 +164,8 @@ func TestBackupRefusesBeforeSealing(t *testing.T) {
 				e.t.Fatal(err)
 			}
 		}, "must not contain each other"},
+		"detached": {func(e *testEnv, _ string) { e.git.branchErr = gitx.ErrDetached },
+			"no branch is checked out"},
 		"not a salt repo": {func(e *testEnv, _ string) { e.root = e.t.TempDir() },
 			"not a salt repository"},
 	} {

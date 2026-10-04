@@ -84,6 +84,7 @@ type fakeGit struct {
 	stageErr  error
 	commitErr error
 	push      func(ctx context.Context) error
+	branchErr error
 }
 
 func (f *fakeGit) HookPath(string) (string, error) { return f.hook, nil }
@@ -117,12 +118,14 @@ func (f *fakeGit) Clone(ctx context.Context, url, dir string) error {
 	return f.clone(ctx, dir)
 }
 
+func (f *fakeGit) Branch(string) (string, error) { return "main", f.branchErr }
+
 func (f *fakeGit) Stage(string) error {
 	f.calls = append(f.calls, "stage")
 	return f.stageErr
 }
 
-func (f *fakeGit) Commit(_, msg string) error {
+func (f *fakeGit) Commit(_ context.Context, _, msg string) error {
 	f.calls = append(f.calls, "commit "+msg)
 	return f.commitErr
 }

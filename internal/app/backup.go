@@ -41,6 +41,10 @@ func (a *App) Backup(o BackupOptions) error {
 	if a.Git.Remote(r.Root) == "" {
 		return fmt.Errorf("%s has no remote named origin to push the backup to. Add one with `git remote add origin URL`", a.short(r.Root))
 	}
+	// A commit with no branch checked out would be left behind.
+	if _, err := a.Git.Branch(r.Root); err != nil {
+		return fmt.Errorf("%s: %w", a.short(r.Root), err)
+	}
 	found, err := preset.Env{Getenv: a.Getenv, Home: a.Home}.Gather(o.Presets, r.Root, a.short)
 	if err != nil {
 		return err
@@ -71,7 +75,7 @@ func (a *App) Backup(o BackupOptions) error {
 	if err := a.Check(r.Root); err != nil {
 		return err
 	}
-	if err := a.Git.Commit(r.Root, backupMessage); err != nil {
+	if err := a.Git.Commit(ctx, r.Root, backupMessage); err != nil {
 		return fmt.Errorf("committing the backup: %w", err)
 	}
 	_, err = a.Git.Prune(r.Root, o.KeepDays)
