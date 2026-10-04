@@ -242,8 +242,7 @@ func TestSealDatabaseSourceClash(t *testing.T) {
 }
 
 // Two databases with the same name are both backed up and restored when one
-// is given another name, also inside a source folder beside other files, or
-// under a name that differs from another only by case.
+// is given another name, also inside a source folder beside other files.
 func TestSealNamedDatabases(t *testing.T) {
 	e, fc, src, db := sqliteEnv(t)
 	os.MkdirAll(filepath.Join(src, "agent2"), 0o755)
@@ -256,11 +255,8 @@ func TestSealNamedDatabases(t *testing.T) {
 		"agent2/memory.db":    "SQLite format 3\x00other memories",
 		"agent2/SOUL.md":      "be brave",
 		"copies/again/one.db": "SQLite format 3\x00memories",
-		"Memory.DB":           "SQLite format 3\x00other memories",
-		"AGENT2/memory.db":    "SQLite format 3\x00memories",
 	}
-	dbs := []source.Database{fc.db(db), named(t, fc.db(other), "agent2/memory.db"), named(t, fc.db(db), "copies/again/one.db"),
-		named(t, fc.db(other), "Memory.DB"), named(t, fc.db(db), "AGENT2/memory.db")}
+	dbs := []source.Database{fc.db(db), named(t, fc.db(other), "agent2/memory.db"), named(t, fc.db(db), "copies/again/one.db")}
 	if err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: dbs}); err != nil {
 		t.Fatal(err)
 	}
@@ -390,6 +386,50 @@ func TestSealUnchangedDumpIsReused(t *testing.T) {
 	fi, err := os.Stat(filepath.Join(dest, "memory.db"))
 	if err != nil || fi.ModTime().Before(before) {
 		t.Fatalf("restored dump: %v, %v; want dated when restored", fi, err)
+	}
+	assertNoCopiesLeft(t, fc)
+}
+
+// Names that differ only by case are two names in a repo with encrypted
+// paths, so both databases are sealed. With --plain-paths each name is also
+// a file name in the repo, which macOS and Windows would not tell apart, so
+// they are refused before any copy is made, or, against a source file, once
+// seal reads the source, saying why. Two files in folders whose names differ
+// only by case are not refused, since they keep their own names.
+func TestSealDatabaseNamesDifferingByCase(t *testing.T) {
+	e, fc, src, db := sqliteEnv(t)
+	os.MkdirAll(filepath.Join(src, "agent2"), 0o755)
+	os.WriteFile(filepath.Join(src, "agent2", "SOUL.md"), []byte("be brave"), 0o644)
+	dbs := []source.Database{fc.db(db), named(t, fc.db(db), "Memory.DB"), named(t, fc.db(db), "AGENT2/memory.db")}
+	if err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: dbs}); err != nil {
+		t.Fatalf("encrypted paths: %v", err)
+	}
+	if !strings.Contains(e.ui.out.String(), "sealed 4 files") {
+		t.Fatalf("output = %q", e.ui.out.String())
+	}
+
+	plain := newEnv(t)
+	plain.ui.answer = phraseAnswers(0)
+	if err := plain.app.Init(InitOptions{Repo: plain.root, PlainPaths: true}); err != nil {
+		t.Fatal(err)
+	}
+	fc = &fakeCopy{}
+	err := plain.app.Seal(SealOptions{Src: src, Repo: plain.root, Databases: []source.Database{fc.db(db), named(t, fc.db(db), "Memory.DB")}})
+	if err == nil || !strings.Contains(err.Error(), "would be backed up as memory.db and Memory.DB, which clash because they differ only by case, and with --plain-paths the repo would keep them as one file on macOS and Windows. Give one of them another name with --name NAME before its --fake") {
+		t.Fatalf("plain paths, two databases: %v", err)
+	}
+	if len(fc.made) != 0 {
+		t.Fatalf("copies made before refusing: %v", fc.made)
+	}
+	err = plain.app.Seal(SealOptions{Src: src, Repo: plain.root, Databases: []source.Database{named(t, fc.db(db), "Agent2/soul.md")}})
+	if !errors.Is(err, seal.ErrDuplicatePath) || !strings.Contains(err.Error(), "agent2/SOUL.md and Agent2/soul.md differ only by case") ||
+		!strings.Contains(err.Error(), "Give the database another name with --name NAME before its option") {
+		t.Fatalf("plain paths, source file: %v", err)
+	}
+	// Files with their own names in folders that differ only by case are
+	// still two files, which macOS and Windows keep in one folder.
+	if err := plain.app.Seal(SealOptions{Src: src, Repo: plain.root, Databases: []source.Database{named(t, fc.db(db), "AGENT2/memory.db")}}); err != nil {
+		t.Fatalf("plain paths, beside a source file: %v", err)
 	}
 	assertNoCopiesLeft(t, fc)
 }

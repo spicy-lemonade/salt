@@ -498,12 +498,19 @@ option.
 Two names clash when they are the same, or when one is a folder above the
 other, since a file cannot also be a folder. Names are compared exactly,
 case included, as salt keeps every name as it was given: `state.db` and
-`State.db` are two names, and both are backed up. Two
+`State.db` are two names, and both are backed up. macOS and Windows usually
+ignore case, so such a backup restores in full only where case counts, such
+as Linux; elsewhere restore refuses rather than write one file over the
+other. With `--plain-paths` each name is also a file name in the repo, which
+macOS and Windows would keep as one file, silently losing one of them, and
+the repo may be cloned onto either. So there, names that differ only by case
+clash too, and the message says so. Two files in folders whose names differ
+only by case keep their own names and do not clash. Two
 databases whose names clash are refused before any copy is made, since a dump
 can take a long time, and the message names both and points to `--name`. A
 name that clashes with a file or folder in SRC is only known once salt reads
 SRC, so that clash is refused after the copies are made, which are then
-removed, with the same advice. `seal.Clash` holds the rule for both checks.
+removed, with the same advice. `seal.ClashRule` gives the rule for both checks.
 
 The backup gets the live database file's permissions and last-modified date.
 They are read before the copy, because the copy can change them: after a

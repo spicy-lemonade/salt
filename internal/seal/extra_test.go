@@ -2,6 +2,7 @@ package seal
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,9 +120,23 @@ func TestSealExtraRefusesClashes(t *testing.T) {
 	}
 }
 
-// Names are compared exactly, case included: an extra file whose path
-// differs from a source file or folder, or another extra file, only by case
-// is sealed and restores beside it.
+// caseSensitive reports whether the file system holding dir tells names
+// apart by case. macOS and Windows usually do not.
+func caseSensitive(t *testing.T, dir string) bool {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "case"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(filepath.Join(dir, "case"))
+	_, err := os.Stat(filepath.Join(dir, "CASE"))
+	return errors.Is(err, fs.ErrNotExist)
+}
+
+// With encrypted paths, names are compared exactly, case included: an extra
+// file whose path differs from a source file or folder, or another extra
+// file, only by case is sealed beside it. It restores beside it where the
+// file system tells the names apart, and elsewhere restore refuses rather
+// than write one over the other.
 func TestSealExtraKeepsCase(t *testing.T) {
 	f := newFixture(t, true)
 	x := func(rel, content string) Extra {
@@ -135,7 +150,30 @@ func TestSealExtraKeepsCase(t *testing.T) {
 	if _, err := f.sealExtra(extra...); err != nil {
 		t.Fatal(err)
 	}
-	dest := f.restore(RestoreOptions{})
+	ix, err := ReadIndex(f.root, f.ids(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed := map[string]bool{}
+	for _, e := range ix.Entries {
+		sealed[e.Path] = true
+	}
+	for _, rel := range []string{"soul.md", "SOUL.md", "MEMORIES/state.db", "memories/USER.md", "state.db", "State.DB"} {
+		if !sealed[rel] {
+			t.Errorf("%s is not in the index", rel)
+		}
+	}
+	dest := filepath.Join(t.TempDir(), "restored")
+	_, err = Restore(f.root, f.ids(), dest, RestoreOptions{})
+	if !caseSensitive(t, filepath.Dir(dest)) {
+		if !errors.Is(err, fs.ErrExist) {
+			t.Fatalf("restore onto a file system that ignores case: %v, want it refused", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
 	for rel, content := range want {
 		if b, err := os.ReadFile(filepath.Join(dest, rel)); err != nil || string(b) != content {
 			t.Errorf("restored %s = %q, %v; want %q", rel, b, err, content)
@@ -143,6 +181,35 @@ func TestSealExtraKeepsCase(t *testing.T) {
 	}
 	if b, err := os.ReadFile(filepath.Join(dest, "SOUL.md")); err != nil || string(b) != "be kind\n" {
 		t.Errorf("restored SOUL.md = %q, %v", b, err)
+	}
+}
+
+// With plain paths, each path is also a file name in the repo, which macOS
+// and Windows would not tell apart by case, so an extra file whose path
+// differs from another only by case is refused, saying why. Nothing is
+// written to the repo.
+func TestSealExtraPlainPathsRefusesCase(t *testing.T) {
+	f := newFixture(t, false)
+	copy := extraCopy(t, "SQLite format 3\x00")
+	x := func(rel string) Extra { return Extra{Rel: rel, Path: copy, Mode: 0o644} }
+	for want, extra := range map[string][]Extra{
+		"SOUL.md and soul.md differ only by case":          {x("soul.md")},
+		"memories and MEMORIES differ only by case":        {x("MEMORIES")},
+		"SOUL.md and Soul.md/state.db differ only by case": {x("Soul.md/state.db")},
+		"state.db and State.DB differ only by case":        {x("state.db"), x("State.DB")},
+		"memories and Memorie\u017f differ only by case":   {x("Memorie\u017f")},
+	} {
+		_, err := f.sealExtra(extra...)
+		if !errors.Is(err, ErrDuplicatePath) || !strings.Contains(err.Error(), want+", and with --plain-paths the repo would keep them as one file on macOS and Windows") {
+			t.Errorf("%v: %v", extra, err)
+		}
+	}
+	// An exact clash keeps the plain message.
+	if _, err := f.sealExtra(x("SOUL.md")); err == nil || err.Error() != ErrDuplicatePath.Error()+": SOUL.md" {
+		t.Errorf("exact clash: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(f.root, "index.age")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused seal wrote the index: %v", err)
 	}
 }
 
@@ -156,31 +223,42 @@ func TestSealExtraMissingFile(t *testing.T) {
 }
 
 // Two paths clash when they are the same or one is a folder above the
-// other, compared exactly, case included. Paths that differ only by case,
-// only share a folder, or only share a beginning do not clash.
+// other. Clash, the rule with encrypted paths, compares them exactly, case
+// included. With plain paths, case is ignored, part by part, also for letters
+// whose length in bytes changes when folded. Paths that only share a folder,
+// or a beginning, never clash.
 func TestClash(t *testing.T) {
+	plain := ClashRule(false)
 	for _, tc := range []struct {
-		a, b  string
-		clash bool
+		a, b         string
+		exact, folds bool
 	}{
-		{"state.db", "state.db", true},
-		{"agent", "agent/state.db", true},
-		{"a/b/c.db", "a/b", true},
-		{"state.db", "State.DB", false},
-		{"Agent/state.db", "agent", false},
-		{"a/b/c.db", "A/B", false},
-		// The Kelvin sign and long s are not k and s.
-		{"\u212a.db", "k.db", false},
-		{"\u017ftate.db", "state.db", false},
-		{"agent/state.db", "agent/SOUL.md", false},
-		{"agent", "agent2/state.db", false},
-		{"state.db", "state.db2", false},
-		{"state", "state.db", false},
-		{"a.db", "b.db", false},
+		{"state.db", "state.db", true, true},
+		{"agent", "agent/state.db", true, true},
+		{"a/b/c.db", "a/b", true, true},
+		{"state.db", "State.DB", false, true},
+		{"Agent/state.db", "agent", false, true},
+		{"a/b/c.db", "A/B", false, true},
+		// The Kelvin sign (3 bytes) folds to k (1 byte), and long s to s.
+		{"\u212a.db", "k.db", false, true},
+		{"\u212a/x.db", "k", false, true},
+		{"\u017ftate.db", "State.db", false, true},
+		{"\u212a", "kk/x.db", false, false},
+		{"agent/state.db", "agent/SOUL.md", false, false},
+		{"agent", "agent2/state.db", false, false},
+		{"state.db", "state.db2", false, false},
+		{"state", "state.db", false, false},
+		{"a.db", "b.db", false, false},
 	} {
 		for _, p := range [][2]string{{tc.a, tc.b}, {tc.b, tc.a}} {
-			if got := Clash(p[0], p[1]); got != tc.clash {
-				t.Errorf("Clash(%q, %q) = %v, want %v", p[0], p[1], got, tc.clash)
+			if got := Clash(p[0], p[1]); got != tc.exact {
+				t.Errorf("Clash(%q, %q) = %v, want %v", p[0], p[1], got, tc.exact)
+			}
+			if got := ClashRule(true)(p[0], p[1]); got != tc.exact {
+				t.Errorf("ClashRule(true)(%q, %q) = %v, want %v", p[0], p[1], got, tc.exact)
+			}
+			if got := plain(p[0], p[1]); got != tc.folds {
+				t.Errorf("ClashRule(false)(%q, %q) = %v, want %v", p[0], p[1], got, tc.folds)
 			}
 		}
 	}

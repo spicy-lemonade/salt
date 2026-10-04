@@ -127,7 +127,7 @@ func (a *App) Seal(o SealOptions) error {
 	if err != nil {
 		return fmt.Errorf("reading the signing key: %w", err)
 	}
-	extra, cleanup, err := a.copyDatabases(o.Context, r.Root, o.Databases)
+	extra, cleanup, err := a.copyDatabases(o.Context, r, o.Databases)
 	if err != nil {
 		return err
 	}
@@ -161,16 +161,17 @@ func (a *App) Seal(o SealOptions) error {
 // copyDatabases makes a safe copy of each live database in a new private
 // temporary folder, and returns them as files to seal. cleanup removes the
 // folder.
-func (a *App) copyDatabases(ctx context.Context, repoRoot string, dbs []source.Database) (extra []seal.Extra, cleanup func(), err error) {
+func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Database) (extra []seal.Extra, cleanup func(), err error) {
 	if len(dbs) == 0 {
 		return nil, func() {}, nil
 	}
 	// Two databases whose names clash are refused before any copy is made,
 	// since a copy can take a long time. A clash with a source file is only
 	// known once seal reads the source.
+	clashes := seal.ClashRule(r.Format.EncryptPaths)
 	for i, db := range dbs {
 		for _, prev := range dbs[:i] {
-			if !seal.Clash(prev.Name(), db.Name()) {
+			if !clashes(prev.Name(), db.Name()) {
 				continue
 			}
 			if prev.String() == db.String() && prev.Name() == db.Name() {
@@ -180,14 +181,18 @@ func (a *App) copyDatabases(ctx context.Context, repoRoot string, dbs []source.D
 				return nil, nil, fmt.Errorf("the databases %s and %s would both be backed up as %s. Give one of them another name with --name NAME before its %s",
 					a.short(prev.String()), a.short(db.String()), db.Name(), db.Flag())
 			}
-			return nil, nil, fmt.Errorf("the databases %s and %s would be backed up as %s and %s, which clash because a file cannot also be a folder. Give one of them another name with --name NAME before its %s",
-				a.short(prev.String()), a.short(db.String()), prev.Name(), db.Name(), db.Flag())
+			why := "a file cannot also be a folder"
+			if !seal.Clash(prev.Name(), db.Name()) {
+				why = "they differ only by case, and with --plain-paths the repo would keep them as one file on macOS and Windows"
+			}
+			return nil, nil, fmt.Errorf("the databases %s and %s would be backed up as %s and %s, which clash because %s. Give one of them another name with --name NAME before its %s",
+				a.short(prev.String()), a.short(db.String()), prev.Name(), db.Name(), why, db.Flag())
 		}
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	key, err := seal.CopyKey(a.CacheDir, repoRoot)
+	key, err := seal.CopyKey(a.CacheDir, r.Root)
 	if err != nil {
 		return nil, nil, err
 	}
