@@ -69,3 +69,10 @@ func TestError(t *testing.T) {
 		t.Fatal("Error does not unwrap to its cause")
 	}
 }
+
+// Only a program's exit can be from a signal; an error starting it is not.
+func TestStoppedBySignalNeedsAnExit(t *testing.T) {
+	if stoppedBySignal(errors.New("fork/exec x: permission denied")) {
+		t.Fatal("an error starting a program counted as stopped by a signal")
+	}
+}

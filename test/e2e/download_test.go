@@ -226,3 +226,19 @@ func TestRestoreFromURLCtrlC(t *testing.T) {
 	}
 	assertInterrupted(t, e, cmd, out)
 }
+
+// Without git, a restore from a URL says what is missing and leaves nothing
+// behind.
+func TestRestoreFromURLWithoutGit(t *testing.T) {
+	e := newEnv(t)
+	dest := filepath.Join(t.TempDir(), "restored")
+	// Only salt's own folder is on PATH, so git cannot be found.
+	out, code := e.with("PATH="+filepath.Dir(e.bin)).run(e.home, "salt", "restore", "https://example.test/backup.git", "--to", dest)
+	if code != 1 || !strings.Contains(out, "salt: downloading the backup: salt needs the git program, which is not installed or not on PATH\n") {
+		t.Fatalf("restore without git: exit %d\n%s", code, out)
+	}
+	if _, err := os.Lstat(dest); !os.IsNotExist(err) {
+		t.Fatalf("restore without git created %s: %v", dest, err)
+	}
+	noDownloadsLeft(t, e)
+}
