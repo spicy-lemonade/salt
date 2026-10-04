@@ -320,3 +320,18 @@ func TestSealOnlyExtra(t *testing.T) {
 		t.Fatalf("seal over the limit: %v", err)
 	}
 }
+
+// FirstClash names the first path that clashes with one before it, and
+// what it clashes with, by the rule for the repo's paths.
+func TestFirstClash(t *testing.T) {
+	rels := []string{"a/b.md", "c.md", "A/B.md", "a"}
+	if rel, other, ok := FirstClash(rels, false); !ok || rel != "a" || other != "a" {
+		t.Errorf("exact: %q %q %v", rel, other, ok)
+	}
+	if rel, other, ok := FirstClash(rels, true); !ok || rel != "A/B.md" || other != "a/b.md" {
+		t.Errorf("folded: %q %q %v", rel, other, ok)
+	}
+	if _, _, ok := FirstClash([]string{"a/b", "a/c", "b"}, true); ok {
+		t.Error("paths sharing a folder clashed")
+	}
+}

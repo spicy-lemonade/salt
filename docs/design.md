@@ -634,9 +634,13 @@ copy. A symlink inside a folder is not followed or backed up, and salt
 prints one line about it. A `from` that is itself a symlink is followed.
 
 A place found twice, such as a folder named both by a variable and by its
-default, or a file inside a folder already found, is backed up once, under
-the first path. A place that contains the backup repo, or is inside it, is
-refused, comparing real paths with symlinks followed.
+default, or by two presets, is backed up once, under the first path. A place
+inside another, such as one preset's data folder inside another preset's
+folder, is backed up under its own path with its own preset's rules, and the
+folder around it leaves it out. So nothing is backed up twice, whatever order
+the presets are given in. Two places backed up at the same path are refused
+before anything is copied. A place that contains the backup repo, or is
+inside it, is refused, comparing real paths with symlinks followed.
 
 The `mnemosyne` preset covers Mnemosyne's data folder (its main database,
 memory banks and shared database), its `config.yaml`, and its attached files

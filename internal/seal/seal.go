@@ -424,6 +424,20 @@ func addExtra(items []item, extra []Extra, foldCase bool) ([]item, error) {
 	return items, nil
 }
 
+// FirstClash returns the first cleaned slash path in rels that clashes with
+// one before it, by ClashRule(!foldCase), and the path or folder it clashes
+// with.
+func FirstClash(rels []string, foldCase bool) (rel, other string, ok bool) {
+	t := newTaken(foldCase)
+	for _, rel := range rels {
+		if other, ok := t.clash(rel); ok {
+			return rel, other, true
+		}
+		t.add(rel)
+	}
+	return "", "", false
+}
+
 // taken holds the paths in a backup, and every folder above them, by key, so
 // a clash is found by lookup. Each key maps to the path or folder as given.
 type taken struct {

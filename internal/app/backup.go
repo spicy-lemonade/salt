@@ -57,6 +57,11 @@ func (a *App) Backup(o BackupOptions) error {
 			return err
 		}
 	}
+	// Checked before any database is copied, with advice that fits presets:
+	// the paths come from them, not from the person.
+	if rel, other, ok := seal.FirstClash(found.Paths(), !r.Format.EncryptPaths); ok {
+		return fmt.Errorf("%w: the presets would back up %s and %s, which cannot both be in one backup. This is a problem in the presets, so please report it", seal.ErrDuplicatePath, other, rel)
+	}
 	for _, l := range found.LeftOut {
 		a.UI.Printf("salt: left %s out of the backup because %s. Keep secrets in environment variables so the file can be backed up\n", a.short(l.Path), l.Why)
 	}

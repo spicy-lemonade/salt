@@ -43,6 +43,18 @@ type Found struct {
 	Roots []string
 }
 
+// Paths lists the slash path every file and database is backed up under.
+func (f *Found) Paths() []string {
+	paths := make([]string, 0, len(f.Files)+len(f.Databases))
+	for _, x := range f.Files {
+		paths = append(paths, x.Rel)
+	}
+	for _, d := range f.Databases {
+		paths = append(paths, d.Name())
+	}
+	return paths
+}
+
 // LeftOut is a file left out of the backup, and why.
 type LeftOut struct {
 	Path, Why string
@@ -50,13 +62,16 @@ type LeftOut struct {
 
 // Gather finds everything the presets back up on this machine. show is how
 // paths are written in messages. A preset that finds nothing is an error.
-// A place found twice, such as a folder named by two paths, is backed up
-// only the first time.
+// A place found twice, such as a folder named by two paths or by two
+// presets, is backed up only under the first path. A place inside another
+// is backed up under its own path, and the outer one leaves it out, so
+// nothing is backed up twice whatever order the presets are given in.
 func (e Env) Gather(presets []*Preset, show func(string) string) (*Found, error) {
 	f := &Found{}
-	var taken []string
+	byReal := map[string]*spot{}
+	var spots []*spot
+	lookedIn := map[*Preset][]string{}
 	for _, p := range presets {
-		before := len(f.Files) + len(f.Databases)
 		var looked []string
 		for _, x := range p.Paths {
 			if where, ok := e.expand(x.From); ok {
@@ -71,30 +86,58 @@ func (e Env) Gather(presets []*Preset, show func(string) string) (*Found, error)
 				if err != nil {
 					return nil, err
 				}
-				if slices.ContainsFunc(taken, func(t string) bool { return seal.Within(real, t) }) {
+				if s, ok := byReal[real]; ok {
+					s.users = append(s.users, p)
 					continue
 				}
-				taken = append(taken, real)
-				f.Roots = append(f.Roots, real)
-				if err := f.walk(p, real, pl, show); err != nil {
-					return nil, err
-				}
+				s := &spot{preset: p, place: pl, real: real, users: []*Preset{p}}
+				byReal[real] = s
+				spots = append(spots, s)
 			}
 		}
-		if len(f.Files)+len(f.Databases) == before {
-			return nil, fmt.Errorf("%w for the %s preset. It looks in %s", ErrNothing, p.Name, strings.Join(looked, ", "))
+		lookedIn[p] = looked
+	}
+	for _, s := range spots {
+		f.Roots = append(f.Roots, s.real)
+		before := len(f.Files) + len(f.Databases)
+		if err := f.walk(s.preset, s.real, s.place, byReal, show); err != nil {
+			return nil, err
+		}
+		s.found = len(f.Files) + len(f.Databases) - before
+	}
+	for _, p := range presets {
+		if !slices.ContainsFunc(spots, func(s *spot) bool { return s.found > 0 && slices.Contains(s.users, p) }) {
+			return nil, fmt.Errorf("%w for the %s preset. It looks in %s", ErrNothing, p.Name, strings.Join(lookedIn[p], ", "))
 		}
 	}
 	return f, nil
 }
 
+// spot is a place a preset found, once symlinks are followed. users lists
+// every preset that found it; it is walked once, with preset's rules.
+type spot struct {
+	preset *Preset
+	place  Place
+	real   string
+	users  []*Preset
+	found  int // files and databases its walk added
+}
+
 // walk adds the file or folder pl, which is at real once symlinks are
-// followed, using p's rules. Paths are given as pl names them.
-func (f *Found) walk(p *Preset, real string, pl Place, show func(string) string) error {
+// followed, using p's rules. Paths are given as pl names them. A place in
+// spots found inside it is left to its own walk, so it is backed up once,
+// under its own path and with its own preset's rules.
+func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, show func(string) string) error {
 	databases := map[string]bool{}
 	return filepath.WalkDir(real, func(walked string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if _, ok := spots[walked]; ok && walked != real {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		sub, err := filepath.Rel(real, walked)
 		if err != nil {

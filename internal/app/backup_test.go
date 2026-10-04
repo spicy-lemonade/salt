@@ -12,6 +12,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/preset"
 	"github.com/spicy-lemonade/salt/internal/prune"
+	"github.com/spicy-lemonade/salt/internal/seal"
 )
 
 // backupEnv is a set-up backup repo and a home folder holding a tool's files,
@@ -163,6 +164,22 @@ func TestBackupRefusesBeforeSealing(t *testing.T) {
 				t.Fatalf("git was asked %v", e.git.calls)
 			}
 		})
+	}
+}
+
+// Two places the presets back up at the same path are refused before
+// anything is sealed, blaming the presets, not the person.
+func TestBackupRefusesClashingPaths(t *testing.T) {
+	e, _, _ := backupEnv(t)
+	p, err := preset.Parse("t", []byte(`{"name": "t", "paths": [
+		{"from": "~/tool/notes.md", "to": "same"},
+		{"from": "~/tool/settings.yaml", "to": "same"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = e.backup([]*preset.Preset{p})
+	if !errors.Is(err, seal.ErrDuplicatePath) || !strings.Contains(err.Error(), "the presets would back up same and same") || len(e.git.calls) != 0 {
+		t.Fatalf("backup = %v, git calls %v", err, e.git.calls)
 	}
 }
 

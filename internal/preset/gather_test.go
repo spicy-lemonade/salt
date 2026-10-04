@@ -116,10 +116,12 @@ func TestGather(t *testing.T) {
 }
 
 // A place found twice, as when a variable names a default folder, is backed
-// up only under the first path, and so is a place inside one already found.
+// up only under the first path. A place inside another is backed up under
+// its own path, and the folder around it leaves it out.
 func TestGatherTakesEachPlaceOnce(t *testing.T) {
 	home := t.TempDir()
 	write(t, filepath.Join(home, "data", "a.md"), "a")
+	write(t, filepath.Join(home, "data", "b.md"), "b")
 	p, err := Parse("t", []byte(`{"name": "t", "paths": [
 		{"from": "~/data", "to": "first"},
 		{"from": "${DATA}", "to": "second"},
@@ -133,7 +135,49 @@ func TestGatherTakesEachPlaceOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files, _ := rels(f); !slices.Equal(files, []string{"first/a.md"}) {
+	if files, _ := rels(f); !slices.Equal(files, []string{"first/b.md", "third.md"}) {
+		t.Fatalf("files = %v", files)
+	}
+}
+
+// Two presets whose places overlap back each file up once, whatever order
+// they are given in, each with its own rules, and neither finds nothing.
+func TestGatherOverlappingPresets(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, "agent", "notes.md"), "notes")
+	write(t, filepath.Join(home, "agent", "memory", "m.md"), "memory")
+	write(t, filepath.Join(home, "agent", "memory", "config.yaml"), "api_key: sk-1")
+	outer, err := Parse("outer", []byte(`{"name": "outer", "paths": [{"from": "~/agent", "to": "agent"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := Parse("inner", []byte(`{"name": "inner", "paths": [{"from": "~/agent/memory", "to": "agent/memory"}],
+		"secrets": [{"files": ["config.yaml"], "keys": ["api_key"]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, order := range [][]*Preset{{outer, inner}, {inner, outer}} {
+		f, err := envOf(home, nil).Gather(order, plain)
+		if err != nil {
+			t.Fatalf("%s first: %v", order[0].Name, err)
+		}
+		if files, _ := rels(f); !slices.Equal(files, []string{"agent/memory/m.md", "agent/notes.md"}) {
+			t.Errorf("%s first: files = %v", order[0].Name, files)
+		}
+		if len(f.LeftOut) != 1 {
+			t.Errorf("%s first: the inner preset's secrets rule was not used: %+v", order[0].Name, f.LeftOut)
+		}
+	}
+	// Two presets naming the same place both find it.
+	same, err := Parse("same", []byte(`{"name": "same", "paths": [{"from": "~/agent", "to": "same"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := envOf(home, nil).Gather([]*Preset{outer, same}, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files, _ := rels(f); len(files) != 3 || !strings.HasPrefix(files[0], "agent/") {
 		t.Fatalf("files = %v", files)
 	}
 }
