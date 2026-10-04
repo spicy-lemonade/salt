@@ -261,11 +261,44 @@ func TestBackupInterruptedPush(t *testing.T) {
 	if !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "committed but not pushed") {
 		t.Fatalf("backup = %v", err)
 	}
-	// A context cancelled before the backup stops it after sealing, before
-	// git is asked anything.
+	// A context cancelled before the backup stops it before anything is
+	// sealed or git is asked anything.
 	e.git.calls = nil
-	if err := e.app.Backup(BackupOptions{Repo: e.root, Presets: presets, KeepDays: 1, Context: ctx}); !errors.Is(err, ErrInterrupted) || len(e.git.calls) != 0 {
+	e.git.storageCalls = 0
+	if err := e.app.Backup(BackupOptions{Repo: e.root, Presets: presets, KeepDays: 1, Context: ctx}); !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "nothing was backed up") || len(e.git.calls) != 0 {
 		t.Fatalf("backup = %v, calls %v", err, e.git.calls)
+	}
+}
+
+// A signal during a git step stops the backup before the next one: above
+// all, prune never rewrites history after Ctrl-C.
+func TestBackupStopsBetweenSteps(t *testing.T) {
+	for name, tc := range map[string]struct {
+		during func(g *fakeGit, cancel func())
+		want   string
+		calls  []string
+	}{
+		"stage": {func(g *fakeGit, cancel func()) { g.onStage = cancel },
+			"sealed and staged but not committed", []string{"stage"}},
+		"commit": {func(g *fakeGit, cancel func()) {
+			g.onCommit = func() error { cancel(); return context.Canceled }
+		}, "sealed and staged but not committed", []string{"stage", "commit salt backup"}},
+		"commit done": {func(g *fakeGit, cancel func()) { g.onCommit = func() error { cancel(); return nil } },
+			"old backups were not dropped and it was not pushed", []string{"stage", "commit salt backup"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, _, presets := backupEnv(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tc.during(e.git, cancel)
+			err := e.app.Backup(BackupOptions{Repo: e.root, Presets: presets, KeepDays: 1, Context: ctx})
+			if !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("backup = %v", err)
+			}
+			if !slices.Equal(e.git.calls, tc.calls) || len(e.git.pruneDays) != 0 {
+				t.Fatalf("git calls %v, pruned %v", e.git.calls, e.git.pruneDays)
+			}
+		})
 	}
 }
 

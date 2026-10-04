@@ -72,6 +72,17 @@ func (a *App) Backup(o BackupOptions) error {
 	for _, s := range found.Skipped {
 		a.UI.Printf("salt: skipped %s (not a file)\n", s)
 	}
+	// A signal stops the backup before the next step that changes the repo,
+	// saying how far it got. Prune most of all must not start after one.
+	stopped := func(done string) error {
+		if ctx.Err() != nil {
+			return fmt.Errorf("backup %w: %s", ErrInterrupted, done)
+		}
+		return nil
+	}
+	if err := stopped("nothing was backed up"); err != nil {
+		return err
+	}
 	so := SealOptions{Repo: o.Repo, Prune: true, Databases: found.Databases, Files: found.Files, Context: ctx}
 	if _, err := a.seal(r, signer, so); err != nil {
 		return err
@@ -83,8 +94,17 @@ func (a *App) Backup(o BackupOptions) error {
 	if err := a.Check(r.Root); err != nil {
 		return err
 	}
+	if err := stopped("the backup was sealed and staged but not committed"); err != nil {
+		return err
+	}
 	if err := a.Git.Commit(ctx, r.Root, backupMessage); err != nil {
+		if err := stopped("the backup was sealed and staged but not committed"); err != nil {
+			return err
+		}
 		return fmt.Errorf("committing the backup: %w", err)
+	}
+	if err := stopped("the backup was committed, but old backups were not dropped and it was not pushed"); err != nil {
+		return err
 	}
 	_, err = a.Git.Prune(r.Root, o.KeepDays)
 	if err := a.pruneCleanup(err); err != nil {

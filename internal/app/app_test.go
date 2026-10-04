@@ -89,6 +89,10 @@ type fakeGit struct {
 	// Push was given.
 	head  string
 	known [][]string
+	// onStage and onCommit run during Stage and Commit; onCommit's error
+	// is Commit's.
+	onStage  func()
+	onCommit func() error
 }
 
 func (f *fakeGit) HookPath(string) (string, error) { return f.hook, nil }
@@ -126,11 +130,17 @@ func (f *fakeGit) Branch(string) (string, error) { return "main", f.branchErr }
 
 func (f *fakeGit) Stage(string) error {
 	f.calls = append(f.calls, "stage")
+	if f.onStage != nil {
+		f.onStage()
+	}
 	return f.stageErr
 }
 
 func (f *fakeGit) Commit(_ context.Context, _, msg string) error {
 	f.calls = append(f.calls, "commit "+msg)
+	if f.onCommit != nil {
+		return f.onCommit()
+	}
 	return f.commitErr
 }
 

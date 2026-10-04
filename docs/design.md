@@ -598,7 +598,9 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
    a minute is stopped, and the whole push is stopped after 2 hours.
 
 A failure stops the steps that follow. A backup committed but not pushed is
-pushed by the next run. Ctrl-C or SIGTERM stops a database copy or the push.
+pushed by the next run. Ctrl-C or SIGTERM stops a database copy, the commit
+or the push, and the backup stops before its next step, so old backups are
+never dropped after one.
 
 ### Presets
 
