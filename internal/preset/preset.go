@@ -86,6 +86,23 @@ func Get(name string) (*Preset, error) {
 	return Parse(name, b)
 }
 
+// GetAll returns the built-in presets called names, in order. A name given
+// twice is refused, as is one no preset has.
+func GetAll(names []string) ([]*Preset, error) {
+	presets := make([]*Preset, 0, len(names))
+	for i, n := range names {
+		if slices.Contains(names[:i], n) {
+			return nil, fmt.Errorf("the preset %s is given twice. Give it once", n)
+		}
+		p, err := Get(n)
+		if err != nil {
+			return nil, err
+		}
+		presets = append(presets, p)
+	}
+	return presets, nil
+}
+
 // Parse reads the preset called name from its JSON and checks it.
 func Parse(name string, b []byte) (*Preset, error) {
 	var p Preset

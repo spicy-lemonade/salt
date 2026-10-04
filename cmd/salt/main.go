@@ -12,7 +12,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -296,16 +295,9 @@ func run(cmd string, args []string) error {
 		if len(names) == 0 {
 			return usageError{"backup needs at least one --preset NAME. Presets: " + strings.Join(preset.Names(), ", ")}
 		}
-		var presets []*preset.Preset
-		for i, n := range names {
-			if slices.Contains(names[:i], n) {
-				return usageError{fmt.Sprintf("backup: the preset %s is given twice. Give it once", n)}
-			}
-			p, err := preset.Get(n)
-			if err != nil {
-				return usageError{"backup: " + err.Error()}
-			}
-			presets = append(presets, p)
+		presets, err := preset.GetAll(names)
+		if err != nil {
+			return usageError{"backup: " + err.Error()}
 		}
 		ctx, stop := interruptible()
 		defer stop()

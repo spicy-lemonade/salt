@@ -190,7 +190,12 @@ func TestRunBackup(t *testing.T) {
 		t.Fatalf("unknown preset: %v", err)
 	}
 	var ue usageError
-	err = run("backup", []string{"--preset", preset.Names()[0], "--keep-days", "2", t.TempDir()})
+	first := preset.Names()[0]
+	err = run("backup", []string{"--preset", first, "--preset", first, "repo"})
+	if !errors.As(err, &ue) || !strings.Contains(err.Error(), "backup: the preset "+first+" is given twice") {
+		t.Fatalf("a preset given twice: %v", err)
+	}
+	err = run("backup", []string{"--preset", first, "--keep-days", "2", t.TempDir()})
 	if err == nil || errors.As(err, &ue) || !strings.Contains(err.Error(), "not a salt repository") {
 		t.Fatalf("backup: %v", err)
 	}

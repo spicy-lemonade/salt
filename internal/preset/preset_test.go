@@ -123,3 +123,27 @@ func TestPlaceOf(t *testing.T) {
 		t.Error("no presets back up nothing")
 	}
 }
+
+// GetAll returns the presets named, in order, and refuses a name given twice
+// or one no preset has.
+func TestGetAll(t *testing.T) {
+	names := Names()
+	got, err := GetAll(names)
+	if err != nil || len(got) != len(names) {
+		t.Fatalf("GetAll(%v) = %v, %v", names, got, err)
+	}
+	for i, p := range got {
+		if p.Name != names[i] {
+			t.Errorf("preset %d is %s, want %s", i, p.Name, names[i])
+		}
+	}
+	if _, err := GetAll([]string{names[0], names[0]}); err == nil || err.Error() != "the preset "+names[0]+" is given twice. Give it once" {
+		t.Errorf("twice: %v", err)
+	}
+	if _, err := GetAll([]string{names[0], "nope"}); !errors.Is(err, ErrUnknown) {
+		t.Errorf("unknown: %v", err)
+	}
+	if got, err := GetAll(nil); err != nil || len(got) != 0 {
+		t.Errorf("none: %v, %v", got, err)
+	}
+}

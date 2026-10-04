@@ -220,6 +220,7 @@ func (a *App) openToSeal(path string) (*repo.Repo, ed25519.PrivateKey, error) {
 }
 
 // seal copies o.Databases safely, then seals them, o.Src and o.Files into r.
+// The caller has already opened the repo as r, so o.Repo is ignored.
 func (a *App) seal(r *repo.Repo, signer ed25519.PrivateKey, o SealOptions) (*seal.Result, error) {
 	extra, cleanup, err := a.copyDatabases(o.Context, r, o.Databases, o.Live)
 	if err != nil {
