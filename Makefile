@@ -35,7 +35,7 @@ e2e:
 	@procs=$$(ps -U "$$(id -u)" | wc -l | tr -d ' '); \
 	ulimit -u $$((procs + $(E2E_EXTRA_PROCS))) && \
 	SALT_E2E=1 SALT_BIN="$(CURDIR)/bin/e2e/salt" GOCOVERDIR="$(CURDIR)/coverage-e2e" GOMEMLIMIT=1GiB \
-	go test -tags e2e -v -p 1 -count=1 -timeout 120s ./test/e2e/...
+	go test -tags e2e -p 1 -count=1 -timeout 120s ./test/e2e/...
 	go tool covdata textfmt -i=coverage-e2e -o coverage-e2e.out
 
 check: vet test e2e
