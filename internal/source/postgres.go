@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/spicy-lemonade/salt/internal/proc"
 )
 
 // maxHelp caps how much of pg_dump --help is read.
@@ -98,13 +100,13 @@ func (p *Postgres) Flag() string   { return p.flag }
 // when it is restored.
 func (p *Postgres) Copy(ctx context.Context, o CopyOptions) (Meta, error) {
 	// pg_dump --help says whether it has --restrict-key.
-	help := &limitedBuffer{max: maxHelp}
+	help := &proc.LimitedBuffer{Max: maxHelp}
 	cmd := exec.CommandContext(ctx, "pg_dump", "--help")
 	cmd.Stdout = help
-	if err := run(ctx, cmd); err != nil {
+	if err := proc.Run(ctx, cmd); err != nil {
 		return Meta{}, err
 	}
-	if err := run(ctx, pgDumpCommand(ctx, p, o, help.String())); err != nil {
+	if err := proc.Run(ctx, pgDumpCommand(ctx, p, o, help.String())); err != nil {
 		return Meta{}, err
 	}
 	return Meta{Mode: 0o600}, nil

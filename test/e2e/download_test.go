@@ -3,10 +3,15 @@
 package e2e
 
 import (
+	"errors"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // remoteBackup pushes two backups to a bare repo and has git fetch the
@@ -102,4 +107,72 @@ func TestRestoreFromURLFailures(t *testing.T) {
 		}
 		noDownloadsLeft(t, e)
 	}
+}
+
+// startStuckDownload starts salt restore from an https URL served by a
+// server that takes the connection and never answers, as one on a network
+// that has gone quiet does, and returns once git has connected. salt runs in
+// a process group of its own, which is killed when the test ends, with
+// anything git started.
+func startStuckDownload(t *testing.T, e *env) (*exec.Cmd, *strings.Builder) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	conns := make(chan net.Conn, 1)
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			conns <- c
+		}
+	}()
+	cmd := exec.Command(e.bin, "restore", "https://"+ln.Addr().String()+"/backup.git", "--to", filepath.Join(t.TempDir(), "restored"))
+	cmd.Dir = e.home
+	cmd.Env = e.vars
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	out := &strings.Builder{}
+	cmd.Stdout, cmd.Stderr = out, out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+	select {
+	case c := <-conns:
+		t.Cleanup(func() { c.Close() })
+	case <-time.After(10 * time.Second):
+		t.Fatalf("git never connected:\n%s", out)
+	}
+	return cmd, out
+}
+
+// assertInterrupted checks that cmd, a restore that was stopped, exits as
+// interrupted within 20 seconds and leaves no download behind.
+func assertInterrupted(t *testing.T, e *env, cmd *exec.Cmd, out *strings.Builder) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("salt did not stop")
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 130 || !strings.Contains(out.String(), "salt: restore interrupted") {
+		t.Fatalf("exit %v, want 130:\n%s", err, out)
+	}
+	noDownloadsLeft(t, e)
+}
+
+// SIGTERM reaches salt alone, so git is stopped but git-remote-https, which
+// git started, still holds git's error output open. salt must not wait for
+// it.
+func TestRestoreFromURLStopsAStuckDownload(t *testing.T) {
+	e := newEnv(t)
+	cmd, out := startStuckDownload(t, e)
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	assertInterrupted(t, e, cmd, out)
 }

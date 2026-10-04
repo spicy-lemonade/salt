@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/spicy-lemonade/salt/internal/proc"
 )
 
 func TestParseURL(t *testing.T) {
@@ -183,7 +185,7 @@ func TestPostgresCopyWithoutPgDump(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = db.Copy(context.Background(), CopyOptions{Dst: t.TempDir() + "/0", Key: "abc"})
-	if !errors.Is(err, ErrMissingProgram) || err.Error() != "salt needs the pg_dump program, which is not installed or not on PATH" {
+	if !errors.Is(err, proc.ErrMissingProgram) || err.Error() != "salt needs the pg_dump program, which is not installed or not on PATH" {
 		t.Fatalf("Copy: %v", err)
 	}
 }

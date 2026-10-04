@@ -1,14 +1,14 @@
 package gitx
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"errors"
-	"fmt"
 	"os/exec"
 	"regexp"
 	"strings"
+
+	"github.com/spicy-lemonade/salt/internal/proc"
 )
 
 // sshForm matches git's SSH form user@host:path, as GitHub shows it
@@ -63,24 +63,28 @@ func RedactURL(s string) string {
 func Clone(ctx context.Context, url, dir string) error {
 	// "--" stops a url starting with "-" from being read as an option.
 	cmd := exec.CommandContext(ctx, "git", Args(dir, "clone", "--depth", "1", "--single-branch", "--no-tags", "--quiet", "--", url, dir)...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	if errors.Is(err, exec.ErrNotFound) {
-		return errors.New("salt needs git to download a backup; install git and try again")
+	err := proc.Run(ctx, cmd)
+	var failed *proc.Error
+	if errors.As(err, &failed) {
+		failed.Program = "git clone " + RedactURL(url)
+		failed.Stderr = hideCredentials(failed.Stderr, url)
 	}
-	if err == nil {
-		return nil
+	return err
+}
+
+// hideCredentials removes the user name and password url may hold from git's
+// error output.
+func hideCredentials(out, url string) string {
+	u := userinfo(url)
+	if u == "" {
+		return out
 	}
-	out := strings.TrimSpace(stderr.String())
-	if u := userinfo(url); u != "" {
-		out = strings.ReplaceAll(out, u, "")
-		// The secret is the password, or the user name when there is none,
-		// since a token is often given in its place.
-		user, pass, _ := strings.Cut(strings.TrimSuffix(u, "@"), ":")
-		if secret := cmp.Or(pass, user); secret != "" {
-			out = strings.ReplaceAll(out, secret, "***")
-		}
+	out = strings.ReplaceAll(out, u, "")
+	// The secret is the password, or the user name when there is none,
+	// since a token is often given in its place.
+	user, pass, _ := strings.Cut(strings.TrimSuffix(u, "@"), ":")
+	if secret := cmp.Or(pass, user); secret != "" {
+		out = strings.ReplaceAll(out, secret, "***")
 	}
-	return fmt.Errorf("git clone %s: %w: %s", RedactURL(url), err, out)
+	return out
 }

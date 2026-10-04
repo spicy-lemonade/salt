@@ -398,8 +398,12 @@ start another until the machine runs out of memory. These rules prevent that:
    banned.
 2. Salt refuses to start inside another salt (`SALT_ACTIVE`).
 3. Every git command salt runs has git hooks switched off (`internal/gitx`).
-4. Only `internal/gitx` and `internal/source` may start other programs. Unit
-   tests never start any. `internal/rules` enforces rules 1 and 4.
+4. Only `internal/gitx`, `internal/source` and `internal/proc` may start other
+   programs. `internal/proc` runs the ones salt may stop part way (`git clone`,
+   `sqlite3` and `pg_dump`). It keeps at most 4 KiB of their error output and
+   waits at most 5 seconds for the output of one that was stopped, since a
+   program it started can hold that output open. Unit tests never start any.
+   `internal/rules` enforces rules 1 and 4.
 5. End-to-end tests run only through `make e2e`. It builds salt once, caps
    the number of processes, and keeps the tests away from the real keychain.
 6. At most 4 files are worked on at once, with a 512 MB soft memory limit.
