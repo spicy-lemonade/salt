@@ -58,7 +58,7 @@ func (a *App) openRepo(ctx context.Context, spec string) (r *repo.Repo, done fun
 	}
 	a.UI.Printf("salt: downloading the latest backup from %s\n", shown)
 	if err := a.Git.Clone(ctx, spec, tmp); err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 			err = errDownloadStopped
 		} else {
 			err = fmt.Errorf("downloading the backup: %w", err)

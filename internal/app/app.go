@@ -214,7 +214,7 @@ func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Data
 		if err != nil {
 			cleanup()
 			switch {
-			case ctx.Err() != nil:
+			case ctx.Err() != nil || errors.Is(err, context.Canceled):
 				return nil, nil, fmt.Errorf("seal %w: the database copies were removed and nothing was sealed", ErrInterrupted)
 			case errors.Is(err, fs.ErrNotExist):
 				return nil, nil, fmt.Errorf("the database %s does not exist; check the path given to %s", a.short(db.String()), db.Flag())

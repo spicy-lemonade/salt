@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -178,6 +179,36 @@ func TestRestoreFromURLStopsAStuckDownload(t *testing.T) {
 	e := newEnv(t)
 	cmd, out := startStuckDownload(t, e)
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	assertInterrupted(t, e, cmd, out)
+}
+
+// Ctrl-C reaches git as well as salt, and git can stop before salt has
+// cancelled the download. Here only git gets SIGINT, so salt learns of it
+// from git alone, and must still treat it as an interruption.
+func TestRestoreFromURLGitInterruptedFirst(t *testing.T) {
+	e := newEnv(t)
+	cmd, out := startStuckDownload(t, e)
+	pids := strings.Fields(e.must(e.home, "pgrep", "-P", strconv.Itoa(cmd.Process.Pid), "git"))
+	if len(pids) != 1 {
+		t.Fatalf("git processes under salt: %q", pids)
+	}
+	git, err := strconv.Atoi(pids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(git, syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	assertInterrupted(t, e, cmd, out)
+}
+
+// Ctrl-C in a terminal sends SIGINT to every program in its process group.
+func TestRestoreFromURLCtrlC(t *testing.T) {
+	e := newEnv(t)
+	cmd, out := startStuckDownload(t, e)
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
 	assertInterrupted(t, e, cmd, out)

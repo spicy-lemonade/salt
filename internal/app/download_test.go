@@ -125,6 +125,19 @@ func TestRestoreFromURLInterrupted(t *testing.T) {
 	noDownloadsLeft(t, e)
 }
 
+// Ctrl-C can stop git before salt cancels its context. git's
+// context.Canceled still counts as an interruption.
+func TestRestoreFromURLGitStoppedFirst(t *testing.T) {
+	e := remoteEnv(t)
+	e.git.clone = func(context.Context, string) error { return context.Canceled }
+	dest := filepath.Join(t.TempDir(), "restored")
+	err := e.app.Restore(RestoreOptions{Repo: backupURL, To: dest, Context: context.Background()})
+	if !errors.Is(err, ErrInterrupted) {
+		t.Fatalf("Restore: %v", err)
+	}
+	noDownloadsLeft(t, e)
+}
+
 // A restore that fails after the download, here for want of a key, still
 // removes the download.
 func TestRestoreFromURLRemovesTheDownloadOnFailure(t *testing.T) {

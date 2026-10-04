@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -39,7 +40,10 @@ func (e *Error) Unwrap() error { return e.Err }
 
 // Run runs cmd, made with exec.CommandContext(ctx, ...). Its error output is
 // kept, up to MaxStderr, to explain a failure in an *Error. When ctx is
-// cancelled, the program is stopped and ctx's error is returned.
+// cancelled, the program is stopped and ctx's error is returned. A program
+// stopped by SIGINT or SIGTERM returns context.Canceled too, since Ctrl-C
+// reaches every program in the terminal's process group and can stop the
+// program before salt has cancelled ctx.
 func Run(ctx context.Context, cmd *exec.Cmd) error {
 	stderr := &LimitedBuffer{Max: MaxStderr}
 	cmd.Stderr = stderr
@@ -53,8 +57,21 @@ func Run(ctx context.Context, cmd *exec.Cmd) error {
 		return fmt.Errorf("salt needs the %s program, which %w", name, ErrMissingProgram)
 	case ctx.Err() != nil:
 		return ctx.Err()
+	case stoppedBySignal(err):
+		return context.Canceled
 	}
 	return &Error{Program: name, Err: err, Stderr: stderr.Lines()}
+}
+
+// stoppedBySignal reports whether err is from a program that SIGINT or
+// SIGTERM stopped.
+func stoppedBySignal(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	ws, ok := exitErr.Sys().(syscall.WaitStatus)
+	return ok && ws.Signaled() && (ws.Signal() == syscall.SIGINT || ws.Signal() == syscall.SIGTERM)
 }
 
 // LimitedBuffer keeps the first Max bytes written to it and drops the rest.
