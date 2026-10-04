@@ -244,7 +244,7 @@ func TestRunSealVerifyRestore(t *testing.T) {
 		}
 	}
 	for want, args := range map[string][]string{
-		"given to --name cannot be used in the backup":              {"--name", "../state.db", "--postgres", "postgresql://agent:hunter2@localhost:5432/postgres"},
+		"cannot be used in the backup. Give --name a relative path": {"--name", "../state.db", "--postgres", "postgresql://agent:hunter2@localhost:5432/postgres"},
 		"would both be backed up as state.db":                       {"--sqlite", other, "--name", "state.db", "--sqlite", filepath.Join(dbs, "state.db")},
 		"each database salt copies is backed up under its own name": {"--name", "memories/USER.md", "--sqlite", other},
 	} {

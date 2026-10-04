@@ -274,7 +274,7 @@ func TestSealSQLiteNamed(t *testing.T) {
 	saltOnly := e.with("PATH=" + filepath.Dir(e.bin))
 	for want, args := range map[string][]string{
 		"would both be backed up as state.db; give one of them another name with --name NAME just before its --sqlite": {"--sqlite", first, "--sqlite", second},
-		"the name \"../state.db\" given to --name cannot be used in the backup":                                        {"--name", "../state.db", "--sqlite", second},
+		"the name \"../state.db\" cannot be used in the backup. Give --name a relative path":                           {"--name", "../state.db", "--sqlite", second},
 	} {
 		assertSealFails(t, saltOnly, b, want, args...)
 	}

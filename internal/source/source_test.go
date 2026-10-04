@@ -2,7 +2,7 @@ package source
 
 import (
 	"context"
-	"strings"
+	"fmt"
 	"testing"
 )
 
@@ -41,9 +41,8 @@ func TestNamed(t *testing.T) {
 	}
 }
 
-// A name that could lead outside the backup is refused, saying what to give
-// instead. A Postgres connection named this way keeps its password out of
-// the error.
+// A name that could lead outside the backup, or that ends in "/", is
+// refused. The error quotes only the name, never the connection.
 func TestNamedRefusesUnsafeNames(t *testing.T) {
 	pg, err := NewPostgres("postgresql://agent:hunter2@localhost/postgres")
 	if err != nil {
@@ -51,7 +50,7 @@ func TestNamedRefusesUnsafeNames(t *testing.T) {
 	}
 	for _, name := range []string{"", ".", "..", "../state.db", "a/../../state.db", "/etc/state.db", `agent\state.db`, "state\x00.db", "agent2/", "agent2/state.db/"} {
 		_, err := Named(pg, name)
-		if err == nil || !strings.Contains(err.Error(), "given to --name cannot be used in the backup; give a relative path such as honcho.sql") || strings.Contains(err.Error(), "hunter2") {
+		if err == nil || err.Error() != fmt.Sprintf("the name %q cannot be used in the backup", name) {
 			t.Errorf("Named(%q): %v", name, err)
 		}
 	}

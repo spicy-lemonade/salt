@@ -81,7 +81,7 @@ func (n named) Name() string { return n.name }
 func Named(db Database, name string) (Database, error) {
 	clean, err := repo.CleanPath(name)
 	if err != nil || strings.HasSuffix(name, "/") {
-		return nil, fmt.Errorf(`the name %q given to --name cannot be used in the backup; give a relative path such as honcho.sql or agent/state.db, without "..", "\", a leading "/" or a trailing "/"`, name)
+		return nil, fmt.Errorf("the name %q cannot be used in the backup", name)
 	}
 	return named{Database: db, name: clean}, nil
 }

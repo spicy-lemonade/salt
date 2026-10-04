@@ -229,7 +229,9 @@ func run(cmd string, args []string) error {
 			fs.Func(k.Flag, k.Usage, func(arg string) error {
 				db, err := k.New(arg)
 				if err == nil && name != nil {
-					db, err = source.Named(db, *name)
+					if db, err = source.Named(db, *name); err != nil {
+						err = fmt.Errorf(`%w. Give --name a relative path such as honcho.sql or agent/state.db, without "..", "\", a leading "/" or a trailing "/"`, err)
+					}
 				}
 				name = nil
 				dbs = append(dbs, db)
