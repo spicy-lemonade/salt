@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"filippo.io/age"
+	"github.com/spicy-lemonade/salt/internal/gitx"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/spicy-lemonade/salt/internal/seal"
@@ -75,6 +76,8 @@ func (a *App) RecoveryShow(repoRoot string) error {
 
 // RestoreOptions configures Restore.
 type RestoreOptions struct {
+	// Repo is the backup repo's folder, or its https or SSH URL, from which
+	// only the latest backup is downloaded.
 	Repo  string
 	To    string
 	Paths []string
@@ -87,7 +90,34 @@ type RestoreOptions struct {
 
 // Restore decrypts a backup into o.To.
 func (a *App) Restore(o RestoreOptions) error {
-	r, err := repo.Open(o.Repo)
+	root, shown := o.Repo, ""
+	if gitx.IsRemote(o.Repo) {
+		// Only the latest backup is downloaded, still encrypted, into a
+		// private folder in the home folder, which is removed once the
+		// restore ends. Nothing is decrypted until the download is complete.
+		ctx := o.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		tmp, err := os.MkdirTemp(a.Home, "salt-download-")
+		if err != nil {
+			return fmt.Errorf("making a folder to download the backup into: %w", err)
+		}
+		defer os.RemoveAll(tmp)
+		shown = gitx.RedactURL(o.Repo)
+		a.UI.Printf("salt: downloading the latest backup from %s\n", shown)
+		if err := a.Git.Clone(ctx, o.Repo, tmp); err != nil {
+			if ctx.Err() != nil {
+				return fmt.Errorf("restore %w: the download was removed and %s was not changed", ErrInterrupted, a.short(o.To))
+			}
+			return fmt.Errorf("downloading the backup: %w", err)
+		}
+		root = tmp
+	}
+	r, err := repo.Open(root)
+	if errors.Is(err, repo.ErrNotInitialised) && shown != "" {
+		return fmt.Errorf("%s is not a salt backup repo (it has no %s)", shown, repo.FormatFile)
+	}
 	if err != nil {
 		return err
 	}

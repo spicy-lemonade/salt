@@ -57,6 +57,9 @@ type GitOps interface {
 	// Prune drops backups older than the keepDays most recent days with a
 	// change from the checked-out branch (see prune.Run).
 	Prune(repoRoot string, keepDays int) (*prune.Result, error)
+	// Clone downloads only the latest commit of url into the empty folder
+	// dir (see gitx.Clone).
+	Clone(ctx context.Context, url, dir string) error
 }
 
 // RealGit runs git through gitx (hooks disabled).
@@ -76,6 +79,9 @@ func (RealGit) Storage(root string) ([]check.StorageProblem, int, error) {
 }
 func (RealGit) Prune(root string, keepDays int) (*prune.Result, error) {
 	return prune.Run(prune.RealGit{}, root, keepDays)
+}
+func (RealGit) Clone(ctx context.Context, url, dir string) error {
+	return gitx.Clone(ctx, url, dir)
 }
 
 // HookSearchPath is where the pre-commit hook looks for salt: the caller's

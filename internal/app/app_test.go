@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -72,6 +73,9 @@ type fakeGit struct {
 	prune     *prune.Result
 	pruneErr  error
 	pruneDays []int
+	// clone stands in for Clone; cloned records each URL asked for.
+	clone  func(ctx context.Context, dir string) error
+	cloned []string
 }
 
 func (f *fakeGit) HookPath(string) (string, error) { return f.hook, nil }
@@ -94,6 +98,14 @@ func (f *fakeGit) Storage(root string) ([]check.StorageProblem, int, error) {
 func (f *fakeGit) Prune(_ string, keepDays int) (*prune.Result, error) {
 	f.pruneDays = append(f.pruneDays, keepDays)
 	return f.prune, f.pruneErr
+}
+
+func (f *fakeGit) Clone(ctx context.Context, url, dir string) error {
+	f.cloned = append(f.cloned, url)
+	if f.clone == nil {
+		return errors.New("no clone in this test")
+	}
+	return f.clone(ctx, dir)
 }
 
 func newEnv(t *testing.T) *testEnv {

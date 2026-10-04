@@ -81,6 +81,8 @@ func (g *noGit) Storage(string) ([]check.StorageProblem, int, error) {
 	return nil, 0, nil
 }
 
+func (*noGit) Clone(context.Context, string, string) error { return errors.New("no git in unit tests") }
+
 func (g *noGit) Prune(_ string, keepDays int) (*prune.Result, error) {
 	g.pruneDays = append(g.pruneDays, keepDays)
 	return &prune.Result{Kept: 1, Days: 1}, nil
