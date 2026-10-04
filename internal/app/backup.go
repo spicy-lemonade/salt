@@ -38,6 +38,11 @@ func (a *App) Backup(o BackupOptions) error {
 	if err != nil {
 		return err
 	}
+	unlock, err := a.lockRepo(r.Root)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := a.requireGitRepo(r.Root); err != nil {
 		return err
 	}

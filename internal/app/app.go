@@ -17,6 +17,7 @@ import (
 
 	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/gitx"
+	"github.com/spicy-lemonade/salt/internal/guard"
 	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/prune"
@@ -149,6 +150,11 @@ func (a *App) Seal(o SealOptions) error {
 	if err != nil {
 		return err
 	}
+	unlock, err := a.lockRepo(r.Root)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	res, err := a.seal(r, signer, o)
 	if err != nil {
 		return err
@@ -165,6 +171,26 @@ func (a *App) Seal(o SealOptions) error {
 		return nil // not a git repo, so nothing is pushed
 	}
 	return a.checkStorage(r.Root, "salt: the backup was sealed, but")
+}
+
+// lockRepo stops two salts changing the repo at root at once, such as a
+// backup still running, on a slow push, when the next one starts: each
+// would delete the objects the other had just written. The lock is a file
+// in the cache folder, named by the repo's real path.
+func (a *App) lockRepo(root string) (unlock func(), err error) {
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, err
+	}
+	p, err := seal.RepoFile(a.CacheDir, real, "lock-", "")
+	if err != nil {
+		return nil, err
+	}
+	unlock, err = guard.Lock(p)
+	if errors.Is(err, guard.ErrLocked) {
+		return nil, fmt.Errorf("%s: %w", a.short(root), err)
+	}
+	return unlock, err
 }
 
 // openToSeal opens the salt repository at path for sealing. It refuses one

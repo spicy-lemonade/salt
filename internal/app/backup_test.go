@@ -12,6 +12,7 @@ import (
 
 	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/gitx"
+	"github.com/spicy-lemonade/salt/internal/guard"
 	"github.com/spicy-lemonade/salt/internal/preset"
 	"github.com/spicy-lemonade/salt/internal/prune"
 	"github.com/spicy-lemonade/salt/internal/seal"
@@ -328,5 +329,39 @@ func TestBackupCapsThePushRecord(t *testing.T) {
 	}
 	if last := e.git.known[len(e.git.known)-1]; len(last) != maxKnownPushes || last[len(last)-1] != fmt.Sprint("h", maxKnownPushes+3) {
 		t.Fatalf("last push was told %d commits, ending %v", len(last), last[len(last)-1])
+	}
+}
+
+// While another salt works on the repo, backup, seal and prune each refuse
+// at once, before changing anything, and work again once it is done.
+func TestRepoLock(t *testing.T) {
+	e, _, presets := backupEnv(t)
+	real, err := filepath.EvalSymlinks(e.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := seal.RepoFile(e.app.CacheDir, real, "lock-", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := guard.Lock(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, run := range map[string]func() error{
+		"backup": func() error { return e.backup(presets) },
+		"seal":   func() error { return e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}) },
+		"prune":  func() error { return e.app.Prune(e.root, 3) },
+	} {
+		if err := run(); !errors.Is(err, guard.ErrLocked) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if len(e.git.calls) != 0 || len(e.git.pruneDays) != 0 {
+		t.Fatalf("git was asked %v, pruned %v", e.git.calls, e.git.pruneDays)
+	}
+	unlock()
+	if err := e.backup(presets); err != nil {
+		t.Fatal(err)
 	}
 }
