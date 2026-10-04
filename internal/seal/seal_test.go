@@ -980,10 +980,10 @@ func TestEncryptToErrors(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "file"), []byte("x"), 0o644)
 	rt := openRoot(t, dir)
-	if _, err := encryptTo(rt, "file/sub/obj.age", strings.NewReader("x"), f.repo.Recipients); err == nil {
+	if _, _, err := encryptTo(rt, "file/sub/obj.age", strings.NewReader("x"), f.repo.Recipients, 0); err == nil {
 		t.Error("encryptTo under a file succeeded")
 	}
-	if _, err := encryptTo(rt, "obj.age", errReader{}, f.repo.Recipients); err == nil {
+	if _, _, err := encryptTo(rt, "obj.age", errReader{}, f.repo.Recipients, 0); err == nil {
 		t.Error("encryptTo with a failing reader succeeded")
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
@@ -1065,7 +1065,7 @@ func writeBombIndex(t *testing.T, f *fixture, gen func(w io.Writer)) {
 		gen(pw)
 		pw.Close()
 	}()
-	if _, err := encryptTo(openRoot(t, f.root), repo.IndexFile, pr, f.repo.Recipients); err != nil {
+	if _, _, err := encryptTo(openRoot(t, f.root), repo.IndexFile, pr, f.repo.Recipients, 0); err != nil {
 		t.Fatal(err)
 	}
 	if fi, _ := os.Stat(filepath.Join(f.root, repo.IndexFile)); fi.Size() > 2<<20 {

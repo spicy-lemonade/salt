@@ -24,10 +24,24 @@ type cache struct {
 	Files     map[string]cacheEntry `json:"files"`
 }
 
+// cacheEntry is one sealed file. Its first part is embedded, so its fields
+// sit at the top level as they did before files were split, and a cache
+// written by an older salt still matches.
 type cacheEntry struct {
-	SHA256     string `json:"sha256"`
+	SHA256 string `json:"sha256"`
+	cachePart
+	Parts []cachePart `json:"parts,omitempty"` // after the first, for a split file
+}
+
+// cachePart is one file of ciphertext and its size.
+type cachePart struct {
 	Object     string `json:"object"`
 	CipherSize int64  `json:"cipher_size"`
+}
+
+// all returns every part, the first included.
+func (c cacheEntry) all() []cachePart {
+	return append([]cachePart{c.cachePart}, c.Parts...)
 }
 
 func cacheKey(recipients []string, encryptPaths bool) string {

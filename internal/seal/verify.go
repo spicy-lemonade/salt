@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -73,7 +74,9 @@ func Verify(root string, ids []age.Identity, opt VerifyOptions) (*VerifyResult, 
 			continue
 		}
 		files = append(files, e)
-		referenced[e.Object] = true
+		for _, obj := range e.objects() {
+			referenced[obj] = true
+		}
 	}
 	res.Files = len(files)
 
@@ -119,10 +122,15 @@ func Verify(root string, ids []age.Identity, opt VerifyOptions) (*VerifyResult, 
 }
 
 func verifyEntry(rt *os.Root, ids []age.Identity, e Entry) (int64, error) {
-	r, closeFn, err := decryptStream(rt, e.Object, ids)
-	if errors.Is(err, fs.ErrNotExist) {
-		return 0, fmt.Errorf("%s: its encrypted file %s is missing", clip(e.Path), clip(e.Object))
+	// Parts after the first are opened only as they are reached, so check
+	// they are all there first, to name the missing one.
+	objects := e.objects()
+	for _, obj := range objects {
+		if _, err := rt.Lstat(filepath.FromSlash(obj)); errors.Is(err, fs.ErrNotExist) {
+			return 0, fmt.Errorf("%s: its encrypted file %s is missing", clip(e.Path), clip(obj))
+		}
 	}
+	r, closeFn, err := decryptStream(rt, objects, ids)
 	if err != nil {
 		return 0, fmt.Errorf("%s: %v", clip(e.Path), err)
 	}

@@ -26,7 +26,7 @@ func (f *fixture) plant(edit func(*Index)) {
 	}
 	defer rt.Close()
 	const obj = "objects/pl/anted.age"
-	sha, err := encryptTo(rt, obj, strings.NewReader(planted), f.repo.Recipients)
+	sha, _, err := encryptTo(rt, obj, strings.NewReader(planted), f.repo.Recipients, 0)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -138,8 +138,8 @@ func TestAllowUnsignedKeepsOtherChecks(t *testing.T) {
 	if _, err := ReadIndex(f.root, f.ids(), true); err == nil || errors.Is(err, ErrNotSigned) || !strings.Contains(err.Error(), "cannot unmarshal") {
 		t.Fatalf("signature that is not a string: %v", err)
 	}
-	f.writeIndex(&Index{Version: 2, Entries: []Entry{}})
-	if _, err := ReadIndex(f.root, f.ids(), true); err == nil || !strings.Contains(err.Error(), "version 2") {
+	f.writeIndex(&Index{Version: partsIndexVersion + 1, Entries: []Entry{}})
+	if _, err := ReadIndex(f.root, f.ids(), true); err == nil || !strings.Contains(err.Error(), "version 3") {
 		t.Fatalf("unsupported version: %v", err)
 	}
 }

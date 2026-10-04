@@ -32,6 +32,10 @@ const (
 
 	FormatVersion = 1
 
+	// GitHubFileLimit is the size above which GitHub refuses a pushed file.
+	// Seal keeps every file it writes below it.
+	GitHubFileLimit = 100 << 20
+
 	RecoveryPhrase     = "phrase"
 	RecoveryPassphrase = "passphrase"
 )

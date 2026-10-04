@@ -487,6 +487,29 @@ func TestDoctorProblems(t *testing.T) {
 	}
 }
 
+// Doctor warns about a file over GitHub's limit, which salt never writes
+// but an older salt or a person might have, and not about one at the limit.
+// The files are sparse, so they take no space on disk.
+func TestDoctorGitHubLimit(t *testing.T) {
+	for _, size := range []int64{repo.GitHubFileLimit, repo.GitHubFileLimit + 1} {
+		e := newEnv(t)
+		healthyRepo(t, e)
+		p := filepath.Join(e.root, "objects", "aa", "big.age")
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte("age-encryption.org/v1\n"), 0o644)
+		if err := os.Truncate(p, size); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.app.Doctor(e.root); err != nil {
+			t.Fatalf("Doctor: %v\n%s", err, e.ui.out.String())
+		}
+		warned := strings.Contains(e.ui.out.String(), "file(s) over GitHub's 100 MB limit, so the push will fail: objects/aa/big.age (100 MB)")
+		if warned != (size > repo.GitHubFileLimit) {
+			t.Errorf("%d bytes: warned = %v\n%s", size, warned, e.ui.out.String())
+		}
+	}
+}
+
 func TestDoctorPassphraseKeyFile(t *testing.T) {
 	e := newEnv(t)
 	e.ui.interactive = false

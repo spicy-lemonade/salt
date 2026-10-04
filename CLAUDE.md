@@ -56,11 +56,11 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - `.salt/recipients.txt`: public; the age public keys every file is encrypted to
 - `.salt/key.age`: passphrase-wrapped private key (passphrase recovery only)
 - `index.age`: encrypted JSON index holding real paths, SHA-256 of the plaintext, sizes, modes, last-modified times and symlinks, signed with the signing key
-- `objects/xx/<random>.age`: file contents when paths are encrypted (the default)
+- `objects/xx/<random>.age`: file contents when paths are encrypted (the default), and parts after the first of a file over 99 MiB
 - `files/<path>.age`: file contents with `--plain-paths`
 - `README.md`, `LICENSE`, `.gitignore`, `.gitattributes`: the only other files allowed unencrypted
 
-**Pipeline:** file -> zstd -> age -> object, fully streamed with fixed buffers and at most 4 workers. No data file is ever read whole into memory.
+**Pipeline:** file -> zstd -> age -> object, fully streamed with fixed buffers and at most 4 workers. No data file is ever read whole into memory. A file over 99 MiB has its compressed stream split into 45 MiB parts, each its own age file, so nothing in the repo reaches GitHub's 100 MiB limit (see `docs/design.md`, "Large files").
 
 **Keys:**
 - Sealing needs only the public key and the signing key, so encrypting a backup never needs the decryption key.
@@ -103,7 +103,7 @@ go test ./internal/seal -run TestRoundTrip
 - Salt prints to stderr only. Scheduled jobs (cron, agent schedulers) often send any stdout on as an email or message, so success must be silent on stdout.
 - Decided out of scope is Touch ID gating, and switching recovery method from the 12 word passphrase to the user chosen passphrase or vice versa.
 - `salt seal --sqlite DB` makes a safe copy of a live SQLite database itself (`internal/source` runs `sqlite3 .backup`). `salt seal --postgres CONN` (or `--postgres-env VAR`) dumps a Postgres database as plain SQL with `pg_dump`, with the password passed in `PGPASSWORD` and never shown. See `docs/design.md`, "Databases".
-- Not yet built: OpenViking support, a `salt backup` preset, and splitting files over 100 MB.
+- Not yet built: OpenViking support and a `salt backup` preset.
 
 ### Agent contributing rules
 

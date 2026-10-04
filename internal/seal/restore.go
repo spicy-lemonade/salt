@@ -167,7 +167,7 @@ func restoreFile(ctx context.Context, rt *os.Root, ids []age.Identity, tmp strin
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
-	r, closeFn, err := decryptStream(rt, e.Object, ids)
+	r, closeFn, err := decryptStream(rt, e.objects(), ids)
 	if err != nil {
 		return fmt.Errorf("%s: %w", clip(e.Path), err)
 	}
