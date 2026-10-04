@@ -646,6 +646,10 @@ since the copy already holds what is in them. Every other file is sealed as
 it is, with its permissions and last-modified date, read in place without a
 copy. A symlink inside a folder is not followed or backed up, and salt
 prints one line about it. A `from` that is itself a symlink is followed.
+A file or database the tool deletes while salt backs it up, as tools do
+with temporary files, is left out of that backup instead of stopping it. A
+database named with `--sqlite`, or a file in `salt seal`'s source folder,
+still stops the seal when it is missing, since the person named it.
 
 A place found twice, such as a folder named both by a variable and by its
 default, or by two presets, is backed up once, under the first path. A place

@@ -284,7 +284,8 @@ func TestSecretIn(t *testing.T) {
 			t.Errorf("secretIn(%.40q) = %q, want %q", content, got, want)
 		}
 	}
-	if got, _ := secretIn(filepath.Join(dir, "missing"), keys); !strings.Contains(got, "could not be read") {
+	// A file deleted since it was listed is for the caller to skip.
+	if got, secret := secretIn(filepath.Join(dir, "missing"), keys); got != "" || secret {
 		t.Errorf("missing file: %q", got)
 	}
 	if got, _ := secretIn(dir, keys); !strings.Contains(got, "could not be read") {
@@ -339,5 +340,44 @@ func TestGatherSidecarOfSkippedDatabase(t *testing.T) {
 	}
 	if files, dbs := rels(f); !slices.Equal(files, []string{"tool/a.md"}) || len(dbs) != 0 {
 		t.Fatalf("files %v, databases %v", files, dbs)
+	}
+}
+
+// A file or folder deleted after the walk listed it, as a tool's files can
+// be at any time, is skipped, and the files Gather adds are marked live. A
+// place deleted while it is walked is still an error.
+func TestGatherSkipsWhatVanishes(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir()) // the walk sees real paths
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := filepath.Join(home, "tool")
+	write(t, filepath.Join(tool, "kept.md"), "kept")
+	write(t, filepath.Join(tool, "gone.md"), "gone")
+	write(t, filepath.Join(tool, "gone.db"), sqliteFile)
+	write(t, filepath.Join(tool, "settings.yaml"), "api_key: sk-1")
+	write(t, filepath.Join(tool, "sub", "deep.md"), "deep")
+	vanish := []string{"gone.md", "gone.db", "settings.yaml", "sub"}
+	listedHook = func(p string) {
+		if rel, err := filepath.Rel(tool, p); err == nil && slices.Contains(vanish, rel) {
+			os.RemoveAll(p)
+		}
+	}
+	t.Cleanup(func() { listedHook = nil })
+	f, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, dbs := rels(f)
+	if !slices.Equal(files, []string{"tool/kept.md"}) || len(dbs) != 0 || len(f.LeftOut) != 0 {
+		t.Fatalf("files %v, databases %v, left out %+v", files, dbs, f.LeftOut)
+	}
+	if !f.Files[0].Live {
+		t.Fatal("a gathered file is not marked live")
+	}
+
+	vanish = []string{"."}
+	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Gather = %v", err)
 	}
 }

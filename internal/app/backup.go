@@ -83,7 +83,7 @@ func (a *App) Backup(o BackupOptions) error {
 	if err := stopped("nothing was backed up"); err != nil {
 		return err
 	}
-	so := SealOptions{Repo: o.Repo, Prune: true, Databases: found.Databases, Files: found.Files, Context: ctx}
+	so := SealOptions{Repo: o.Repo, Prune: true, Databases: found.Databases, Files: found.Files, Context: ctx, Live: true}
 	if _, err := a.seal(r, signer, so); err != nil {
 		return err
 	}

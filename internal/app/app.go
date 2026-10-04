@@ -141,6 +141,10 @@ type SealOptions struct {
 	Files []seal.Extra
 	// Context stops the database copies early. Nil means never.
 	Context context.Context
+	// Live is true when Databases were found on this machine, as a preset
+	// finds them, rather than given by the person. A database deleted
+	// before it is copied is then left out instead of failing the seal.
+	Live bool
 }
 
 // Seal encrypts o.Src, and safe copies of o.Databases, into the salt repository
@@ -217,7 +221,7 @@ func (a *App) openToSeal(path string) (*repo.Repo, ed25519.PrivateKey, error) {
 
 // seal copies o.Databases safely, then seals them, o.Src and o.Files into r.
 func (a *App) seal(r *repo.Repo, signer ed25519.PrivateKey, o SealOptions) (*seal.Result, error) {
-	extra, cleanup, err := a.copyDatabases(o.Context, r, o.Databases)
+	extra, cleanup, err := a.copyDatabases(o.Context, r, o.Databases, o.Live)
 	if err != nil {
 		return nil, err
 	}
@@ -239,8 +243,8 @@ func (a *App) seal(r *repo.Repo, signer ed25519.PrivateKey, o SealOptions) (*sea
 
 // copyDatabases makes a safe copy of each live database in a new private
 // temporary folder, and returns them as files to seal. cleanup removes the
-// folder.
-func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Database) (extra []seal.Extra, cleanup func(), err error) {
+// folder. With skipGone, a database that no longer exists is left out.
+func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Database, skipGone bool) (extra []seal.Extra, cleanup func(), err error) {
 	if len(dbs) == 0 {
 		return nil, func() {}, nil
 	}
@@ -280,10 +284,12 @@ func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Data
 		return nil, nil, err
 	}
 	cleanup = func() { os.RemoveAll(tmp) }
-	extra = make([]seal.Extra, len(dbs))
 	for i, db := range dbs {
 		dst := filepath.Join(tmp, strconv.Itoa(i))
 		meta, err := db.Copy(ctx, source.CopyOptions{Dst: dst, Key: key})
+		if skipGone && errors.Is(err, fs.ErrNotExist) && ctx.Err() == nil {
+			continue // cleanup removes any part of a copy it made
+		}
 		if err != nil {
 			cleanup()
 			switch {
@@ -294,7 +300,7 @@ func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Data
 			}
 			return nil, nil, fmt.Errorf("copying the database %s: %w", a.short(db.String()), err)
 		}
-		extra[i] = seal.Extra{Rel: db.Name(), Path: dst, Mode: meta.Mode, ModTime: meta.ModTime}
+		extra = append(extra, seal.Extra{Rel: db.Name(), Path: dst, Mode: meta.Mode, ModTime: meta.ModTime})
 	}
 	return extra, cleanup, nil
 }

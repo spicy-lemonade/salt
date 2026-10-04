@@ -258,6 +258,11 @@ func TestRunSealVerifyRestore(t *testing.T) {
 	if err := run("seal", []string{"--prune", "--sqlite", filepath.Join(dbs, "state.db"), src, root, "--sqlite", filepath.Join(dbs, "memory.db")}); err != nil {
 		t.Fatalf("seal: %v", err)
 	}
+	// A database the person names must exist; only a preset's may vanish.
+	missing := filepath.Join(dbs, "missing.db")
+	if err := run("seal", []string{"--sqlite", missing, src, root}); err == nil || !strings.Contains(err.Error(), "missing.db does not exist; check the path given to") {
+		t.Fatalf("seal --sqlite missing.db: %v", err)
+	}
 	if testGit.storageCalls != calls+1 {
 		t.Fatalf("seal asked git about storage %d time(s), want once", testGit.storageCalls-calls)
 	}

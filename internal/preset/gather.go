@@ -26,6 +26,10 @@ const maxSecretsFile = 1 << 20
 // A safe copy of the database already holds what is in them.
 var sidecars = []string{"-wal", "-shm", "-journal"}
 
+// listedHook lets tests delete a file or folder once the walk has listed it.
+// It is always nil outside tests.
+var listedHook func(path string)
+
 // ErrNothing means a preset found nothing to back up on this machine.
 var ErrNothing = errors.New("found nothing to back up")
 
@@ -67,7 +71,9 @@ type LeftOut struct {
 // is backed up under its own path, and the outer one leaves it out, so
 // nothing is backed up twice whatever order the presets are given in. A
 // place that contains the backup repo at repo, or is inside it, is refused
-// before anything is read.
+// before anything is read. A file deleted while it is gathered, as a tool's
+// files can be at any time, is skipped, and every file is marked live, so
+// seal skips one deleted before it is read too.
 func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*Found, error) {
 	// Places have their symlinks followed, so the repo's are too before
 	// comparing them.
@@ -142,7 +148,13 @@ type spot struct {
 func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, show func(string) string) error {
 	return filepath.WalkDir(real, func(walked string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			if walked == real {
+				return err
+			}
+			return skipGone(err)
+		}
+		if listedHook != nil {
+			listedHook(walked)
 		}
 		if _, ok := spots[walked]; ok && walked != real {
 			if d.IsDir() {
@@ -169,7 +181,7 @@ func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, s
 			return nil
 		}
 		if sidecar, err := isSidecar(walked); sidecar || err != nil {
-			return err
+			return skipGone(err)
 		}
 		// The place itself may be a symlink, and then has two names; the
 		// secrets rules match either. Inside it, symlinks are not followed.
@@ -188,7 +200,7 @@ func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, s
 		}
 		isDB, err := source.IsSQLite(at)
 		if err != nil {
-			return err
+			return skipGone(err)
 		}
 		if isDB {
 			db, err := source.NewSQLite(at)
@@ -203,11 +215,21 @@ func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, s
 		}
 		info, err := d.Info()
 		if err != nil {
-			return err
+			return skipGone(err)
 		}
-		f.Files = append(f.Files, seal.Extra{Rel: to, Path: at, Mode: info.Mode(), ModTime: info.ModTime()})
+		f.Files = append(f.Files, seal.Extra{Rel: to, Path: at, Mode: info.Mode(), ModTime: info.ModTime(), Live: true})
 		return nil
 	})
+}
+
+// skipGone returns nil for an error saying a file or folder no longer
+// exists, so one deleted since the walk listed it is skipped, as a tool's
+// files can be at any time. Any other error is returned.
+func skipGone(err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 // isSidecar reports whether the file at p is a -wal, -shm or -journal file
@@ -227,9 +249,13 @@ func isSidecar(p string) (bool, error) {
 
 // secretIn says why the file at p must be left out: one of the settings
 // keys names holds a value, and secret is true, or the file could not be
-// read as YAML to check. It returns "" when the file can be backed up.
+// read as YAML to check. It returns "" when the file can be backed up, or
+// when it no longer exists, which the caller then finds and skips.
 func secretIn(p string, keys []string) (why string, secret bool) {
 	file, err := os.Open(p)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", false
+	}
 	if err != nil {
 		return fmt.Sprintf("it could not be read to check it for secrets (%v)", err), false
 	}

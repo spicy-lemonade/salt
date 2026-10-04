@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -220,6 +221,63 @@ func TestSealExtraMissingFile(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "gone.db")
 	if _, err := f.sealExtra(Extra{Rel: "state.db", Path: missing}); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing extra file: %v", err)
+	}
+}
+
+// A live extra file deleted before it is read, as a tool's files can be, is
+// left out of the backup and listed as gone, and the seal goes on. So is one
+// deleted after it was measured but before it was encrypted, and one sealed
+// last time, whose ciphertext and cache entry are then dropped.
+func TestSealLiveExtraGone(t *testing.T) {
+	f := newFixture(t, true)
+	kept := extraCopy(t, "kept")
+	late := filepath.Join(t.TempDir(), "late.md")
+	os.WriteFile(late, []byte("deleted after it was measured"), 0o600)
+	hashedHook = func(p string) {
+		if p == late {
+			os.Remove(p)
+		}
+	}
+	t.Cleanup(func() { hashedHook = nil })
+	res, err := f.sealExtra(
+		Extra{Rel: "a/kept.md", Path: kept, Live: true},
+		Extra{Rel: "a/gone.md", Path: filepath.Join(t.TempDir(), "gone.md"), Live: true},
+		Extra{Rel: "a/late.md", Path: late, Live: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Gone, []string{"a/gone.md", "a/late.md"}) || res.Files != 6 {
+		t.Fatalf("seal: %+v", res)
+	}
+	dest := f.restore(RestoreOptions{})
+	if b, err := os.ReadFile(filepath.Join(dest, "a", "kept.md")); err != nil || string(b) != "kept" {
+		t.Fatalf("restored kept.md = %q, %v", b, err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(dest, "a")); len(entries) != 1 {
+		t.Fatalf("restored a/ holds %v", entries)
+	}
+
+	os.Remove(kept)
+	res, err = f.sealExtra(Extra{Rel: "a/kept.md", Path: kept, Live: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Gone, []string{"a/kept.md"}) || res.Files != 5 || len(res.Removed) != 1 {
+		t.Fatalf("seal: %+v", res)
+	}
+	if c, _ := f.loadCache(); len(c.Files) != 5 {
+		t.Fatalf("the cache still holds %d files", len(c.Files))
+	}
+	assertAllCiphertext(t, f.root, true)
+	ix, err := ReadIndex(f.root, f.ids(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ix.Entries {
+		if strings.HasPrefix(e.Path, "a/") {
+			t.Fatalf("the index still lists %s", e.Path)
+		}
 	}
 }
 

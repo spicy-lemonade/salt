@@ -71,6 +71,10 @@ type Extra struct {
 	Path    string // the file to read
 	Mode    fs.FileMode
 	ModTime time.Time
+	// Live is true for a file another program may delete at any time, such
+	// as one a preset found. One deleted before it is read is left out of
+	// the backup and listed in Result.Gone, instead of failing the seal.
+	Live bool
 }
 
 // ErrDuplicatePath means two files would be backed up at the same path, or a
@@ -96,6 +100,7 @@ type Result struct {
 	Reused    int      // unchanged files whose ciphertext was kept
 	Removed   []string // repo paths deleted as stale or unmanaged
 	Skipped   []string // source paths that are not files or symlinks
+	Gone      []string // backup paths of live extra files deleted before they were read
 	IndexNew  bool     // whether index.age was rewritten
 }
 
@@ -106,6 +111,7 @@ type item struct {
 	modTime time.Time
 	symlink string
 	isLink  bool
+	live    bool // see Extra.Live
 }
 
 // entriesHook lets tests change the entries before Seal checks them, and
@@ -172,6 +178,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 
 	entries := make([]Entry, len(items))
 	newCache := make([]cacheEntry, len(items))
+	gone := make([]bool, len(items))
 	var encrypted, reused atomic.Int64
 	err = forEach(len(items), workers(opt.Workers), func(i int) error {
 		it := items[i]
@@ -181,7 +188,15 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			entries[i] = e
 			return nil
 		}
+		// A live file deleted since it was listed is left out.
+		vanished := func(err error) bool {
+			gone[i] = it.live && errors.Is(err, fs.ErrNotExist)
+			return gone[i]
+		}
 		sha, size, err := hashFile(it.abs)
+		if vanished(err) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -201,7 +216,11 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			if size > splitAbove {
 				limit = partSize
 			}
-			if ce, size, err = encryptFile(rt, r, it.abs, obj, limit); err != nil {
+			ce, size, err = encryptFile(rt, r, it.abs, obj, limit)
+			if vanished(err) {
+				return nil
+			}
+			if err != nil {
 				return fmt.Errorf("%s: %w", it.rel, err)
 			}
 			encrypted.Add(1)
@@ -221,6 +240,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		return nil, err
 	}
 	res.Encrypted, res.Reused = int(encrypted.Load()), int(reused.Load())
+	items, entries, newCache, res.Gone = dropGone(items, entries, newCache, gone)
 
 	next := &cache{Key: c.Key, Files: map[string]cacheEntry{}}
 	keep := map[string]bool{}
@@ -273,6 +293,22 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		return res, err
 	}
 	return res, next.save(cPath)
+}
+
+// dropGone removes the items marked gone, with their entries and cache
+// entries, keeping the rest in order, and returns the paths it removed.
+func dropGone(items []item, entries []Entry, newCache []cacheEntry, gone []bool) ([]item, []Entry, []cacheEntry, []string) {
+	var paths []string
+	n := 0
+	for i := range items {
+		if gone[i] {
+			paths = append(paths, items[i].rel)
+			continue
+		}
+		items[n], entries[n], newCache[n] = items[i], entries[i], newCache[i]
+		n++
+	}
+	return items[:n], entries[:n], newCache[:n], paths
 }
 
 // encryptFile seals the file at abs into obj, in parts of limit compressed
@@ -418,7 +454,7 @@ func addExtra(items []item, extra []Extra, foldCase bool) ([]item, error) {
 			return nil, fmt.Errorf("%w: %s", ErrDuplicatePath, rel)
 		}
 		t.add(rel)
-		items = append(items, item{rel: rel, abs: x.Path, mode: x.Mode, modTime: x.ModTime})
+		items = append(items, item{rel: rel, abs: x.Path, mode: x.Mode, modTime: x.ModTime, live: x.Live})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].rel < items[j].rel })
 	return items, nil
