@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/spicy-lemonade/salt/internal/keys"
+	"github.com/spicy-lemonade/salt/internal/repo"
 )
 
 const backupURL = "https://ghp_secret@github.com/me/backup.git"
@@ -155,7 +157,9 @@ func TestOpenRepo(t *testing.T) {
 	if err != nil || r.Root != e.root {
 		t.Fatalf("openRepo(folder) = %v, %v", r, err)
 	}
-	done()
+	if err := done(nil); err != nil {
+		t.Fatalf("done = %v", err)
+	}
 	if _, err := os.Stat(e.root); err != nil || len(e.git.cloned) != 0 {
 		t.Fatalf("a folder was downloaded or removed: %v, %q", err, e.git.cloned)
 	}
@@ -167,7 +171,9 @@ func TestOpenRepo(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(r.Root, "index.age")); err != nil {
 		t.Fatalf("the download is not usable before done: %v", err)
 	}
-	done()
+	if err := done(nil); err != nil {
+		t.Fatalf("done = %v", err)
+	}
 	noDownloadsLeft(t, e)
 }
 
@@ -245,5 +251,56 @@ func TestDownloadDir(t *testing.T) {
 	a.Home = ""
 	if got := a.downloadDir(); got != os.TempDir() {
 		t.Fatalf("downloadDir without a home folder = %q, want %q", got, os.TempDir())
+	}
+}
+
+// The download is gone by the time an error is read, so errors name the URL
+// in its place.
+func TestRestoreFromURLErrorsNameTheURL(t *testing.T) {
+	e := remoteEnv(t)
+	e.git.clone = func(_ context.Context, dir string) error {
+		if err := os.CopyFS(dir, os.DirFS(e.root)); err != nil {
+			return err
+		}
+		return os.Remove(filepath.Join(dir, repo.RecipientsFile))
+	}
+	err := e.app.Restore(RestoreOptions{Repo: backupURL, To: filepath.Join(t.TempDir(), "r")})
+	want := "open https://github.com/me/backup.git/" + repo.RecipientsFile + ": no such file or directory"
+	if err == nil || err.Error() != want || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Restore: %v, want %q", err, want)
+	}
+	noDownloadsLeft(t, e)
+
+	// So do errors from after the repo is opened: here a passphrase backup
+	// with no key file, on a machine without its key.
+	e.git.clone = func(_ context.Context, dir string) error {
+		if err := os.CopyFS(dir, os.DirFS(e.root)); err != nil {
+			return err
+		}
+		p := filepath.Join(dir, repo.FormatFile)
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(p, []byte(strings.Replace(string(b), `"recovery": "phrase"`, `"recovery": "passphrase"`, 1)), 0o644)
+	}
+	e.app.Store = &keys.MemStore{}
+	err = e.app.Restore(RestoreOptions{Repo: backupURL, To: filepath.Join(t.TempDir(), "r")})
+	want = "reading " + repo.KeyFile + ": open https://github.com/me/backup.git/" + repo.KeyFile + ": no such file or directory"
+	if err == nil || err.Error() != want {
+		t.Fatalf("Restore: %v, want %q", err, want)
+	}
+	noDownloadsLeft(t, e)
+}
+
+func TestDoneKeepsAFolderError(t *testing.T) {
+	e := remoteEnv(t)
+	_, done, err := e.app.openRepo(context.Background(), e.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := errors.New("x " + e.root)
+	if got := done(want); got != want {
+		t.Fatalf("done = %v", got)
 	}
 }

@@ -88,7 +88,7 @@ type RestoreOptions struct {
 }
 
 // Restore decrypts a backup into o.To.
-func (a *App) Restore(o RestoreOptions) error {
+func (a *App) Restore(o RestoreOptions) (err error) {
 	ctx := o.Context
 	if ctx == nil {
 		ctx = context.Background()
@@ -100,7 +100,7 @@ func (a *App) Restore(o RestoreOptions) error {
 	if err != nil {
 		return err
 	}
-	defer done()
+	defer func() { err = done(err) }()
 	ids, err := a.identities(r)
 	if err != nil {
 		return err
