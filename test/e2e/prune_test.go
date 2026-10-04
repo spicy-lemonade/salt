@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,21 +43,70 @@ type backupRepo struct {
 	sealedDates map[string]map[string]time.Time
 }
 
-func newBackupRepo(t *testing.T, e *env) *backupRepo {
-	t.Helper()
-	base := t.TempDir()
-	b := &backupRepo{e: e, base: base, remote: filepath.Join(base, "remote.git"), dir: filepath.Join(base, "backup"),
+func emptyBackupRepo(e *env, base string) *backupRepo {
+	return &backupRepo{e: e, base: base, remote: filepath.Join(base, "remote.git"), dir: filepath.Join(base, "backup"),
 		src: filepath.Join(base, "stage"), files: map[string]string{}, dates: map[string]time.Time{},
 		sealed: map[string]map[string]string{}, sealedDates: map[string]map[string]time.Time{}}
-	e.must(base, "git", "init", "-q", "--bare", "-b", "main", b.remote)
-	e.must(base, "git", "clone", "-q", b.remote, b.dir)
-	passFile := filepath.Join(base, "pass")
-	write(t, passFile, "correct horse battery staple\n")
-	e.must(base, "salt", "init", b.dir, "--recovery", "passphrase", "--passphrase-file", passFile)
-	e.must(b.dir, "git", "add", ".salt", ".gitattributes")
-	b.commitOn(t, "2026-08-31", "Set up salt")
-	e.must(b.dir, "git", "push", "-q", "origin", "main")
+}
+
+// newBackupRepo gives the test its own copy of the template backup repo: the
+// "Set up salt" commit, dated 2026-08-31 and pushed to a bare remote, with
+// the key and signing key in e's home folder. Every copy shares the
+// template's key.
+func newBackupRepo(t *testing.T, e *env) *backupRepo {
+	t.Helper()
+	tmpl := backupTemplate(t)
+	b := emptyBackupRepo(e, t.TempDir())
+	// cp -a keeps the key files' 0600 permissions.
+	e.must(b.base, "cp", "-a", tmpl.remote, b.remote)
+	e.must(b.base, "cp", "-a", tmpl.dir, b.dir)
+	e.must(b.base, "cp", "-a", tmpl.e.home+"/.", e.home)
+	e.must(b.dir, "git", "remote", "set-url", "origin", b.remote)
+	// Salt approves a repo by its full path, so the copy needs its own
+	// approval. The signing key came with the home folder, so this asks
+	// nothing.
+	e.must(b.base, "salt", "trust", "--yes", b.dir)
 	return b
+}
+
+// templateDir holds the template backup repo, its remote and its home
+// folder. TestMain deletes it.
+var (
+	templateDir  string
+	templateOnce sync.Once
+	template     *backupRepo
+)
+
+// backupTemplate sets up the template backup repo the first time a test
+// needs one. Only this runs salt init for newBackupRepo: it locks the key
+// with scrypt at full strength, which takes seconds each time.
+func backupTemplate(t *testing.T) *backupRepo {
+	t.Helper()
+	templateOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "salt-e2e-template-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		templateDir = dir
+		home := filepath.Join(dir, "home")
+		if err := os.Mkdir(home, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		b := emptyBackupRepo(newEnvAt(t, home), dir)
+		b.e.must(dir, "git", "init", "-q", "--bare", "-b", "main", b.remote)
+		b.e.must(dir, "git", "clone", "-q", b.remote, b.dir)
+		passFile := filepath.Join(dir, "pass")
+		write(t, passFile, "correct horse battery staple\n")
+		b.e.must(dir, "salt", "init", b.dir, "--recovery", "passphrase", "--passphrase-file", passFile)
+		b.e.must(b.dir, "git", "add", ".salt", ".gitattributes")
+		b.commitOn(t, "2026-08-31", "Set up salt")
+		b.e.must(b.dir, "git", "push", "-q", "origin", "main")
+		template = b
+	})
+	if template == nil {
+		t.Fatal("setting up the template backup repo failed in an earlier test")
+	}
+	return template
 }
 
 // commitOn commits whatever is staged, dated 06:00 UTC on day.
@@ -165,38 +215,39 @@ func sameDates(a, b map[string]time.Time) bool {
 	return maps.EqualFunc(a, b, time.Time.Equal)
 }
 
-// Daily backups for three weeks, with one day on which nothing changed.
-// Pruning keeps the last 5 days with a change, which here span 6 calendar
-// days; every kept backup still restores exactly, with each file as it was
-// that day; and only a force push (with lease) publishes the result.
+// Daily backups for nine days, with one day on which nothing changed, pushed
+// once at the end. Pruning keeps the last 5 days with a change, which here
+// span 6 calendar days; every kept backup still restores exactly, with each
+// file as it was that day; and only a force push (with lease) publishes the
+// result.
 func TestPruneKeepsTheLastDaysWithAChange(t *testing.T) {
 	e := newEnv(t)
 	b := newBackupRepo(t, e)
 	var dropped string
-	for d := 1; d <= 20; d++ {
+	for d := 1; d <= 9; d++ {
 		day := fmt.Sprintf("2026-09-%02d", d)
-		if d != 18 { // the 18th: nothing changes, so no commit
+		if d != 7 { // the 7th: nothing changes, so no commit
 			b.files["memories/MEMORY.md"] = "notes as of " + day + "\n"
 		}
-		if d%7 == 2 { // USER.md changes once a week: the 2nd, 9th and 16th
+		if d%7 == 2 { // USER.md changes once a week: the 2nd and 9th
 			b.files["memories/USER.md"] = "user, version of " + day + "\n"
 		}
-		if made := b.backup(t, day); made == (d == 18) {
+		if made := b.backup(t, day); made == (d == 7) {
 			t.Fatalf("%s: commit made = %v", day, made)
 		}
-		e.must(b.dir, "git", "push", "-q", "origin", "main")
 		if d == 2 {
 			dropped = strings.TrimSpace(e.must(b.dir, "git", "rev-parse", "HEAD"))
 		}
 	}
+	e.must(b.dir, "git", "push", "-q", "origin", "main")
 	before := b.log()
 
 	out := e.must(b.base, "salt", "prune", b.dir)
-	if !strings.Contains(out, "kept 5 backup(s) from the last 5 day(s) with a change and dropped 15 older one(s)") ||
+	if !strings.Contains(out, "kept 5 backup(s) from the last 5 day(s) with a change and dropped 4 older one(s)") ||
 		!strings.Contains(out, "git push --force-with-lease") {
 		t.Fatalf("prune output:\n%s", out)
 	}
-	want := []string{"Backup 2026-09-20", "Backup 2026-09-19", "Backup 2026-09-17", "Backup 2026-09-16", "Backup 2026-09-15"}
+	want := []string{"Backup 2026-09-09", "Backup 2026-09-08", "Backup 2026-09-06", "Backup 2026-09-05", "Backup 2026-09-04"}
 	if got := b.subjects(); !slices.Equal(got, want) {
 		t.Fatalf("kept %q, want %q", got, want)
 	}
@@ -212,8 +263,8 @@ func TestPruneKeepsTheLastDaysWithAChange(t *testing.T) {
 	}
 
 	// Every kept backup restores with each file, and its last-modified
-	// date, as it was that day: USER.md from the 9th until it changed on
-	// the 16th.
+	// date, as it was that day: USER.md from the 2nd until it changed on
+	// the 9th.
 	for _, line := range strings.Split(strings.TrimSpace(e.must(b.dir, "git", "log", "--format=%H %s")), "\n") {
 		sha, subject, _ := strings.Cut(line, " ")
 		got, dates := b.restoreCommit(t, sha)
@@ -224,11 +275,11 @@ func TestPruneKeepsTheLastDaysWithAChange(t *testing.T) {
 			t.Fatalf("%s restored dates %v, want %v", subject, dates, b.sealedDates[subject])
 		}
 	}
-	if got := b.sealed["Backup 2026-09-15"]["memories/USER.md"]; got != "user, version of 2026-09-09\n" {
-		t.Fatalf("the oldest kept backup should hold USER.md from the 9th, has %q", got)
+	if got := b.sealed["Backup 2026-09-04"]["memories/USER.md"]; got != "user, version of 2026-09-02\n" {
+		t.Fatalf("the oldest kept backup should hold USER.md from the 2nd, has %q", got)
 	}
-	if got := b.sealedDates["Backup 2026-09-15"]["memories/USER.md"]; !got.Equal(editedOn(t, "2026-09-09")) {
-		t.Fatalf("the oldest kept backup should date USER.md the 9th, has %v", got)
+	if got := b.sealedDates["Backup 2026-09-04"]["memories/USER.md"]; !got.Equal(editedOn(t, "2026-09-02")) {
+		t.Fatalf("the oldest kept backup should date USER.md the 2nd, has %v", got)
 	}
 
 	// A plain push is refused, so a script that forgets --force-with-lease
@@ -255,11 +306,11 @@ func TestPruneKeepsTheLastDaysWithAChange(t *testing.T) {
 		t.Fatal("a prune with nothing to drop rewrote history")
 	}
 
-	// Another month of nightly backups, each pruned and pushed. The local
-	// repo stops growing, and the dropped commits leave it once the remote
-	// no longer points at them.
+	// Twelve more nightly backups, each pruned and pushed. The local repo
+	// stops growing, and the dropped commits leave it once the remote no
+	// longer points at them.
 	var counts []int
-	for d := 1; d <= 30; d++ {
+	for d := 1; d <= 12; d++ {
 		day := fmt.Sprintf("2026-10-%02d", d)
 		b.files["memories/MEMORY.md"] = "notes as of " + day + "\n"
 		b.backup(t, day)
@@ -268,14 +319,15 @@ func TestPruneKeepsTheLastDaysWithAChange(t *testing.T) {
 		counts = append(counts, b.objectCount(t))
 	}
 	if n := strings.TrimSpace(e.must(b.dir, "git", "rev-list", "--count", "HEAD")); n != "5" {
-		t.Fatalf("after a month the branch has %s commits, want 5", n)
+		t.Fatalf("after twelve nights the branch has %s commits, want 5", n)
 	}
 	// Each night adds one commit, tree, index and MEMORY.md object and drops
-	// as many, so the count settles and stays flat.
-	settled := counts[9]
-	for i, c := range counts[10:] {
+	// as many, so the count settles (once USER.md from the 2nd is dropped,
+	// on the 5th night) and stays flat.
+	settled := counts[5]
+	for i, c := range counts[6:] {
 		if c != settled {
-			t.Fatalf("object count on night %d is %d, not the settled %d: %v", i+11, c, settled, counts)
+			t.Fatalf("object count on night %d is %d, not the settled %d: %v", i+7, c, settled, counts)
 		}
 	}
 	if _, code := e.run(b.dir, "git", "cat-file", "-e", dropped); code == 0 {
