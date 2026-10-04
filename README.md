@@ -120,7 +120,7 @@ salt seal --postgres-env DB_CONNECTION_URI "$STAGE" "$REPO"
 
 `--postgres-env` reads the database address from an environment variable, so the password never appears on the command line. The [design doc](docs/design.md#databases) explains the options and [how to restore a Postgres database](docs/design.md#restoring-a-postgres-database).
 
-A SQLite database is backed up under its file name, and a Postgres database under its name with `.sql`. If two databases have the same name, such as two agents that both keep a `state.db`, give one of them another name with `--name` just before its option:
+A SQLite database is backed up under its file name, and a Postgres database under its name with `.sql`. If two databases have the same name, such as two agents that both keep a `state.db`, give one of them another name with `--name`, which applies to the next database option:
 
 ```bash
 salt seal --sqlite ~/agent1/state.db --name agent2/state.db --sqlite ~/agent2/state.db "$STAGE" "$REPO"

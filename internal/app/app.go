@@ -134,7 +134,7 @@ func (a *App) Seal(o SealOptions) error {
 	defer cleanup()
 	res, err := seal.Seal(o.Src, r, seal.Options{CacheDir: a.CacheDir, Signer: signer, Prune: o.Prune, Show: a.short, Extra: extra})
 	if errors.Is(err, seal.ErrDuplicatePath) && len(extra) > 0 {
-		return fmt.Errorf("%w; each database salt copies is backed up under its own name, which must not be used by another database or by a file or folder in %s. Give the database another name with --name NAME just before its option", err, a.short(o.Src))
+		return fmt.Errorf("%w; each database salt copies is backed up under its own name, which must not be used by another database or by a file or folder in %s. Give the database another name with --name NAME before its option", err, a.short(o.Src))
 	}
 	if err != nil {
 		return err
@@ -174,13 +174,13 @@ func (a *App) copyDatabases(ctx context.Context, repoRoot string, dbs []source.D
 				continue
 			}
 			if prev.String() == db.String() && prev.Name() == db.Name() {
-				return nil, nil, fmt.Errorf("the database %s is given twice; give it once", a.short(db.String()))
+				return nil, nil, fmt.Errorf("the database %s is given twice. Give it once", a.short(db.String()))
 			}
 			if prev.Name() == db.Name() {
-				return nil, nil, fmt.Errorf("the databases %s and %s would both be backed up as %s; give one of them another name with --name NAME just before its %s",
+				return nil, nil, fmt.Errorf("the databases %s and %s would both be backed up as %s. Give one of them another name with --name NAME before its %s",
 					a.short(prev.String()), a.short(db.String()), db.Name(), db.Flag())
 			}
-			return nil, nil, fmt.Errorf("the databases %s and %s would be backed up as %s and %s, which clash because a file cannot also be a folder and macOS and Windows ignore case; give one of them another name with --name NAME just before its %s",
+			return nil, nil, fmt.Errorf("the databases %s and %s would be backed up as %s and %s, which clash because a file cannot also be a folder and macOS and Windows ignore case. Give one of them another name with --name NAME before its %s",
 				a.short(prev.String()), a.short(db.String()), prev.Name(), db.Name(), db.Flag())
 		}
 	}

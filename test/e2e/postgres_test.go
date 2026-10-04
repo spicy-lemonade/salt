@@ -205,7 +205,7 @@ func TestSealPostgresNamed(t *testing.T) {
 	// Without --name the two are refused before pg_dump runs, without
 	// showing a password.
 	out = assertSealFails(t, e.with("PATH="+filepath.Dir(e.bin), "HONCHO_DB="+second.url("postgres")), b,
-		"would both be backed up as postgres.sql; give one of them another name with --name NAME just before its --postgres-env",
+		"would both be backed up as postgres.sql. Give one of them another name with --name NAME before its --postgres-env",
 		"--postgres", first.url("postgres"), "--postgres-env", "HONCHO_DB")
 	if strings.Contains(out, "s3cret") || strings.Contains(out, "pa:ss") {
 		t.Fatalf("the output shows the password:\n%s", out)

@@ -207,13 +207,13 @@ func TestSealDatabaseNameClash(t *testing.T) {
 		want string
 	}{
 		"two databases": {[]source.Database{fc.db(db), fc.db(other)},
-			"the databases ~/agent/memory.db and ~/agent2/memory.db would both be backed up as memory.db; give one of them another name with --name NAME just before its --fake"},
-		"same db, twice": {fc.dbs(db, db), "the database ~/agent/memory.db is given twice; give it once"},
+			"the databases ~/agent/memory.db and ~/agent2/memory.db would both be backed up as memory.db. Give one of them another name with --name NAME before its --fake"},
+		"same db, twice": {fc.dbs(db, db), "the database ~/agent/memory.db is given twice. Give it once"},
 		"chosen name":    {[]source.Database{fc.db(db), chosen}, "would both be backed up as memory.db"},
 		"folder above": {[]source.Database{fc.db(db), named(t, fc.db(other), "memory.db/agent2.db")},
 			"the databases ~/agent/memory.db and ~/agent2/memory.db would be backed up as memory.db and memory.db/agent2.db, which clash"},
 		"case only": {[]source.Database{fc.db(db), named(t, fc.db(other), "Memory.DB")},
-			"would be backed up as memory.db and Memory.DB, which clash because a file cannot also be a folder and macOS and Windows ignore case; give one of them another name with --name NAME just before its --fake"},
+			"would be backed up as memory.db and Memory.DB, which clash because a file cannot also be a folder and macOS and Windows ignore case. Give one of them another name with --name NAME before its --fake"},
 	} {
 		err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: tc.dbs})
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -243,7 +243,7 @@ func TestSealDatabaseSourceClash(t *testing.T) {
 		}
 		err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: []source.Database{d}})
 		if !errors.Is(err, seal.ErrDuplicatePath) || !strings.Contains(err.Error(), "each database salt copies is backed up under its own name") ||
-			!strings.Contains(err.Error(), "Give the database another name with --name NAME just before its option") {
+			!strings.Contains(err.Error(), "Give the database another name with --name NAME before its option") {
 			t.Errorf("named %q: %v", name, err)
 		}
 	}

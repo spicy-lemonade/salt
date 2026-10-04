@@ -57,8 +57,8 @@ Nightly (in your backup script):
       environment variable VAR, so its password never shows in a process
       list. Without a password in the connection, pg_dump looks in ~/.pgpass
       or PGPASSWORD.
-      --name NAME, just before a database option, backs that database up
-      as NAME instead, such as honcho.sql or agent/state.db. Use it when two
+      --name NAME backs up the database from the next database option as
+      NAME instead, such as honcho.sql or agent/state.db. Use it when two
       databases have the same name.
   salt prune [--keep-days N] REPO
       Keep only the backups from the last N days on which anything in REPO

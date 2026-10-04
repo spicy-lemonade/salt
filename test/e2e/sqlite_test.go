@@ -272,9 +272,9 @@ func TestSealSQLiteNamed(t *testing.T) {
 
 	// sqlite3 is never started for a name that is refused.
 	saltOnly := e.with("PATH=" + filepath.Dir(e.bin))
-	assertSealFails(t, saltOnly, b, "would both be backed up as state.db; give one of them another name with --name NAME just before its --sqlite",
+	assertSealFails(t, saltOnly, b, "would both be backed up as state.db. Give one of them another name with --name NAME before its --sqlite",
 		"--sqlite", first, "--sqlite", second)
-	assertSealFails(t, e, b, "Give the database another name with --name NAME just before its option", "--name", "agent2/SOUL.md", "--sqlite", second)
+	assertSealFails(t, e, b, "Give the database another name with --name NAME before its option", "--name", "agent2/SOUL.md", "--sqlite", second)
 	// An unsafe name, or a --name with no database, is a usage error.
 	for want, args := range map[string][]string{
 		"the name \"../state.db\" cannot be used in the backup. Give --name a relative path": {"--name", "../state.db", "--sqlite", second},

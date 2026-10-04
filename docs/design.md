@@ -477,8 +477,9 @@ Each kind picks the name its copy is backed up under: a SQLite file keeps its
 file name, and a Postgres dump is the database's name with `.sql`. Two
 databases can have the same name, such as two agents that each keep a
 `state.db`, or two servers that both use Postgres's default database,
-`postgres`. Salt never asks anyone to rename their own data, so `--name NAME`,
-given just before a database option, backs that database up as NAME instead:
+`postgres`. Salt never asks anyone to rename their own data, so `--name NAME`
+backs up the database from the next database option as NAME instead. Other
+options and SRC or REPO may come between them, but it reads best just before:
 
 ```bash
 salt seal --sqlite ~/agent1/state.db --name agent2/state.db --sqlite ~/agent2/state.db SRC REPO
