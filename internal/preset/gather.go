@@ -138,7 +138,6 @@ type spot struct {
 // spots found inside it is left to its own walk, so it is backed up once,
 // under its own path and with its own preset's rules.
 func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, show func(string) string) error {
-	databases := map[string]bool{}
 	return filepath.WalkDir(real, func(walked string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -154,12 +153,7 @@ func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, s
 			return err
 		}
 		at, to := filepath.Join(pl.Abs, sub), path.Join(pl.Rel, filepath.ToSlash(sub))
-		// A path found through a symlink has two names, and rules match
-		// either.
-		names := []string{d.Name(), filepath.Base(at)}
-		if walked != real && (slices.ContainsFunc(names, func(n string) bool {
-			return slices.Contains(seal.DefaultExclude, n) || matchAny(p.Skip, n)
-		})) {
+		if walked != real && (slices.Contains(seal.DefaultExclude, d.Name()) || matchAny(p.Skip, d.Name())) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -172,10 +166,14 @@ func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, s
 			f.Skipped = append(f.Skipped, show(at))
 			return nil
 		}
-		if slices.ContainsFunc(sidecars, func(s string) bool {
-			return strings.HasSuffix(at, s) && databases[strings.TrimSuffix(at, s)]
-		}) {
-			return nil
+		if sidecar, err := isSidecar(walked); sidecar || err != nil {
+			return err
+		}
+		// The place itself may be a symlink, and then has two names; the
+		// secrets rules match either. Inside it, symlinks are not followed.
+		names := []string{d.Name()}
+		if walked == real {
+			names = append(names, filepath.Base(pl.Abs))
 		}
 		for _, s := range p.Secrets {
 			if !slices.ContainsFunc(names, func(n string) bool { return matchAny(s.Files, n) }) {
@@ -198,7 +196,6 @@ func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, s
 			if err != nil {
 				return err
 			}
-			databases[at] = true
 			f.Databases = append(f.Databases, db)
 			return nil
 		}
@@ -209,6 +206,21 @@ func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, s
 		f.Files = append(f.Files, seal.Extra{Rel: to, Path: at, Mode: info.Mode(), ModTime: info.ModTime()})
 		return nil
 	})
+}
+
+// isSidecar reports whether the file at p is a -wal, -shm or -journal file
+// beside a SQLite database, whose safe copy already holds what is in it.
+func isSidecar(p string) (bool, error) {
+	for _, s := range sidecars {
+		if db, ok := strings.CutSuffix(p, s); ok {
+			isDB, err := source.IsSQLite(db)
+			if errors.Is(err, fs.ErrNotExist) {
+				return false, nil // a leftover with no database beside it
+			}
+			return isDB, err
+		}
+	}
+	return false, nil
 }
 
 // secretIn says why the file at p must be left out: one of the settings

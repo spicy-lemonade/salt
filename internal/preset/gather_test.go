@@ -314,3 +314,23 @@ func TestGatherChecksSecretsThroughSymlinks(t *testing.T) {
 		t.Fatalf("files %v, left out %+v", files, f.LeftOut)
 	}
 }
+
+// A -wal file beside a database is never backed up on its own, even when
+// the database itself is skipped, since without it the -wal is useless.
+func TestGatherSidecarOfSkippedDatabase(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, "tool", "old.db"), sqliteFile)
+	write(t, filepath.Join(home, "tool", "old.db-wal"), "wal")
+	write(t, filepath.Join(home, "tool", "a.md"), "a")
+	p, err := Parse("t", []byte(`{"name": "t", "paths": [{"from": "~/tool", "to": "tool"}], "skip": ["old.db"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := envOf(home, nil).Gather([]*Preset{p}, t.TempDir(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files, dbs := rels(f); !slices.Equal(files, []string{"tool/a.md"}) || len(dbs) != 0 {
+		t.Fatalf("files %v, databases %v", files, dbs)
+	}
+}
