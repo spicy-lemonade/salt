@@ -96,7 +96,7 @@ func TestRestoreFromURLFailures(t *testing.T) {
 		url, want string
 	}{
 		{"https://example.test/missing.git", "salt: downloading the backup: git clone https://example.test/missing.git"},
-		{"https://example.test/empty.git", "salt: https://example.test/empty.git is not a salt backup repo (it has no .salt/format.json)"},
+		{"https://example.test/empty.git", "salt: https://example.test/empty.git is not a salt backup repo (its default branch has no .salt/format.json)"},
 		{"http://you:s3cret@example.test/backup.git", "salt: salt cannot download a backup from http://example.test/backup.git."},
 		// Nothing listens on port 1, so this fails at once.
 		{"https://you:s3cret@127.0.0.1:1/backup.git", "salt: downloading the backup: git clone https://127.0.0.1:1/backup.git"},

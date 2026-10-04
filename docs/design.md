@@ -117,15 +117,15 @@ If you lose them and this laptop, your backups cannot be recovered.
 - `salt restore` also takes the backup repo's https or ssh URL, or its SSH
   form (`git@github.com:you/backup.git`). Other URLs are refused. `http://`
   would send a password or token in the clear, and a folder is given by its
-  path. It downloads only the latest backup (`git clone --depth 1`, hooks
-  off) into a private `salt-download-*` folder in the home folder, then
-  restores from it as from a local repo and removes it, whether the restore
-  worked or not. The download holds only encrypted
+  path. It downloads only the latest backup on the repo's default branch
+  (`git clone --depth 1`, hooks off) into a private `salt-download-*` folder
+  in the home folder, then restores from it as from a local repo and removes
+  it, whether the restore worked or not. The download holds only encrypted
   files; nothing is decrypted until it is complete. Messages never show a
   user name or password given in the URL, and name the URL rather than the
-  download's folder, which is gone by the time they are read. A download that could not be
-  removed, or that a killed salt left behind, is pointed out by the next
-  restore from a URL and by `salt doctor`.
+  download's folder, which is gone by the time they are read. A download
+  that could not be removed, or that a killed salt left behind, is pointed
+  out by the next restore from a URL and by `salt doctor`.
 - `salt restore` and `salt verify` first check the index is signed by the
   signing key of one of the keys that decrypts it, and refuse it if not.
   `--allow-unsigned` goes ahead anyway, with a warning, for example to look

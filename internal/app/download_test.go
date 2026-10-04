@@ -100,7 +100,7 @@ func TestRestoreFromURLNotSalt(t *testing.T) {
 		return os.WriteFile(filepath.Join(dir, "README.md"), []byte("not salt"), 0o644)
 	}
 	err := e.app.Restore(RestoreOptions{Repo: backupURL, To: filepath.Join(t.TempDir(), "r")})
-	if err == nil || err.Error() != "https://github.com/me/backup.git is not a salt backup repo (it has no .salt/format.json)" {
+	if err == nil || err.Error() != "https://github.com/me/backup.git is not a salt backup repo (its default branch has no .salt/format.json)" {
 		t.Fatalf("Restore: %v", err)
 	}
 	noDownloadsLeft(t, e)

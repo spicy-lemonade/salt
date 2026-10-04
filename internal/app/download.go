@@ -67,7 +67,7 @@ func (a *App) openRepo(ctx context.Context, spec string) (r *repo.Repo, done fun
 	}
 	r, err = repo.Open(tmp)
 	if errors.Is(err, repo.ErrNotInitialised) {
-		err = fmt.Errorf("%s is not a salt backup repo (it has no %s)", shown, repo.FormatFile)
+		err = fmt.Errorf("%s is not a salt backup repo (its default branch has no %s)", shown, repo.FormatFile)
 	}
 	if err != nil {
 		return nil, nil, done(err)
