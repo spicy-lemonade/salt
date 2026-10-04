@@ -87,8 +87,9 @@ type fakeGit struct {
 	branchErr error
 	// head is what Head returns, h1 when empty; known records what each
 	// Push was given.
-	head  string
-	known [][]string
+	head    string
+	headErr error
+	known   [][]string
 	// onStage and onCommit run during Stage and Commit; onCommit's error
 	// is Commit's.
 	onStage  func()
@@ -146,9 +147,9 @@ func (f *fakeGit) Commit(_ context.Context, _, msg string) error {
 
 func (f *fakeGit) Head(string) (string, error) {
 	if f.head == "" {
-		return "h1", nil
+		return "h1", f.headErr
 	}
-	return f.head, nil
+	return f.head, f.headErr
 }
 
 func (f *fakeGit) Push(ctx context.Context, _ string, known []string) error {

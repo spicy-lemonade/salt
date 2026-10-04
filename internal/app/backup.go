@@ -180,9 +180,6 @@ func (a *App) push(ctx context.Context, root string) error {
 }
 
 func writeKnown(p string, known []string) error {
-	b, err := json.Marshal(known)
-	if err != nil {
-		return err
-	}
+	b, _ := json.Marshal(known) // a list of strings always marshals
 	return seal.WritePrivate(p, b)
 }

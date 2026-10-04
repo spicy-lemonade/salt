@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -219,6 +220,8 @@ func TestBackupGitFailures(t *testing.T) {
 		"commit":  {func(g *fakeGit) { g.commitErr = boom }, "committing the backup: boom", []string{"stage", "commit salt backup"}, false},
 		"prune": {func(g *fakeGit) { g.prune, g.pruneErr = nil, boom },
 			"the backup was committed, but dropping old backups failed, so it was not pushed: boom", []string{"stage", "commit salt backup"}, true},
+		"head": {func(g *fakeGit) { g.headErr = boom },
+			"the backup was committed but not pushed: boom", []string{"stage", "commit salt backup"}, true},
 		"push": {func(g *fakeGit) { g.push = func(context.Context) error { return boom } },
 			"the backup was committed but not pushed: boom", []string{"stage", "commit salt backup", "push"}, true},
 	} {
@@ -396,6 +399,10 @@ func TestRepoLock(t *testing.T) {
 	unlock()
 	if err := e.backup(presets); err != nil {
 		t.Fatal(err)
+	}
+	// A repo that has gone cannot be locked.
+	if _, err := e.app.lockRepo(filepath.Join(t.TempDir(), "gone")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("lockRepo on a missing repo: %v", err)
 	}
 }
 
