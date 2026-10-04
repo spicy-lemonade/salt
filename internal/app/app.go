@@ -32,7 +32,9 @@ type App struct {
 	CacheDir  string
 	// TrustDir holds this machine's approved keys and settings per repo.
 	TrustDir string
-	Git      GitOps
+	// SignDir holds this machine's keys for signing backups (see signStore).
+	SignDir string
+	Git     GitOps
 	// LookPath finds an executable the way the pre-commit hook would.
 	LookPath func(name string) (string, bool)
 	Now      func() time.Time
@@ -117,12 +119,20 @@ func (a *App) Seal(o SealOptions) error {
 	if err := a.checkTrusted(r); err != nil {
 		return err
 	}
+	signer, err := a.signingKey(r)
+	if errors.Is(err, errNoSigningKey) {
+		return fmt.Errorf("this machine has no key to sign backups to %s. salt now signs every backup, so restore can tell if someone planted files in it. Run `salt trust %q` once to set it up",
+			a.short(r.Root), r.Root)
+	}
+	if err != nil {
+		return fmt.Errorf("reading the signing key: %w", err)
+	}
 	extra, cleanup, err := a.copyDatabases(o.Context, r.Root, o.Databases)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-	res, err := seal.Seal(o.Src, r, seal.Options{CacheDir: a.CacheDir, Prune: o.Prune, Show: a.short, Extra: extra})
+	res, err := seal.Seal(o.Src, r, seal.Options{CacheDir: a.CacheDir, Signer: signer, Prune: o.Prune, Show: a.short, Extra: extra})
 	if errors.Is(err, seal.ErrDuplicatePath) && len(extra) > 0 {
 		return fmt.Errorf("%w; each database salt copies is backed up under its own name, which must not be used by another database or by a file or folder at the top of %s", err, a.short(o.Src))
 	}

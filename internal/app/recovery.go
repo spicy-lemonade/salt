@@ -79,6 +79,8 @@ type RestoreOptions struct {
 	To    string
 	Paths []string
 	Force bool
+	// AllowUnsigned restores even if the index is not signed by your key.
+	AllowUnsigned bool
 	// Context stops the restore when cancelled (see seal.RestoreOptions).
 	Context context.Context
 }
@@ -96,12 +98,16 @@ func (a *App) Restore(o RestoreOptions) error {
 	a.warnLeftoverRestores(o.To)
 	res, err := seal.Restore(r.Root, ids, o.To, seal.RestoreOptions{
 		Paths: o.Paths, Force: o.Force, Context: o.Context, Track: a.trackRestore, Show: a.short,
+		AllowUnsigned: o.AllowUnsigned,
 	})
 	if errors.Is(err, context.Canceled) {
 		return fmt.Errorf("restore %w: the partly restored files were removed and %s was not changed", ErrInterrupted, a.short(o.To))
 	}
 	if err != nil {
-		return err
+		return explainUnsigned(err)
+	}
+	if res.Unsigned {
+		a.UI.Printf("%s", unsignedWarning)
 	}
 	a.UI.Printf("✓ Restored %d files and %d symlinks to %s\n", res.Files, res.Symlinks, a.short(o.To))
 	if res.MovedAside != "" {

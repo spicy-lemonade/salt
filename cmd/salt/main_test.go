@@ -215,6 +215,18 @@ func TestRunSealVerifyRestore(t *testing.T) {
 			t.Fatalf("restored %s = %q, want %q", rel, b, want)
 		}
 	}
+	// trust --yes set up this machine's signing key next to the approvals.
+	if _, err := (keys.FileStore{Dir: filepath.Join(cfg, "salt", "signing")}).Get(rcpt); err != nil {
+		t.Fatalf("no signing key saved: %v", err)
+	}
+	// --allow-unsigned is accepted by verify and restore; a signed backup
+	// needs no warning.
+	if err := run("verify", []string{"--allow-unsigned", root}); err != nil {
+		t.Fatalf("verify --allow-unsigned: %v", err)
+	}
+	if err := run("restore", []string{root, "--allow-unsigned", "--to", filepath.Join(base, "again")}); err != nil {
+		t.Fatalf("restore --allow-unsigned: %v", err)
+	}
 	// A database option's value is checked before anything is sealed, and a
 	// password in it is never repeated.
 	t.Setenv("SALT_TEST_EMPTY", "")

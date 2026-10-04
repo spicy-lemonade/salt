@@ -101,6 +101,7 @@ func (a *App) Doctor(repoRoot string) error {
 
 	a.doctorKeys(r, rp)
 	a.doctorTrust(r, rp)
+	a.doctorSigning(r, rp)
 	a.doctorHook(r, root)
 	a.doctorTree(r, root)
 
@@ -193,6 +194,17 @@ func (a *App) doctorTrust(r *report, rp *repo.Repo) {
 		} else {
 			r.add(ok, "keys and settings match what you approved")
 		}
+	}
+}
+
+func (a *App) doctorSigning(r *report, rp *repo.Repo) {
+	switch _, err := a.signingKey(rp); {
+	case errors.Is(err, errNoSigningKey):
+		r.add(warn, "this machine has no key to sign backups, so `salt seal` will refuse; run `salt trust %q`", rp.Root)
+	case err != nil:
+		r.add(fail, "the signing key saved on this machine cannot be read: %v", err)
+	default:
+		r.add(ok, "this machine can sign backups")
 	}
 }
 
@@ -301,8 +313,9 @@ func readHead(p string) ([]byte, error) {
 }
 
 // Verify decrypts every file in the backup (without writing plaintext) and
-// checks it against the index.
-func (a *App) Verify(repoRoot string) error {
+// checks it against the index. allowUnsigned checks the files even if the
+// index is not signed by the person's key.
+func (a *App) Verify(repoRoot string, allowUnsigned bool) error {
 	rp, err := repo.Open(repoRoot)
 	if err != nil {
 		return err
@@ -311,9 +324,12 @@ func (a *App) Verify(repoRoot string) error {
 	if err != nil {
 		return err
 	}
-	res, err := seal.Verify(rp.Root, ids, 0)
+	res, err := seal.Verify(rp.Root, ids, seal.VerifyOptions{AllowUnsigned: allowUnsigned})
 	if err != nil {
-		return err
+		return explainUnsigned(err)
+	}
+	if res.Unsigned {
+		a.UI.Printf("%s", unsignedWarning)
 	}
 	for _, u := range res.Unreferenced {
 		a.UI.Printf("  ! %s is not in the index (the next `salt seal` removes it)\n", u)

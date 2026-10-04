@@ -15,11 +15,22 @@ import (
 	"github.com/spicy-lemonade/salt/internal/repo"
 )
 
+// VerifyOptions configures Verify.
+type VerifyOptions struct {
+	Workers int
+	// AllowUnsigned checks the files even if the index is not signed by one
+	// of the keys (see ReadIndex).
+	AllowUnsigned bool
+}
+
 // VerifyResult summarises a verify.
 type VerifyResult struct {
 	Files    int
 	Symlinks int
 	Bytes    int64
+	// Unsigned means the index was not signed by one of the keys, and was
+	// accepted only because of AllowUnsigned.
+	Unsigned bool
 	// Problems describe files that cannot be restored correctly: the
 	// MaxProblems of them first by path, in path order, so the list is the
 	// same on every run. ProblemCount counts them all.
@@ -38,12 +49,13 @@ const MaxProblems = 50
 // Verify proves every file in the backup can be restored: it decrypts each
 // object, discarding the plaintext, and checks it against the index. Nothing
 // is written to disk. Unlike Restore it reports every problem rather than
-// stopping at the first.
-func Verify(root string, ids []age.Identity, workerCount int) (*VerifyResult, error) {
+// stopping at the first. An index that is not signed by one of the keys is
+// refused outright, as Restore refuses it.
+func Verify(root string, ids []age.Identity, opt VerifyOptions) (*VerifyResult, error) {
 	if err := CheckNoSymlinks(root); err != nil {
 		return nil, err
 	}
-	ix, err := ReadIndex(root, ids)
+	ix, err := ReadIndex(root, ids, opt.AllowUnsigned)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +64,7 @@ func Verify(root string, ids []age.Identity, workerCount int) (*VerifyResult, er
 		return nil, err
 	}
 	defer rt.Close()
-	res := &VerifyResult{}
+	res := &VerifyResult{Unsigned: ix.Unsigned}
 	var files []Entry
 	referenced := map[string]bool{}
 	for _, e := range ix.Entries {
@@ -70,7 +82,7 @@ func Verify(root string, ids []age.Identity, workerCount int) (*VerifyResult, er
 	type problem struct{ path, msg string }
 	var kept []problem
 	var mu sync.Mutex
-	forEach(len(files), workers(workerCount), func(i int) error {
+	forEach(len(files), workers(opt.Workers), func(i int) error {
 		n, err := verifyEntry(rt, ids, files[i])
 		mu.Lock()
 		defer mu.Unlock()

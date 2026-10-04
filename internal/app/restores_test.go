@@ -149,7 +149,7 @@ func TestVerifyListsAtMostFiftyProblems(t *testing.T) {
 	}
 	os.RemoveAll(filepath.Join(e.root, "objects"))
 	e.ui.out.Reset()
-	if err := e.app.Verify(e.root); !errors.Is(err, ErrReported) {
+	if err := e.app.Verify(e.root, false); !errors.Is(err, ErrReported) {
 		t.Fatalf("Verify: %v", err)
 	}
 	out := e.ui.out.String()

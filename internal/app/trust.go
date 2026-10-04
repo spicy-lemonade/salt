@@ -86,6 +86,9 @@ func (a *App) Trust(repoRoot string, yes bool) error {
 			return nil
 		}
 	}
+	if err := a.ensureSigningKey(r); err != nil {
+		return err
+	}
 	if err := a.trustStore().Save(r.Root, pin); err != nil {
 		return err
 	}

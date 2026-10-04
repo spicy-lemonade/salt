@@ -32,7 +32,7 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - BIP39 12-word recovery phrases; the age key is derived from the phrase with HKDF-SHA256
 - OS keychain via `github.com/zalando/go-keyring`, with a 0600 file fallback (`SALT_KEYSTORE=file`)
 
-**Commands:** `init`, `seal [--sqlite DB] [--postgres CONN] [--postgres-env VAR]`, `prune`, `check`, `restore`, `verify`, `doctor`, `trust`, `recovery test|show`, `hook install`, `version`.
+**Commands:** `init`, `seal [--sqlite DB] [--postgres CONN] [--postgres-env VAR]`, `prune`, `check`, `restore [--allow-unsigned]`, `verify [--allow-unsigned]`, `doctor`, `trust`, `recovery test|show`, `hook install`, `version`.
 
 **Package layout:**
 - `cmd/salt`: CLI entry point and flag parsing
@@ -55,7 +55,7 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - `.salt/format.json`: public; layout version, `encrypt_paths`, recovery method
 - `.salt/recipients.txt`: public; the age public keys every file is encrypted to
 - `.salt/key.age`: passphrase-wrapped private key (passphrase recovery only)
-- `index.age`: encrypted JSON index holding real paths, SHA-256 of the plaintext, sizes, modes, last-modified times and symlinks
+- `index.age`: encrypted JSON index holding real paths, SHA-256 of the plaintext, sizes, modes, last-modified times and symlinks, signed with the signing key
 - `objects/xx/<random>.age`: file contents when paths are encrypted (the default)
 - `files/<path>.age`: file contents with `--plain-paths`
 - `README.md`, `LICENSE`, `.gitignore`, `.gitattributes`: the only other files allowed unencrypted
@@ -63,7 +63,8 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 **Pipeline:** file -> zstd -> age -> object, fully streamed with fixed buffers and at most 4 workers. No data file is ever read whole into memory.
 
 **Keys:**
-- Sealing needs only the public key, so encrypting a backup never needs anything secret.
+- Sealing needs only the public key and the signing key, so encrypting a backup never needs the decryption key.
+- The signing key is Ed25519, derived from the age private key with HKDF-SHA256 (`keys.SigningKey`), and kept in a 0600 file in the OS config dir (`salt/signing/`). `salt init` and `salt trust` save it. Restore and verify refuse an index not signed by the key derived from one of the keys that decrypts it, unless `--allow-unsigned` is passed. Changing `signSalt` or `signInfo` would fail every existing backup's signature check.
 - The private key lives in the OS keychain.
 - Recovery is either a 12-word phrase (the recommended option, where the words are the key, and nothing secret is stored in the repo) or a user-chosen passphrase that wraps `.salt/key.age`.
 
@@ -102,7 +103,7 @@ go test ./internal/seal -run TestRoundTrip
 - Salt prints to stderr only. Scheduled jobs (cron, agent schedulers) often send any stdout on as an email or message, so success must be silent on stdout.
 - Decided out of scope is Touch ID gating, and switching recovery method from the 12 word passphrase to the user chosen passphrase or vice versa.
 - `salt seal --sqlite DB` makes a safe copy of a live SQLite database itself (`internal/source` runs `sqlite3 .backup`). `salt seal --postgres CONN` (or `--postgres-env VAR`) dumps a Postgres database as plain SQL with `pg_dump`, with the password passed in `PGPASSWORD` and never shown. See `docs/design.md`, "Databases".
-- Not yet built: OpenViking support, a `salt backup` preset, splitting files over 100 MB, and the signed index.
+- Not yet built: OpenViking support, a `salt backup` preset, and splitting files over 100 MB.
 
 ### Agent contributing rules
 
@@ -150,4 +151,4 @@ To see which lines are not covered, open `go tool cover -html=coverage-all.out`.
 **Never:**
 - run `go test -tags e2e` directly. Always use `make e2e`, which sets the safety limits.
 - run `salt init`, `salt restore` or `salt recovery` on your own machine outside a temporary folder. They write to the real keychain.
-- change the recovery-phrase derivation (`deriveSalt`, `deriveInfo`) or the agreed onboarding wording in `docs/design.md`.
+- change the recovery-phrase derivation (`deriveSalt`, `deriveInfo`), the signing-key derivation (`signSalt`, `signInfo`) or the agreed onboarding wording in `docs/design.md`.

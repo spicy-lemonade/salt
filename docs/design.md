@@ -8,8 +8,9 @@ and OpenViking later) before it is backed up to Git.
 - **Nothing unencrypted enters the backup repo.** `salt seal SRC REPO` writes
   only encrypted files. The pre-commit hook `salt check` blocks any staged file
   that is not encrypted, except a short list of public files.
-- **Encrypting never needs anything secret.** Sealing uses only the public
-  key. The private key is only needed to restore.
+- **Encrypting never needs the decryption key.** Sealing uses the public key
+  and a signing key that can sign but not decrypt. The private key is only
+  needed to restore.
 - **File names are hidden by default.** Turn this off with
   `salt init --plain-paths`.
 - **Files are processed a piece at a time**, never loaded whole into memory.
@@ -39,7 +40,7 @@ from the history, then pushes with `git push --force-with-lease` (see
 | `.salt/format.json` | settings (public) |
 | `.salt/recipients.txt` | public keys every file is encrypted to |
 | `.salt/key.age` | passphrase-locked private key (passphrase recovery only) |
-| `index.age` | encrypted list of real file names, sizes, hashes and last-modified dates |
+| `index.age` | encrypted, signed list of real file names, sizes, hashes and last-modified dates |
 | `objects/…` | encrypted files under random names (default) |
 | `files/…` | encrypted files under real names (`--plain-paths`) |
 
@@ -55,6 +56,28 @@ picks how to recover the key if the laptop is lost:
   passes. `salt recovery show` shows the phrase again later.
 - **Passphrase:** chosen by the user and stored as `.salt/key.age`. Weak
   passphrases are rejected.
+
+### Signing key
+
+Anyone can encrypt to the public key, so salt signs every index it writes
+(see "Planted files" under "Security"). The signing key is an Ed25519 key
+derived from the age private key with HKDF-SHA256 (`keys.SigningKey`). The
+derivation is one-way: the signing key can sign but cannot decrypt, and
+knowing it does not reveal the private key. Its salt and info strings are
+pinned by a test, like the recovery phrase's, because changing them would
+make every existing backup fail its signature check.
+
+The signing key is kept in a 0600 file in the OS config folder
+(`salt/signing/`), one per age key, apart from the private key. A scheduled
+`salt seal` reads only that file and never the keychain. `salt init` saves it.
+On another machine, `salt trust` saves it, deriving it from the private key
+in the keychain or, if there is none, from the recovery phrase or passphrase
+it asks for. `salt seal` refuses on a machine without one and says to run
+`salt trust`; `salt doctor` warns about it.
+
+Deriving it from the private key means a new machine needs nothing but the
+recovery phrase or passphrase to check a backup: the key that decrypts the
+backup also gives the public key that checks its signature.
 
 ### Onboarding copy (use verbatim)
 
@@ -91,6 +114,11 @@ If you lose them and this laptop, your backups cannot be recovered.
   ciphertext; only `index.age` is rewritten. Backups made before salt recorded
   dates restore with the time of the restore, and the first seal with a salt
   that records dates rewrites `index.age` once to add them.
+- `salt restore` and `salt verify` first check the index is signed by the
+  signing key of one of the keys that decrypts it, and refuse it if not.
+  `--allow-unsigned` goes ahead anyway, with a warning, for example to look
+  at a backup someone else replaced; every file is still checked against
+  the index.
 - `salt verify` decrypts everything without writing it to disk, and reports
   any file that cannot be restored. It needs the key.
 - `salt doctor` checks the hook, the key, the repo and the last backup. It
@@ -259,8 +287,26 @@ against someone who can push to it:
   can't clean up, so the folder is recorded while the restore runs, and
   `salt doctor` and the next `salt restore` report any left behind.
 
-Not yet covered: someone who can push can still plant a fake encrypted file.
-The signed index (#7 on the board) will catch that.
+- **Planted files.** Anyone can encrypt a file to the public key, so someone
+  who can push could replace `index.age` and add objects of their own, and
+  they would decrypt like real ones. Seal signs the index with the signing
+  key (see "Signing key"), and restore and verify refuse an index that is
+  not signed by the key derived from one of the keys that decrypts it. The
+  signature is inside the encrypted index, so it reveals nothing and adds no
+  public file. It covers the index's version and each entry in order, hashed
+  with SHA-512 one entry at a time as the index is read, so checking it
+  never holds a second copy of the index. Ed25519 signatures are
+  deterministic, so an unchanged backup still makes no commit. An object the
+  index does not list is never restored; `salt verify` lists it and the next
+  `salt seal` removes it.
+
+The signature does not stop someone who can push from putting back an older
+backup from the repo's history, since that backup is still genuinely signed
+with your key.
+
+Each key in the repo signs with its own signing key, and a backup is accepted
+only if it was signed with a key the restoring machine holds. With several
+keys, each machine can therefore check that a backup came from its own key.
 
 ## What the repo reveals
 
@@ -429,4 +475,3 @@ Touch ID, and switching recovery method.
 - OpenViking support. Its data format has not been checked yet.
 - a one-command `salt backup`, which will also run `salt prune`
 - splitting files over GitHub's 100 MB limit
-- a signed index, to detect planted files

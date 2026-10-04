@@ -2,17 +2,23 @@ package seal
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"filippo.io/age"
+	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
 )
 
@@ -21,6 +27,14 @@ import (
 type Index struct {
 	Version int     `json:"version"`
 	Entries []Entry `json:"entries"`
+	// Signature is the base64 Ed25519 signature of the index (see
+	// indexDigest), made with the signing key derived from one of the
+	// repo's age identities (keys.SigningKey). Anyone can encrypt to the
+	// public key, so without it a planted index would decrypt like a real one.
+	Signature string `json:"signature,omitempty"`
+	// Unsigned is set by ReadIndex when it was allowed to accept an index
+	// whose signature is missing or does not match. It is never written.
+	Unsigned bool `json:"-"`
 }
 
 // Entry is one file or symlink in a snapshot.
@@ -58,6 +72,84 @@ func (ix *Index) marshal() ([]byte, string, error) {
 	return b, hex.EncodeToString(s[:]), nil
 }
 
+// ErrNotSigned means the index is not signed by a key that comes from the
+// keys that opened it. Someone who can push to the repo may have replaced it
+// to plant files.
+var ErrNotSigned = errors.New("the backup's index is not signed by your key")
+
+// signatureContext keeps index signatures apart from anything else.
+const signatureContext = "salt index signature v1\n"
+
+// indexDigest hashes what an index's signature covers: its version, then
+// each entry in order, as JSON. Seal and ReadIndex both add one value at a
+// time, so checking a signature never needs a second copy of the index.
+type indexDigest struct {
+	h   hash.Hash
+	enc *json.Encoder
+}
+
+func newIndexDigest() *indexDigest {
+	h := sha512.New()
+	h.Write([]byte(signatureContext))
+	return &indexDigest{h: h, enc: json.NewEncoder(h)}
+}
+
+// add adds the index version or an entry. Encoding an int or an Entry into
+// a hash cannot fail: an Entry holds only strings and numbers, and writing to
+// a hash never returns an error.
+func (d *indexDigest) add(v any) { d.enc.Encode(v) }
+
+func (d *indexDigest) sum() []byte { return d.h.Sum(nil) }
+
+// sign sets ix.Signature. Ed25519 signatures are deterministic, so an
+// unchanged index signs to the same bytes and makes no commit.
+func (ix *Index) sign(key ed25519.PrivateKey) {
+	d := newIndexDigest()
+	d.add(ix.Version)
+	for _, e := range ix.Entries {
+		e = stored(e)
+		d.add(&e)
+	}
+	ix.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(key, d.sum()))
+}
+
+// stored returns e as ReadIndex will decode it, so the signature covers what
+// is stored. JSON keeps a string that is not valid UTF-8, such as a file
+// name on Linux, with U+FFFD in place of each bad byte. An Entry holds only
+// strings and numbers, so neither step can fail.
+func stored(e Entry) Entry {
+	if utf8.ValidString(e.Path) && utf8.ValidString(e.Object) && utf8.ValidString(e.Symlink) && utf8.ValidString(e.SHA256) {
+		return e
+	}
+	b, _ := json.Marshal(e)
+	var out Entry
+	json.Unmarshal(b, &out)
+	return out
+}
+
+// checkSignature reports whether ix.Signature signs digest with the signing
+// key of one of ids.
+func checkSignature(ix *Index, digest []byte, ids []age.Identity) error {
+	if ix.Signature == "" {
+		return fmt.Errorf("%w: it has no signature", ErrNotSigned)
+	}
+	sig, err := base64.StdEncoding.DecodeString(ix.Signature)
+	if err != nil || len(sig) != ed25519.SignatureSize {
+		return fmt.Errorf("%w: its signature is malformed", ErrNotSigned)
+	}
+	for _, id := range ids {
+		x, ok := id.(*age.X25519Identity)
+		if !ok {
+			continue
+		}
+		k := keys.SigningKey(x)
+		if ed25519.Verify(k.Public().(ed25519.PublicKey), digest, sig) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: its signature does not match", ErrNotSigned)
+}
+
 func writeIndex(root string, b []byte, recipients []age.Recipient) error {
 	rt, err := os.OpenRoot(root)
 	if err != nil {
@@ -68,9 +160,12 @@ func writeIndex(root string, b []byte, recipients []age.Recipient) error {
 	return err
 }
 
-// ReadIndex decrypts and validates a repository's index. It decodes one entry
-// at a time, so memory stays bounded however the index was crafted.
-func ReadIndex(root string, ids []age.Identity) (*Index, error) {
+// ReadIndex decrypts and validates a repository's index, and checks it is
+// signed by the signing key of one of ids. It decodes one entry at a time, so
+// memory stays bounded however the index was crafted. allowUnsigned accepts
+// an index whose signature is missing or does not match, and marks it
+// Unsigned; the files are still checked against it.
+func ReadIndex(root string, ids []age.Identity, allowUnsigned bool) (*Index, error) {
 	rt, err := os.OpenRoot(root)
 	if err != nil {
 		return nil, err
@@ -82,7 +177,8 @@ func ReadIndex(root string, ids []age.Identity) (*Index, error) {
 	}
 	defer closeFn()
 	lr := &io.LimitedReader{R: r, N: maxIndexSize + 1}
-	ix, err := decodeIndex(json.NewDecoder(newTokenLimitReader(lr, maxIndexJSONString, maxIndexToken)))
+	d := newIndexDigest()
+	ix, err := decodeIndex(json.NewDecoder(newTokenLimitReader(lr, maxIndexJSONString, maxIndexToken)), d)
 	if lr.N <= 0 {
 		return nil, fmt.Errorf("index is larger than %d bytes", maxIndexSize)
 	}
@@ -92,10 +188,18 @@ func ReadIndex(root string, ids []age.Identity) (*Index, error) {
 	if ix.Version != repo.FormatVersion {
 		return nil, fmt.Errorf("index version %d is not supported", ix.Version)
 	}
+	if err := checkSignature(ix, d.sum(), ids); err != nil {
+		if !allowUnsigned || !errors.Is(err, ErrNotSigned) {
+			return nil, err
+		}
+		ix.Unsigned = true
+	}
 	return ix, nil
 }
 
-func decodeIndex(dec *json.Decoder) (*Index, error) {
+// decodeIndex decodes an index, adding its version and each entry to d as
+// they are read, before validEntry cleans them.
+func decodeIndex(dec *json.Decoder, d *indexDigest) (*Index, error) {
 	if err := expectDelim(dec, '{'); err != nil {
 		return nil, err
 	}
@@ -110,9 +214,14 @@ func decodeIndex(dec *json.Decoder) (*Index, error) {
 			if err := dec.Decode(&ix.Version); err != nil {
 				return nil, decodeErr(err)
 			}
+			d.add(ix.Version)
 		case "entries":
-			if err := decodeEntries(dec, ix); err != nil {
+			if err := decodeEntries(dec, ix, d); err != nil {
 				return nil, err
+			}
+		case "signature":
+			if err := dec.Decode(&ix.Signature); err != nil {
+				return nil, decodeErr(err)
 			}
 		default:
 			return nil, fmt.Errorf("unexpected field %s", clipToken(key))
@@ -121,7 +230,7 @@ func decodeIndex(dec *json.Decoder) (*Index, error) {
 	return ix, expectDelim(dec, '}')
 }
 
-func decodeEntries(dec *json.Decoder, ix *Index) error {
+func decodeEntries(dec *json.Decoder, ix *Index, d *indexDigest) error {
 	if err := expectDelim(dec, '['); err != nil {
 		return err
 	}
@@ -133,6 +242,7 @@ func decodeEntries(dec *json.Decoder, ix *Index) error {
 		if err := dec.Decode(&e); err != nil {
 			return decodeErr(err)
 		}
+		d.add(&e)
 		if err := validEntry(&e); err != nil {
 			return err
 		}

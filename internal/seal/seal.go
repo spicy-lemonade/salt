@@ -2,6 +2,7 @@ package seal
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -28,6 +29,8 @@ const MaxWorkers = 4
 type Options struct {
 	// CacheDir holds the change-detection cache. Required.
 	CacheDir string
+	// Signer signs the index (see keys.SigningKey). Required.
+	Signer ed25519.PrivateKey
 	// Prune removes everything in the repository that this seal did not
 	// produce, apart from .git, .salt and the public files. Use it when the
 	// repository should mirror the snapshot exactly.
@@ -95,6 +98,9 @@ var entriesHook func([]Entry) []Entry
 func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	if opt.CacheDir == "" {
 		return nil, errors.New("seal: no cache directory")
+	}
+	if len(opt.Signer) != ed25519.PrivateKeySize {
+		return nil, errors.New("seal: no signing key")
 	}
 	if err := checkDisjoint(src, r.Root, opt.Show); err != nil {
 		return nil, err
@@ -191,6 +197,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		return nil, err
 	}
 	ix := &Index{Version: repo.FormatVersion, Entries: entries}
+	ix.sign(opt.Signer)
 	b, ixSHA, err := ix.marshal()
 	if err != nil {
 		return nil, err
