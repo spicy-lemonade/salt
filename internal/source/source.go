@@ -2,8 +2,12 @@ package source
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
+	"strings"
 	"time"
+
+	"github.com/spicy-lemonade/salt/internal/repo"
 )
 
 // waitTimeout is how long a copy waits for another program's write or lock to
@@ -14,8 +18,8 @@ const waitTimeout = 30 * time.Second
 // Each kind of database (see Kinds) implements it, so salt's commands work the
 // same way for all of them.
 type Database interface {
-	// Name is the file name the copy is backed up under, at the top of the
-	// backup.
+	// Name is the slash path the copy is backed up under. Each kind picks a
+	// file name at the top of the backup; Named replaces it.
 	Name() string
 	// String shows the database in messages. It never holds a password.
 	String() string
@@ -59,4 +63,25 @@ var Kinds = []Kind{
 	{Flag: "sqlite", Usage: "a live SQLite database file to copy safely and seal", New: NewSQLite},
 	{Flag: "postgres", Usage: "a Postgres connection URL or string to dump safely and seal", New: NewPostgres},
 	{Flag: "postgres-env", Usage: "an environment variable holding a Postgres connection", New: NewPostgresEnv},
+}
+
+// named is a database backed up under a name the person chose.
+type named struct {
+	Database
+	name string
+}
+
+func (n named) Name() string { return n.name }
+
+// Named returns db backed up under name, a slash path in the backup, in place
+// of the name db picks itself. It works the same for every kind, so two
+// databases with the same name can both be backed up without renaming either.
+// A name that could lead outside the backup is refused, and so is one ending
+// in "/", which names a folder rather than the file to back the copy up as.
+func Named(db Database, name string) (Database, error) {
+	clean, err := repo.CleanPath(name)
+	if err != nil || strings.HasSuffix(name, "/") {
+		return nil, fmt.Errorf("the name %q cannot be used in the backup", name)
+	}
+	return named{Database: db, name: clean}, nil
 }

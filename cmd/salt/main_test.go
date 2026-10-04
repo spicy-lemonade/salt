@@ -159,6 +159,27 @@ func TestRunUsageErrors(t *testing.T) {
 	}
 }
 
+// A --name that names no database option, or that is unsafe, is a usage
+// error, refused before any database is copied, that never repeats a
+// password.
+func TestRunSealNameUsage(t *testing.T) {
+	isolate(t)
+	base := t.TempDir()
+	db := filepath.Join(base, "state.db")
+	os.WriteFile(db, []byte("state"), 0o644)
+	for want, args := range map[string][]string{
+		"seal: --name must be followed by the database option it names": {"--name", "a.db", "--sqlite", db, "--name", "spare.db"},
+		"seal: invalid value \"b.db\" for flag -name: --name must be":   {"--name", "a.db", "--name", "b.db", "--sqlite", db},
+		"seal: the name \"../state.db\" cannot be used in the backup":   {"--name", "../state.db", "--postgres", "postgresql://agent:hunter2@localhost:5432/postgres"},
+		"seal: the name \"agent2/\" cannot be used in the backup":       {"--name", "agent2/", "--sqlite", db},
+	} {
+		var ue usageError
+		if err := run("seal", append(args, base, filepath.Join(base, "repo"))); !errors.As(err, &ue) || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("seal %v: %v", args, err)
+		}
+	}
+}
+
 // seal, verify and restore end to end in-process. None of them runs git.
 func TestRunSealVerifyRestore(t *testing.T) {
 	isolate(t)
@@ -212,6 +233,23 @@ func TestRunSealVerifyRestore(t *testing.T) {
 	}
 	for rel, want := range map[string]string{"memories/USER.md": "hello", "state.db": "state", "memory.db": "memory"} {
 		if b, _ := os.ReadFile(filepath.Join(dest, rel)); string(b) != want {
+			t.Fatalf("restored %s = %q, want %q", rel, b, want)
+		}
+	}
+	// --name backs the database option after it up under the chosen name, so
+	// two databases called state.db are both backed up and restored.
+	other := filepath.Join(base, "agent2", "state.db")
+	os.MkdirAll(filepath.Dir(other), 0o755)
+	os.WriteFile(other, []byte("other state"), 0o644)
+	if err := run("seal", []string{"--sqlite", filepath.Join(dbs, "state.db"), "--name", "agent2/state.db", "--sqlite", other, src, root}); err != nil {
+		t.Fatalf("seal --name: %v", err)
+	}
+	named := filepath.Join(base, "named")
+	if err := run("restore", []string{root, "--to", named}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	for rel, want := range map[string]string{"state.db": "state", "agent2/state.db": "other state"} {
+		if b, _ := os.ReadFile(filepath.Join(named, rel)); string(b) != want {
 			t.Fatalf("restored %s = %q, want %q", rel, b, want)
 		}
 	}

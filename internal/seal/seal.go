@@ -138,7 +138,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	if items, err = addExtra(items, opt.Extra); err != nil {
+	if items, err = addExtra(items, opt.Extra, ClashRule(r.Format.EncryptPaths)); err != nil {
 		return nil, err
 	}
 	if len(items) > MaxIndexEntries {
@@ -383,38 +383,70 @@ func walkSource(src string, exclude []string, res *Result, fn func(string) strin
 }
 
 // addExtra adds the extra files to the source items, refusing a path that is
-// unsafe or already taken by a file or folder.
-func addExtra(items []item, extra []Extra) ([]item, error) {
+// unsafe or clashes, by clashes, with a file or folder already there.
+func addExtra(items []item, extra []Extra, clashes func(a, b string) bool) ([]item, error) {
 	if len(extra) == 0 {
 		return items, nil
-	}
-	files, dirs := map[string]bool{}, map[string]bool{}
-	add := func(rel string) {
-		files[rel] = true
-		for d := path.Dir(rel); d != "."; d = path.Dir(d) {
-			dirs[d] = true
-		}
-	}
-	for _, it := range items {
-		add(it.rel)
 	}
 	for _, x := range extra {
 		rel, err := repo.CleanPath(x.Rel)
 		if err != nil {
 			return nil, err
 		}
-		clash := files[rel] || dirs[rel]
-		for d := path.Dir(rel); d != "." && !clash; d = path.Dir(d) {
-			clash = files[d]
-		}
-		if clash {
+		for _, it := range items {
+			if !clashes(it.rel, rel) {
+				continue
+			}
+			if !Clash(it.rel, rel) {
+				// When rel clashes with a folder above a source file, name the
+				// folder: as many of the file's parts as rel has.
+				depth := strings.Count(rel, "/") + 1
+				parts := strings.SplitN(it.rel, "/", depth+1)
+				other := strings.Join(parts[:min(len(parts), depth)], "/")
+				return nil, fmt.Errorf("%w: %s and %s differ only by case, and with --plain-paths the repo would keep them as one file on macOS and Windows", ErrDuplicatePath, other, rel)
+			}
 			return nil, fmt.Errorf("%w: %s", ErrDuplicatePath, rel)
 		}
-		add(rel)
 		items = append(items, item{rel: rel, abs: x.Path, mode: x.Mode, modTime: x.ModTime})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].rel < items[j].rel })
 	return items, nil
+}
+
+// Clash reports whether the cleaned slash paths a and b cannot both be in a
+// backup, because they are the same path or one is a folder above the other.
+// Paths are compared exactly, case included, as salt keeps every name as it
+// was given: state.db and State.db are two names.
+func Clash(a, b string) bool {
+	return clash(a, b, func(x, y string) bool { return x == y })
+}
+
+// ClashRule returns the rule for whether two paths clash in a repo. With
+// encrypted paths it is Clash. With plain paths each path is also a file name
+// in the repo, and macOS and Windows ignore case in file names, so two paths
+// that differ only by case would be one file there: case is ignored.
+func ClashRule(encryptPaths bool) func(a, b string) bool {
+	if encryptPaths {
+		return Clash
+	}
+	return func(a, b string) bool { return clash(a, b, strings.EqualFold) }
+}
+
+// clash is Clash with equal deciding whether two path parts are the same.
+// The paths are compared part by part, never by length in bytes, since case
+// folding can change a letter's length: the Kelvin sign folds to k.
+func clash(a, b string, equal func(x, y string) bool) bool {
+	for {
+		pa, restA, moreA := strings.Cut(a, "/")
+		pb, restB, moreB := strings.Cut(b, "/")
+		if !equal(pa, pb) {
+			return false
+		}
+		if !moreA || !moreB {
+			return true
+		}
+		a, b = restA, restB
+	}
 }
 
 // removeStale deletes ciphertext no longer referenced by the index, leftover

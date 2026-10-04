@@ -102,8 +102,8 @@ type SealOptions struct {
 	Src, Repo string
 	// Prune removes everything in Repo that salt did not write.
 	Prune bool
-	// Databases lists live databases to copy safely and seal at the top of
-	// the backup, each under its own name.
+	// Databases lists live databases to copy safely and seal, each under its
+	// own name.
 	Databases []source.Database
 	// Context stops the database copies early. Nil means never.
 	Context context.Context
@@ -127,14 +127,14 @@ func (a *App) Seal(o SealOptions) error {
 	if err != nil {
 		return fmt.Errorf("reading the signing key: %w", err)
 	}
-	extra, cleanup, err := a.copyDatabases(o.Context, r.Root, o.Databases)
+	extra, cleanup, err := a.copyDatabases(o.Context, r, o.Databases)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 	res, err := seal.Seal(o.Src, r, seal.Options{CacheDir: a.CacheDir, Signer: signer, Prune: o.Prune, Show: a.short, Extra: extra})
 	if errors.Is(err, seal.ErrDuplicatePath) && len(extra) > 0 {
-		return fmt.Errorf("%w; each database salt copies is backed up under its own name, which must not be used by another database or by a file or folder at the top of %s", err, a.short(o.Src))
+		return fmt.Errorf("%w; each database salt copies is backed up under its own name, which must not be used by another database or by a file or folder in %s. Give the database another name with --name NAME before its option", err, a.short(o.Src))
 	}
 	if err != nil {
 		return err
@@ -161,14 +161,38 @@ func (a *App) Seal(o SealOptions) error {
 // copyDatabases makes a safe copy of each live database in a new private
 // temporary folder, and returns them as files to seal. cleanup removes the
 // folder.
-func (a *App) copyDatabases(ctx context.Context, repoRoot string, dbs []source.Database) (extra []seal.Extra, cleanup func(), err error) {
+func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Database) (extra []seal.Extra, cleanup func(), err error) {
 	if len(dbs) == 0 {
 		return nil, func() {}, nil
+	}
+	// Two databases whose names clash are refused before any copy is made,
+	// since a copy can take a long time. A clash with a source file is only
+	// known once seal reads the source.
+	clashes := seal.ClashRule(r.Format.EncryptPaths)
+	for i, db := range dbs {
+		for _, prev := range dbs[:i] {
+			if !clashes(prev.Name(), db.Name()) {
+				continue
+			}
+			if prev.String() == db.String() && prev.Name() == db.Name() {
+				return nil, nil, fmt.Errorf("the database %s is given twice. Give it once", a.short(db.String()))
+			}
+			if prev.Name() == db.Name() {
+				return nil, nil, fmt.Errorf("the databases %s and %s would both be backed up as %s. Give one of them another name with --name NAME before its %s",
+					a.short(prev.String()), a.short(db.String()), db.Name(), db.Flag())
+			}
+			why := "a file cannot also be a folder"
+			if !seal.Clash(prev.Name(), db.Name()) {
+				why = "they differ only by case, and with --plain-paths the repo would keep them as one file on macOS and Windows"
+			}
+			return nil, nil, fmt.Errorf("the databases %s and %s would be backed up as %s and %s, which clash because %s. Give one of them another name with --name NAME before its %s",
+				a.short(prev.String()), a.short(db.String()), prev.Name(), db.Name(), why, db.Flag())
+		}
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	key, err := seal.CopyKey(a.CacheDir, repoRoot)
+	key, err := seal.CopyKey(a.CacheDir, r.Root)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -32,7 +32,7 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - BIP39 12-word recovery phrases; the age key is derived from the phrase with HKDF-SHA256
 - OS keychain via `github.com/zalando/go-keyring`, with a 0600 file fallback (`SALT_KEYSTORE=file`)
 
-**Commands:** `init`, `seal [--sqlite DB] [--postgres CONN] [--postgres-env VAR]`, `prune`, `check`, `restore [--allow-unsigned]`, `verify [--allow-unsigned]`, `doctor`, `trust`, `recovery test|show`, `hook install`, `version`.
+**Commands:** `init`, `seal [--sqlite DB] [--postgres CONN] [--postgres-env VAR] [--name NAME]`, `prune`, `check`, `restore [--allow-unsigned]`, `verify [--allow-unsigned]`, `doctor`, `trust`, `recovery test|show`, `hook install`, `version`.
 
 **Package layout:**
 - `cmd/salt`: CLI entry point and flag parsing

@@ -248,6 +248,32 @@ func TestSealSQLiteAfterACrash(t *testing.T) {
 	assertDate(t, assertRestoredDB(t, e, sqlite, b, "state.db", 500), at)
 }
 
+// Two agents that both keep a state.db are both backed up and restored when
+// one is given another name with --name. Two with the same name are
+// refused before sqlite3 runs.
+func TestSealSQLiteNamed(t *testing.T) {
+	sqlite := realSQLite(t)
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	write(t, filepath.Join(b.src, "agent2", "SOUL.md"), "be brave\n")
+	first := filepath.Join(t.TempDir(), "state.db")
+	second := filepath.Join(t.TempDir(), "state.db")
+	startAgent(t, e, sqlite, first, 100)
+	startAgent(t, e, sqlite, second, 200)
+
+	salt, tmp := withTemp(t, e)
+	salt.must(b.base, "salt", "seal", "--sqlite", first, "--name", "agent2/state.db", "--sqlite", second, b.src, b.dir)
+	assertEmpty(t, tmp)
+	assertRestoredDB(t, e, sqlite, b, "state.db", 100)
+	assertRestoredDB(t, e, sqlite, b, "agent2/state.db", 200)
+	e.must(b.dir, "git", "add", "-A")
+	e.must(b.dir, "git", "commit", "-q", "-m", "backup")
+
+	// sqlite3 is never started for names that clash.
+	assertSealFails(t, e.with("PATH="+filepath.Dir(e.bin)), b, "would both be backed up as state.db. Give one of them another name with --name NAME before its --sqlite",
+		"--sqlite", first, "--sqlite", second)
+}
+
 // When the copy cannot be made, salt stops before sealing, says why, and
 // leaves no copy behind.
 func TestSealSQLiteFailures(t *testing.T) {

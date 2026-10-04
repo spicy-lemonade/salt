@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/source"
 )
 
@@ -91,6 +92,16 @@ func sqliteEnv(t *testing.T) (e *testEnv, fc *fakeCopy, src, db string) {
 		t.Fatal(err)
 	}
 	return e, fc, src, db
+}
+
+// named gives db another name, failing the test if the name is refused.
+func named(t *testing.T, db source.Database, name string) source.Database {
+	t.Helper()
+	d, err := source.Named(db, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
 }
 
 // assertNoCopiesLeft checks every copy, and the temp folder, is gone.
@@ -179,26 +190,86 @@ func TestSealDatabaseRemovesCopiesWhenSealFails(t *testing.T) {
 	assertNoCopiesLeft(t, fc)
 }
 
-// Two databases, or a database and a top-level source file, with the same
-// name are refused with advice.
+// Two databases whose names clash, the same name, one a folder above the
+// other, or names that differ only in case, are refused before any copy is
+// made, naming both and saying how to give one another name.
 func TestSealDatabaseNameClash(t *testing.T) {
 	e, fc, src, db := sqliteEnv(t)
-	other := filepath.Join(t.TempDir(), "memory.db")
+	other := filepath.Join(e.app.Home, "agent2", "memory.db")
+	os.MkdirAll(filepath.Dir(other), 0o755)
 	os.WriteFile(other, []byte("SQLite format 3\x00"), 0o644)
-	os.WriteFile(filepath.Join(src, "state.db"), []byte("old copy"), 0o644)
-	state := filepath.Join(filepath.Dir(db), "state.db")
-	os.WriteFile(state, []byte("SQLite format 3\x00"), 0o644)
-	for name, dbs := range map[string][]string{
-		"two databases":  {db, other},
-		"source file":    {state},
-		"same db, twice": {db, db},
+	for name, tc := range map[string]struct {
+		dbs  []source.Database
+		want string
+	}{
+		"two databases": {[]source.Database{fc.db(db), fc.db(other)},
+			"the databases ~/agent/memory.db and ~/agent2/memory.db would both be backed up as memory.db. Give one of them another name with --name NAME before its --fake"},
+		"same db, twice": {fc.dbs(db, db), "the database ~/agent/memory.db is given twice. Give it once"},
+		"chosen name":    {[]source.Database{fc.db(db), named(t, fc.db(other), "memory.db")}, "would both be backed up as memory.db"},
+		"folder above": {[]source.Database{fc.db(db), named(t, fc.db(other), "memory.db/agent2.db")},
+			"the databases ~/agent/memory.db and ~/agent2/memory.db would be backed up as memory.db and memory.db/agent2.db, which clash because a file cannot also be a folder. Give one"},
 	} {
-		err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: fc.dbs(dbs...)})
-		if err == nil || !strings.Contains(err.Error(), "each database salt copies is backed up under its own name") {
+		err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: tc.dbs})
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	if len(fc.made) != 0 {
+		t.Fatalf("copies made before refusing: %v", fc.made)
+	}
 	assertNoCopiesLeft(t, fc)
+}
+
+// A database whose name, its own or a chosen one, is a file or folder in the
+// source is refused with advice.
+func TestSealDatabaseSourceClash(t *testing.T) {
+	e, fc, src, db := sqliteEnv(t)
+	os.WriteFile(filepath.Join(src, "memory.db"), []byte("old copy"), 0o644)
+	os.MkdirAll(filepath.Join(src, "agent"), 0o755)
+	os.WriteFile(filepath.Join(src, "agent", "SOUL.md"), []byte("be kind"), 0o644)
+	for _, name := range []string{"", "agent", "agent/SOUL.md", "memory.db/state.db"} {
+		d := source.Database(fc.db(db))
+		if name != "" {
+			d = named(t, d, name)
+		}
+		err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: []source.Database{d}})
+		if !errors.Is(err, seal.ErrDuplicatePath) || !strings.Contains(err.Error(), "each database salt copies is backed up under its own name") ||
+			!strings.Contains(err.Error(), "Give the database another name with --name NAME before its option") {
+			t.Errorf("named %q: %v", name, err)
+		}
+	}
+	assertNoCopiesLeft(t, fc)
+}
+
+// Two databases with the same name are both backed up and restored when one
+// is given another name, also inside a source folder beside other files.
+func TestSealNamedDatabases(t *testing.T) {
+	e, fc, src, db := sqliteEnv(t)
+	os.MkdirAll(filepath.Join(src, "agent2"), 0o755)
+	os.WriteFile(filepath.Join(src, "agent2", "SOUL.md"), []byte("be brave"), 0o644)
+	other := filepath.Join(e.app.Home, "agent2", "memory.db")
+	os.MkdirAll(filepath.Dir(other), 0o755)
+	os.WriteFile(other, []byte("SQLite format 3\x00other memories"), 0o600)
+	want := map[string]string{
+		"memory.db":           "SQLite format 3\x00memories",
+		"agent2/memory.db":    "SQLite format 3\x00other memories",
+		"agent2/SOUL.md":      "be brave",
+		"copies/again/one.db": "SQLite format 3\x00memories",
+	}
+	dbs := []source.Database{fc.db(db), named(t, fc.db(other), "agent2/memory.db"), named(t, fc.db(db), "copies/again/one.db")}
+	if err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: dbs}); err != nil {
+		t.Fatal(err)
+	}
+	assertNoCopiesLeft(t, fc)
+	dest := filepath.Join(t.TempDir(), "restored")
+	if err := e.app.Restore(RestoreOptions{Repo: e.root, To: dest}); err != nil {
+		t.Fatal(err)
+	}
+	for rel, content := range want {
+		if b, err := os.ReadFile(filepath.Join(dest, rel)); err != nil || string(b) != content {
+			t.Errorf("restored %s = %q, %v; want %q", rel, b, err, content)
+		}
+	}
 }
 
 // Stopping salt (Ctrl-C or SIGTERM) during a copy removes the copies and
@@ -315,6 +386,50 @@ func TestSealUnchangedDumpIsReused(t *testing.T) {
 	fi, err := os.Stat(filepath.Join(dest, "memory.db"))
 	if err != nil || fi.ModTime().Before(before) {
 		t.Fatalf("restored dump: %v, %v; want dated when restored", fi, err)
+	}
+	assertNoCopiesLeft(t, fc)
+}
+
+// Names that differ only by case are two names in a repo with encrypted
+// paths, so both databases are sealed. With --plain-paths each name is also
+// a file name in the repo, which macOS and Windows would not tell apart, so
+// they are refused before any copy is made, or, against a source file, once
+// seal reads the source, saying why. Two files in folders whose names differ
+// only by case are not refused, since they keep their own names.
+func TestSealDatabaseNamesDifferingByCase(t *testing.T) {
+	e, fc, src, db := sqliteEnv(t)
+	os.MkdirAll(filepath.Join(src, "agent2"), 0o755)
+	os.WriteFile(filepath.Join(src, "agent2", "SOUL.md"), []byte("be brave"), 0o644)
+	dbs := []source.Database{fc.db(db), named(t, fc.db(db), "Memory.DB"), named(t, fc.db(db), "AGENT2/memory.db")}
+	if err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: dbs}); err != nil {
+		t.Fatalf("encrypted paths: %v", err)
+	}
+	if !strings.Contains(e.ui.out.String(), "sealed 4 files") {
+		t.Fatalf("output = %q", e.ui.out.String())
+	}
+
+	plain := newEnv(t)
+	plain.ui.answer = phraseAnswers(0)
+	if err := plain.app.Init(InitOptions{Repo: plain.root, PlainPaths: true}); err != nil {
+		t.Fatal(err)
+	}
+	fc = &fakeCopy{}
+	err := plain.app.Seal(SealOptions{Src: src, Repo: plain.root, Databases: []source.Database{fc.db(db), named(t, fc.db(db), "Memory.DB")}})
+	if err == nil || !strings.Contains(err.Error(), "would be backed up as memory.db and Memory.DB, which clash because they differ only by case, and with --plain-paths the repo would keep them as one file on macOS and Windows. Give one of them another name with --name NAME before its --fake") {
+		t.Fatalf("plain paths, two databases: %v", err)
+	}
+	if len(fc.made) != 0 {
+		t.Fatalf("copies made before refusing: %v", fc.made)
+	}
+	err = plain.app.Seal(SealOptions{Src: src, Repo: plain.root, Databases: []source.Database{named(t, fc.db(db), "Agent2/soul.md")}})
+	if !errors.Is(err, seal.ErrDuplicatePath) || !strings.Contains(err.Error(), "agent2/SOUL.md and Agent2/soul.md differ only by case") ||
+		!strings.Contains(err.Error(), "Give the database another name with --name NAME before its option") {
+		t.Fatalf("plain paths, source file: %v", err)
+	}
+	// Files with their own names in folders that differ only by case are
+	// still two files, which macOS and Windows keep in one folder.
+	if err := plain.app.Seal(SealOptions{Src: src, Repo: plain.root, Databases: []source.Database{named(t, fc.db(db), "AGENT2/memory.db")}}); err != nil {
+		t.Fatalf("plain paths, beside a source file: %v", err)
 	}
 	assertNoCopiesLeft(t, fc)
 }
