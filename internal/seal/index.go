@@ -109,8 +109,8 @@ func newIndexDigest() *indexDigest {
 }
 
 // add adds the index version or an entry. Encoding an int or an Entry into
-// a hash cannot fail: an Entry holds only strings and numbers, and writing to
-// a hash never returns an error.
+// a hash cannot fail: an Entry holds only strings, numbers and a list of
+// strings, and writing to a hash never returns an error.
 func (d *indexDigest) add(v any) { d.enc.Encode(v) }
 
 func (d *indexDigest) sum() []byte { return d.h.Sum(nil) }
@@ -130,7 +130,7 @@ func (ix *Index) sign(key ed25519.PrivateKey) {
 // stored returns e as ReadIndex will decode it, so the signature covers what
 // is stored. JSON keeps a string that is not valid UTF-8, such as a file
 // name on Linux, with U+FFFD in place of each bad byte. An Entry holds only
-// strings and numbers, so neither step can fail.
+// strings, numbers and a list of strings, so neither step can fail.
 func stored(e Entry) Entry {
 	if utf8.ValidString(e.Path) && utf8.ValidString(e.Object) && utf8.ValidString(e.Symlink) && utf8.ValidString(e.SHA256) {
 		return e

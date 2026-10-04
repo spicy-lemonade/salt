@@ -146,6 +146,13 @@ all. An index that has a file in parts is written as version 2, so an older
 salt refuses it instead of restoring only the first part; any other index
 stays version 1.
 
+The change-detection cache lists every part of a split file and leaves its
+single-object fields empty. An older salt run against the same cache then
+finds nothing to reuse and encrypts the file again, rather than keeping the
+first part alone. A cached object over 100 MiB, which an older salt wrote
+for a large file, is never reused, so the next seal after upgrading splits
+the file even if it has not changed.
+
 A live file can grow between being measured and being sealed. A file
 measured at 99 MiB or less is therefore cut at 99.5 MiB of compressed data,
 and anything past that goes into a second part.

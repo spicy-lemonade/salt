@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -466,5 +467,127 @@ func TestReadIndexRejectsBadParts(t *testing.T) {
 				t.Fatal("ReadIndex accepted it")
 			}
 		})
+	}
+}
+
+// loadCache returns the fixture's change cache and where it is kept.
+func (f *fixture) loadCache() (*cache, string) {
+	f.t.Helper()
+	p, err := cachePath(f.cache, f.root)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	c := loadCache(p, cacheKey(f.repo.RecipientStrings, f.repo.Format.EncryptPaths))
+	if len(c.Files) == 0 {
+		f.t.Fatal("the cache is empty")
+	}
+	return c, p
+}
+
+// An object over GitHub's limit, as an older salt wrote for a large file, is
+// not reused even though the file has not changed: seal encrypts the file
+// again, so the repo can be pushed. An object at the limit is still reused.
+func TestOversizedObjectIsSealedAgain(t *testing.T) {
+	for _, size := range []int64{repo.GitHubFileLimit, repo.GitHubFileLimit + 1} {
+		t.Run(strconv.FormatInt(size, 10), func(t *testing.T) {
+			f := newFixture(t, true)
+			f.seal(false)
+			c, cPath := f.loadCache()
+			const rel = "data/memory.db"
+			ce := c.Files[rel]
+			// Truncate makes the object sparse, so it takes no space on disk.
+			if err := os.Truncate(filepath.Join(f.root, filepath.FromSlash(ce.Object)), size); err != nil {
+				t.Fatal(err)
+			}
+			ce.CipherSize = size
+			c.Files[rel] = ce
+			if err := c.save(cPath); err != nil {
+				t.Fatal(err)
+			}
+			res := f.seal(false)
+			if size <= repo.GitHubFileLimit {
+				if res.Encrypted != 0 {
+					t.Fatalf("an object at the limit was encrypted again: %+v", res)
+				}
+				return
+			}
+			if res.Encrypted != 1 || !slices.Equal(res.Removed, []string{ce.Object}) {
+				t.Fatalf("seal = %+v, want %s encrypted again and removed", res, ce.Object)
+			}
+			assertTreesEqual(t, f.src, f.restore(RestoreOptions{}))
+		})
+	}
+}
+
+// A split file's cache entry has an empty top-level object, so an older
+// salt, which reads only that one object, finds nothing to reuse and
+// encrypts the file again rather than keeping its first part alone.
+func TestSplitCacheEntryHiddenFromOlderSalt(t *testing.T) {
+	smallParts(t)
+	f := newFixture(t, true)
+	f.writeNoise("big.db", 100<<10)
+	f.seal(false)
+	_, cPath := f.loadCache()
+	b, err := os.ReadFile(cPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		Files map[string]json.RawMessage `json:"files"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatal(err)
+	}
+	var older struct {
+		Object string `json:"object"`
+	}
+	if err := json.Unmarshal(raw.Files["big.db"], &older); err != nil {
+		t.Fatal(err)
+	}
+	if older.Object != "" {
+		t.Fatalf("an older salt would reuse %s alone: %s", older.Object, raw.Files["big.db"])
+	}
+	var ce cacheEntry
+	if err := json.Unmarshal(raw.Files["big.db"], &ce); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range ce.all() {
+		got = append(got, p.Object)
+	}
+	if want := f.entry("big.db").objects(); !slices.Equal(got, want) {
+		t.Fatalf("cached parts %v, want %v", got, want)
+	}
+}
+
+// newCacheEntry keeps one part at the top level and several in Parts, and
+// all returns them in order either way.
+func TestCacheEntryParts(t *testing.T) {
+	one := []cachePart{{Object: "objects/aa/a.age", CipherSize: 10}}
+	two := append(slices.Clone(one), cachePart{Object: "objects/bb/b.age", CipherSize: 5})
+	for _, parts := range [][]cachePart{one, two} {
+		ce := newCacheEntry("ab", parts)
+		if !slices.Equal(ce.all(), parts) {
+			t.Errorf("all() = %v, want %v", ce.all(), parts)
+		}
+		if split := len(parts) > 1; split != (ce.Object == "") || split != (len(ce.Parts) > 0) {
+			t.Errorf("%d parts stored as %+v", len(parts), ce)
+		}
+	}
+}
+
+// An index with a part name that is not valid UTF-8 still verifies: the
+// signature covers the name as ReadIndex decodes it.
+func TestSignatureCoversInvalidUTF8Part(t *testing.T) {
+	f := newFixture(t, true)
+	f.writeIndex(&Index{Version: partsIndexVersion, Entries: []Entry{
+		{Path: "a", Object: "objects/aa/a.age", Parts: []string{"objects/bb/\xff.age"}, SHA256: strings.Repeat("0", 64), Mode: 0o644},
+	}})
+	ix, err := ReadIndex(f.root, f.ids(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ix.Entries[0].Parts[0]; got != "objects/bb/�.age" {
+		t.Fatalf("part read back as %q", got)
 	}
 }

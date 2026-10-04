@@ -195,9 +195,13 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			}
 			encrypted.Add(1)
 		}
-		e.Object, e.SHA256, e.Size = ce.Object, ce.SHA256, size
-		for _, p := range ce.Parts {
-			e.Parts = append(e.Parts, p.Object)
+		e.SHA256, e.Size = ce.SHA256, size
+		for j, p := range ce.all() {
+			if j == 0 {
+				e.Object = p.Object
+			} else {
+				e.Parts = append(e.Parts, p.Object)
+			}
 		}
 		entries[i], newCache[i] = e, ce
 		return nil
@@ -273,7 +277,7 @@ func encryptFile(rt *os.Root, r *repo.Repo, abs, obj string, limit int64) (cache
 	if err != nil {
 		return cacheEntry{}, 0, err
 	}
-	return cacheEntry{SHA256: sha, cachePart: parts[0], Parts: parts[1:]}, cr.n, nil
+	return newCacheEntry(sha, parts), cr.n, nil
 }
 
 // objectName picks where a file's ciphertext lives. With encrypted paths it
@@ -305,10 +309,12 @@ func unixNano(t time.Time) int64 {
 }
 
 // objectIntact reports whether every part of a cached file is still in the
-// repo at the size it was written.
+// repo at the size it was written, and small enough to push. An older salt
+// wrote a large file as one object over GitHub's limit; that file is sealed
+// again, so it is split, even though it has not changed.
 func objectIntact(rt *os.Root, ce cacheEntry) bool {
 	for _, p := range ce.all() {
-		if p.Object == "" || !sizeIs(rt, p.Object, p.CipherSize) {
+		if p.Object == "" || p.CipherSize > repo.GitHubFileLimit || !sizeIs(rt, p.Object, p.CipherSize) {
 			return false
 		}
 	}
