@@ -25,6 +25,23 @@ import (
 // MaxWorkers caps how many files are hashed or encrypted at once.
 const MaxWorkers = 4
 
+// A file larger than splitAbove bytes is sealed in parts of partSize
+// compressed bytes each, so no file in the repo reaches GitHub's limit. Parts
+// stay under 50 MB, above which GitHub warns on every push.
+//
+// A smaller file is one object, as it always was: zstd and age add about
+// 0.03% to data that does not compress, so it stays below the limit too.
+// Should the file grow past splitAbove after it was measured, as a live file
+// can, whatever runs past oneObjectLimit goes into a second part. The 512 KiB
+// left free covers age's 16 bytes per 64 KiB many times over.
+//
+// They are variables so tests can split small files.
+var (
+	splitAbove     int64 = 99 << 20
+	partSize       int64 = 45 << 20
+	oneObjectLimit int64 = repo.GitHubFileLimit - 512<<10
+)
+
 // Options configures Seal.
 type Options struct {
 	// CacheDir holds the change-detection cache. Required.
@@ -90,9 +107,13 @@ type item struct {
 	isLink  bool
 }
 
-// entriesHook lets tests change the entries before Seal checks them. It is
+// entriesHook lets tests change the entries before Seal checks them, and
+// hashedHook lets them change a file after Seal has measured it. Both are
 // always nil outside tests.
-var entriesHook func([]Entry) []Entry
+var (
+	entriesHook func([]Entry) []Entry
+	hashedHook  func(path string)
+)
 
 // Seal encrypts the tree at src into the repository r.
 func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
@@ -154,23 +175,35 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			return err
 		}
 		e.MTime = unixNano(it.modTime)
-		if prev, ok := c.Files[it.rel]; ok && prev.SHA256 == sha && objectIntact(rt, prev) {
-			e.Object, e.SHA256, e.Size = prev.Object, sha, size
-			entries[i], newCache[i] = e, prev
+		if hashedHook != nil {
+			hashedHook(it.abs)
+		}
+		ce, ok := c.Files[it.rel]
+		if ok && ce.SHA256 == sha && objectIntact(rt, ce) {
 			reused.Add(1)
-			return nil
+		} else {
+			obj, err := objectName(r.Format.EncryptPaths, it.rel)
+			if err != nil {
+				return err
+			}
+			limit := oneObjectLimit
+			if size > splitAbove {
+				limit = partSize
+			}
+			if ce, size, err = encryptFile(rt, r, it.abs, obj, limit); err != nil {
+				return fmt.Errorf("%s: %w", it.rel, err)
+			}
+			encrypted.Add(1)
 		}
-		obj, err := objectName(r.Format.EncryptPaths, it.rel)
-		if err != nil {
-			return err
+		e.SHA256, e.Size = ce.SHA256, size
+		for j, p := range ce.all() {
+			if j == 0 {
+				e.Object = p.Object
+			} else {
+				e.Parts = append(e.Parts, p.Object)
+			}
 		}
-		ce, n, err := encryptFile(rt, r, it.abs, obj)
-		if err != nil {
-			return fmt.Errorf("%s: %w", it.rel, err)
-		}
-		e.Object, e.SHA256, e.Size = obj, ce.SHA256, n
 		entries[i], newCache[i] = e, ce
-		encrypted.Add(1)
 		return nil
 	})
 	if err != nil {
@@ -187,7 +220,9 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		}
 		res.Files++
 		next.Files[e.Path] = newCache[i]
-		keep[e.Object] = true
+		for _, obj := range e.objects() {
+			keep[obj] = true
+		}
 	}
 
 	if entriesHook != nil {
@@ -197,6 +232,12 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		return nil, err
 	}
 	ix := &Index{Version: repo.FormatVersion, Entries: entries}
+	for _, e := range entries {
+		if len(e.Parts) > 0 {
+			ix.Version = partsIndexVersion
+			break
+		}
+	}
 	ix.sign(opt.Signer)
 	b, ixSHA, err := ix.marshal()
 	if err != nil {
@@ -207,14 +248,11 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	}
 	next.IndexSHA, next.IndexSize = ixSHA, c.IndexSize
 	if ixSHA != c.IndexSHA || !sizeIs(rt, repo.IndexFile, c.IndexSize) {
-		if _, err := encryptTo(rt, repo.IndexFile, bytes.NewReader(b), r.Recipients); err != nil {
+		_, parts, err := encryptTo(rt, repo.IndexFile, bytes.NewReader(b), r.Recipients, 0)
+		if err != nil {
 			return nil, fmt.Errorf("writing index: %w", err)
 		}
-		fi, err := rt.Lstat(repo.IndexFile)
-		if err != nil {
-			return nil, err
-		}
-		next.IndexSize = fi.Size()
+		next.IndexSize = parts[0].CipherSize
 		res.IndexNew = true
 	}
 
@@ -226,22 +264,20 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	return res, next.save(cPath)
 }
 
-func encryptFile(rt *os.Root, r *repo.Repo, abs, obj string) (cacheEntry, int64, error) {
+// encryptFile seals the file at abs into obj, in parts of limit compressed
+// bytes if limit is above zero. It returns the plaintext size it read.
+func encryptFile(rt *os.Root, r *repo.Repo, abs, obj string, limit int64) (cacheEntry, int64, error) {
 	f, err := os.Open(abs)
 	if err != nil {
 		return cacheEntry{}, 0, err
 	}
 	defer f.Close()
 	cr := &countReader{r: f}
-	sha, err := encryptTo(rt, obj, cr, r.Recipients)
+	sha, parts, err := encryptTo(rt, obj, cr, r.Recipients, limit)
 	if err != nil {
 		return cacheEntry{}, 0, err
 	}
-	fi, err := rt.Lstat(filepath.FromSlash(obj))
-	if err != nil {
-		return cacheEntry{}, 0, err
-	}
-	return cacheEntry{SHA256: sha, Object: obj, CipherSize: fi.Size()}, cr.n, nil
+	return newCacheEntry(sha, parts), cr.n, nil
 }
 
 // objectName picks where a file's ciphertext lives. With encrypted paths it
@@ -272,8 +308,17 @@ func unixNano(t time.Time) int64 {
 	return t.UnixNano()
 }
 
+// objectIntact reports whether every part of a cached file is still in the
+// repo at the size it was written, and small enough to push. An older salt
+// wrote a large file as one object over GitHub's limit; that file is sealed
+// again, so it is split, even though it has not changed.
 func objectIntact(rt *os.Root, ce cacheEntry) bool {
-	return ce.Object != "" && sizeIs(rt, ce.Object, ce.CipherSize)
+	for _, p := range ce.all() {
+		if p.Object == "" || p.CipherSize > repo.GitHubFileLimit || !sizeIs(rt, p.Object, p.CipherSize) {
+			return false
+		}
+	}
+	return true
 }
 
 // sizeIs reports whether rel is a regular file (not a symlink) of size n.

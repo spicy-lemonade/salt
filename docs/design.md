@@ -41,7 +41,7 @@ from the history, then pushes with `git push --force-with-lease` (see
 | `.salt/recipients.txt` | public keys every file is encrypted to |
 | `.salt/key.age` | passphrase-locked private key (passphrase recovery only) |
 | `index.age` | encrypted, signed list of real file names, sizes, hashes and last-modified dates |
-| `objects/…` | encrypted files under random names (default) |
+| `objects/…` | encrypted files under random names (default), and the later parts of a large file (see "Large files") |
 | `files/…` | encrypted files under real names (`--plain-paths`) |
 
 ## Keys and recovery
@@ -123,6 +123,42 @@ If you lose them and this laptop, your backups cannot be recovered.
   any file that cannot be restored. It needs the key.
 - `salt doctor` checks the hook, the key, the repo and the last backup. It
   needs no key.
+
+## Large files
+
+GitHub refuses any file over 100 MiB, so salt never writes one.
+
+- **Up to 99 MiB** (measured before sealing): one encrypted object, as
+  always. zstd and age add about 0.03% to data that does not compress, so
+  the object stays under the limit.
+- **Over 99 MiB:** the compressed stream is split into parts of 45 MiB, each
+  a complete age file. Parts stay under 50 MB, above which GitHub warns on
+  every push. A large file that compresses to 45 MiB or less is still one
+  object.
+
+The first part is named like any other object. The later parts get random
+names under `objects/`, also with `--plain-paths`: every name under `files/`
+could belong to a real file, so a part there could clash with one. The
+encrypted index lists each file's parts in order, and restore and verify
+decrypt them one after another, opening one at a time, so memory stays flat.
+An unchanged large file keeps all its parts, and a changed one replaces them
+all. An index that has a file in parts is written as version 2, so an older
+salt refuses it instead of restoring only the first part; any other index
+stays version 1.
+
+The change-detection cache lists every part of a split file and leaves its
+single-object fields empty. An older salt run against the same cache then
+finds nothing to reuse and encrypts the file again, rather than keeping the
+first part alone. A cached object over 100 MiB, which an older salt wrote
+for a large file, is never reused, so the next seal after upgrading splits
+the file even if it has not changed.
+
+A live file can grow between being measured and being sealed. A file
+measured at 99 MiB or less is therefore cut at 99.5 MiB of compressed data,
+and anything past that goes into a second part.
+
+`salt doctor` warns about any file over 100 MiB in the repo, which only an
+older salt or a person could have put there.
 
 ## Keeping only recent backups
 
@@ -319,8 +355,9 @@ the people you give access to can see what is listed below.
 Anyone who can read the repo cannot read your files, but they can learn some
 things about them:
 
-- **How many files there are.** Each file is one encrypted object, so the
-  number of objects is the number of files. Symlinks are kept only in the
+- **How many files there are.** Each file is one encrypted object, except a
+  file over 99 MiB, which is several (see "Large files"), so the number of
+  objects is close to the number of files. Symlinks are kept only in the
   index.
 - **Roughly how big each file is.** Files are compressed, then encrypted, and
   encryption adds a small overhead (a short header and 16 bytes per 64 KiB).
@@ -474,4 +511,3 @@ Touch ID, and switching recovery method.
 
 - OpenViking support. Its data format has not been checked yet.
 - a one-command `salt backup`, which will also run `salt prune`
-- splitting files over GitHub's 100 MB limit

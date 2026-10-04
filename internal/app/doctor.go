@@ -23,9 +23,6 @@ import (
 // nightly backup may have stopped.
 const StaleAfter = 48 * time.Hour
 
-// GitHubFileLimit is the size above which GitHub rejects a pushed file.
-const GitHubFileLimit = 100 << 20
-
 type level int
 
 const (
@@ -277,7 +274,7 @@ func (a *App) doctorTree(r *report, root string) {
 		if check.Classify(rel, head, true) != nil {
 			plain = append(plain, rel)
 		}
-		if fi, err := d.Info(); err == nil && fi.Size() > GitHubFileLimit*95/100 {
+		if fi, err := d.Info(); err == nil && fi.Size() > repo.GitHubFileLimit {
 			big = append(big, fmt.Sprintf("%s (%d MB)", rel, fi.Size()>>20))
 		}
 		return nil
@@ -294,7 +291,7 @@ func (a *App) doctorTree(r *report, root string) {
 		r.add(ok, "working tree contains only encrypted files and public salt settings")
 	}
 	if len(big) > 0 {
-		r.add(warn, "file(s) close to GitHub's 100 MB limit: %s", strings.Join(big, ", "))
+		r.add(warn, "file(s) over GitHub's 100 MB limit, so the push will fail: %s", strings.Join(big, ", "))
 	}
 }
 

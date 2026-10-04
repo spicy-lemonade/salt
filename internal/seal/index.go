@@ -13,6 +13,7 @@ import (
 	"hash"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -39,12 +40,15 @@ type Index struct {
 
 // Entry is one file or symlink in a snapshot.
 type Entry struct {
-	Path    string `json:"path"`
-	Object  string `json:"object,omitempty"` // repo-relative, regular files only
-	SHA256  string `json:"sha256,omitempty"` // of the plaintext
-	Size    int64  `json:"size"`
-	Mode    uint32 `json:"mode"`              // permission bits
-	Symlink string `json:"symlink,omitempty"` // target, symlinks only
+	Path   string `json:"path"`
+	Object string `json:"object,omitempty"` // repo-relative, regular files only
+	// Parts are the objects after Object, in order, for a file sealed in
+	// parts (see splitAbove). Restore joins them back into one stream.
+	Parts   []string `json:"parts,omitempty"`
+	SHA256  string   `json:"sha256,omitempty"` // of the plaintext
+	Size    int64    `json:"size"`
+	Mode    uint32   `json:"mode"`              // permission bits
+	Symlink string   `json:"symlink,omitempty"` // target, symlinks only
 	// MTime is the last-modified time in Unix nanoseconds, regular files
 	// only. Zero means it was not recorded, as in backups made before salt
 	// kept it, and restore then leaves the time of the restore.
@@ -62,6 +66,17 @@ const (
 
 // MaxIndexEntries is the most files and symlinks one backup can hold.
 var MaxIndexEntries = 100_000
+
+// objects returns every object holding e's ciphertext, in order.
+func (e Entry) objects() []string {
+	return append([]string{e.Object}, e.Parts...)
+}
+
+// partsIndexVersion is the index version seal writes when a file is in
+// parts, so an older salt, which would read only the first part, refuses the
+// index instead. Every other index keeps repo.FormatVersion, so it stays
+// byte for byte the same, signature included.
+const partsIndexVersion = 2
 
 func (ix *Index) marshal() ([]byte, string, error) {
 	b, err := json.Marshal(ix)
@@ -95,8 +110,8 @@ func newIndexDigest() *indexDigest {
 }
 
 // add adds the index version or an entry. Encoding an int or an Entry into
-// a hash cannot fail: an Entry holds only strings and numbers, and writing to
-// a hash never returns an error.
+// a hash cannot fail: an Entry holds only strings, numbers and a list of
+// strings, and writing to a hash never returns an error.
 func (d *indexDigest) add(v any) { d.enc.Encode(v) }
 
 func (d *indexDigest) sum() []byte { return d.h.Sum(nil) }
@@ -116,9 +131,10 @@ func (ix *Index) sign(key ed25519.PrivateKey) {
 // stored returns e as ReadIndex will decode it, so the signature covers what
 // is stored. JSON keeps a string that is not valid UTF-8, such as a file
 // name on Linux, with U+FFFD in place of each bad byte. An Entry holds only
-// strings and numbers, so neither step can fail.
+// strings, numbers and a list of strings, so neither step can fail.
 func stored(e Entry) Entry {
-	if utf8.ValidString(e.Path) && utf8.ValidString(e.Object) && utf8.ValidString(e.Symlink) && utf8.ValidString(e.SHA256) {
+	validParts := !slices.ContainsFunc(e.Parts, func(p string) bool { return !utf8.ValidString(p) })
+	if validParts && utf8.ValidString(e.Path) && utf8.ValidString(e.Object) && utf8.ValidString(e.Symlink) && utf8.ValidString(e.SHA256) {
 		return e
 	}
 	b, _ := json.Marshal(e)
@@ -156,7 +172,7 @@ func writeIndex(root string, b []byte, recipients []age.Recipient) error {
 		return err
 	}
 	defer rt.Close()
-	_, err = encryptTo(rt, repo.IndexFile, bytes.NewReader(b), recipients)
+	_, _, err = encryptTo(rt, repo.IndexFile, bytes.NewReader(b), recipients, 0)
 	return err
 }
 
@@ -171,7 +187,7 @@ func ReadIndex(root string, ids []age.Identity, allowUnsigned bool) (*Index, err
 		return nil, err
 	}
 	defer rt.Close()
-	r, closeFn, err := decryptStream(rt, repo.IndexFile, ids)
+	r, closeFn, err := decryptStream(rt, []string{repo.IndexFile}, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -185,8 +201,8 @@ func ReadIndex(root string, ids []age.Identity, allowUnsigned bool) (*Index, err
 	if err != nil {
 		return nil, fmt.Errorf("index: %w", err)
 	}
-	if ix.Version != repo.FormatVersion {
-		return nil, fmt.Errorf("index version %d is not supported", ix.Version)
+	if ix.Version != repo.FormatVersion && ix.Version != partsIndexVersion {
+		return nil, fmt.Errorf("index version %d is not supported by this salt; upgrade salt", ix.Version)
 	}
 	if err := checkSignature(ix, d.sum(), ids); err != nil {
 		if !allowUnsigned || !errors.Is(err, ErrNotSigned) {
@@ -266,6 +282,11 @@ func validEntry(e *Entry) error {
 	if len(e.Path) > maxIndexString || len(e.Object) > maxIndexString || len(e.Symlink) > maxIndexString || len(e.SHA256) > maxIndexString {
 		return fmt.Errorf("entry longer than %d bytes", maxIndexString)
 	}
+	for _, part := range e.Parts {
+		if len(part) > maxIndexString {
+			return fmt.Errorf("entry longer than %d bytes", maxIndexString)
+		}
+	}
 	// Messages name the path through clip: it can be up to maxIndexString
 	// bytes, and repo.CleanPath's own error would quote all of it.
 	p, err := repo.CleanPath(e.Path)
@@ -274,7 +295,7 @@ func validEntry(e *Entry) error {
 	}
 	e.Path = p
 	if e.Symlink != "" {
-		if e.Object != "" || e.SHA256 != "" {
+		if e.Object != "" || len(e.Parts) > 0 || e.SHA256 != "" {
 			return fmt.Errorf("symlink %s must not have an object or hash", clip(p))
 		}
 		if e.MTime != 0 {
@@ -282,8 +303,10 @@ func validEntry(e *Entry) error {
 		}
 		return nil
 	}
-	if _, err := repo.CleanPath(e.Object); err != nil {
-		return fmt.Errorf("object for %s: unsafe path %s", clip(p), clipQuoted(e.Object))
+	for _, obj := range e.objects() {
+		if _, err := repo.CleanPath(obj); err != nil {
+			return fmt.Errorf("object for %s: unsafe path %s", clip(p), clipQuoted(obj))
+		}
 	}
 	if !isSHA256(e.SHA256) {
 		return fmt.Errorf("hash for %s is not 64 hex characters", clip(p))
