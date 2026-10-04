@@ -2,6 +2,7 @@ package preset
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -80,7 +81,7 @@ func TestGather(t *testing.T) {
 	when := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	os.Chtimes(filepath.Join(tool, "notes.md"), when, when)
 
-	f, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, plain)
+	f, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,8 +111,24 @@ func TestGather(t *testing.T) {
 	if len(f.Skipped) != 1 || !strings.HasSuffix(f.Skipped[0], "link.md") {
 		t.Errorf("skipped = %v", f.Skipped)
 	}
-	if len(f.Roots) != 3 {
-		t.Errorf("roots = %v", f.Roots)
+}
+
+// A place that holds the backup repo, or is inside it, is refused before
+// anything in it is read, comparing real paths.
+func TestGatherRefusesTheRepo(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, "tool", "notes.md"), "notes")
+	inside := mkdir(t, home, "tool", "repo")
+	link := filepath.Join(t.TempDir(), "link")
+	os.Symlink(inside, link)
+	for name, repo := range map[string]string{"inside a place": link, "around a place": home} {
+		_, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, repo, plain)
+		if err == nil || !strings.Contains(err.Error(), "must not contain each other") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, filepath.Join(home, "missing"), plain); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("missing repo: %v", err)
 	}
 }
 
@@ -131,7 +148,7 @@ func TestGatherTakesEachPlaceOnce(t *testing.T) {
 	}
 	link := filepath.Join(t.TempDir(), "link")
 	os.Symlink(filepath.Join(home, "data"), link)
-	f, err := envOf(home, map[string]string{"DATA": link}).Gather([]*Preset{p}, plain)
+	f, err := envOf(home, map[string]string{"DATA": link}).Gather([]*Preset{p}, t.TempDir(), plain)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +174,7 @@ func TestGatherOverlappingPresets(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, order := range [][]*Preset{{outer, inner}, {inner, outer}} {
-		f, err := envOf(home, nil).Gather(order, plain)
+		f, err := envOf(home, nil).Gather(order, t.TempDir(), plain)
 		if err != nil {
 			t.Fatalf("%s first: %v", order[0].Name, err)
 		}
@@ -173,7 +190,7 @@ func TestGatherOverlappingPresets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, err := envOf(home, nil).Gather([]*Preset{outer, same}, plain)
+	f, err := envOf(home, nil).Gather([]*Preset{outer, same}, t.TempDir(), plain)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,14 +204,14 @@ func TestGatherFindsNothing(t *testing.T) {
 	home := t.TempDir()
 	mkdir(t, home, "tool") // an empty folder holds nothing to back up
 	write(t, filepath.Join(home, "profiles", "a", "tool", "settings.yaml"), "token: abc")
-	_, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, func(p string) string { return "<" + filepath.Base(p) + ">" })
+	_, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), func(p string) string { return "<" + filepath.Base(p) + ">" })
 	if !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "for the t preset. It looks in <tool>, <tool>, <single.txt>") {
 		t.Fatalf("Gather = %v", err)
 	}
 	// The second preset is checked too.
 	write(t, filepath.Join(home, "tool", "a.md"), "a")
 	other, _ := Parse("other", []byte(`{"name": "other", "paths": [{"from": "${UNSET}", "to": "o"}]}`))
-	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t), other}, plain); !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "other preset") {
+	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t), other}, t.TempDir(), plain); !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "other preset") {
 		t.Fatalf("Gather = %v", err)
 	}
 }
@@ -208,14 +225,14 @@ func TestGatherUnreadable(t *testing.T) {
 	write(t, filepath.Join(home, "tool", "a.md"), "a")
 	os.Chmod(sub, 0)
 	t.Cleanup(func() { os.Chmod(sub, 0o755) })
-	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, plain); err == nil {
+	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain); err == nil {
 		t.Fatal("Gather read an unreadable folder")
 	}
 	os.Chmod(sub, 0o755)
 	secret := filepath.Join(home, "tool", "settings.yaml")
 	write(t, secret, "a: b")
 	os.Chmod(secret, 0)
-	f, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, plain)
+	f, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain)
 	if err != nil || len(f.LeftOut) != 1 || !strings.Contains(f.LeftOut[0].Why, "could not be read to check it for secrets") {
 		t.Fatalf("Gather = %+v, %v", f, err)
 	}
@@ -223,7 +240,7 @@ func TestGatherUnreadable(t *testing.T) {
 	db := filepath.Join(home, "tool", "x.db")
 	write(t, db, sqliteFile)
 	os.Chmod(db, 0)
-	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, plain); err == nil {
+	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain); err == nil {
 		t.Fatal("Gather read an unreadable file")
 	}
 }
@@ -289,7 +306,7 @@ func TestGatherChecksSecretsThroughSymlinks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, err := envOf(home, nil).Gather([]*Preset{p}, plain)
+	f, err := envOf(home, nil).Gather([]*Preset{p}, t.TempDir(), plain)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 
 	"github.com/spicy-lemonade/salt/internal/preset"
 	"github.com/spicy-lemonade/salt/internal/seal"
@@ -42,20 +41,9 @@ func (a *App) Backup(o BackupOptions) error {
 	if a.Git.Remote(r.Root) == "" {
 		return fmt.Errorf("%s has no remote named origin to push the backup to. Add one with `git remote add origin URL`", a.short(r.Root))
 	}
-	found, err := preset.Env{Getenv: a.Getenv, Home: a.Home}.Gather(o.Presets, a.short)
+	found, err := preset.Env{Getenv: a.Getenv, Home: a.Home}.Gather(o.Presets, r.Root, a.short)
 	if err != nil {
 		return err
-	}
-	// The roots have their symlinks followed, so the repo's are too before
-	// comparing them.
-	repoReal, err := filepath.EvalSymlinks(r.Root)
-	if err != nil {
-		return err
-	}
-	for _, root := range found.Roots {
-		if err := seal.CheckDisjoint(root, repoReal, a.short); err != nil {
-			return err
-		}
 	}
 	// Checked before any database is copied, with advice that fits presets:
 	// the paths come from them, not from the person.

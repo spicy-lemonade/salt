@@ -39,8 +39,6 @@ type Found struct {
 	LeftOut []LeftOut
 	// Skipped lists what is neither a file nor a folder, such as a symlink.
 	Skipped []string
-	// Roots lists every file and folder the presets found.
-	Roots []string
 }
 
 // Paths lists the slash path every file and database is backed up under.
@@ -65,8 +63,16 @@ type LeftOut struct {
 // A place found twice, such as a folder named by two paths or by two
 // presets, is backed up only under the first path. A place inside another
 // is backed up under its own path, and the outer one leaves it out, so
-// nothing is backed up twice whatever order the presets are given in.
-func (e Env) Gather(presets []*Preset, show func(string) string) (*Found, error) {
+// nothing is backed up twice whatever order the presets are given in. A
+// place that contains the backup repo at repo, or is inside it, is refused
+// before anything is read.
+func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*Found, error) {
+	// Places have their symlinks followed, so the repo's are too before
+	// comparing them.
+	repoReal, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		return nil, err
+	}
 	f := &Found{}
 	byReal := map[string]*spot{}
 	var spots []*spot
@@ -98,7 +104,11 @@ func (e Env) Gather(presets []*Preset, show func(string) string) (*Found, error)
 		lookedIn[p] = looked
 	}
 	for _, s := range spots {
-		f.Roots = append(f.Roots, s.real)
+		if err := seal.CheckDisjoint(s.real, repoReal, show); err != nil {
+			return nil, err
+		}
+	}
+	for _, s := range spots {
 		before := len(f.Files) + len(f.Databases)
 		if err := f.walk(s.preset, s.real, s.place, byReal, show); err != nil {
 			return nil, err
