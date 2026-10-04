@@ -1,9 +1,9 @@
 package gitx
 
 import (
-	"cmp"
 	"context"
 	"errors"
+	"net/url"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -28,63 +28,55 @@ func hasHTTPS(s string) bool {
 	return len(s) > len(httpsPrefix) && strings.EqualFold(s[:len(httpsPrefix)], httpsPrefix)
 }
 
-// userinfo returns the "user:password@" part of an https URL, or "". It is
-// found by hand rather than with net/url so that a URL net/url refuses still
-// has its credentials removed.
-func userinfo(s string) string {
-	if !hasHTTPS(s) {
-		return ""
-	}
-	authority := s[len(httpsPrefix):]
-	if end := strings.IndexAny(authority, "/?#"); end >= 0 {
-		authority = authority[:end]
-	}
-	at := strings.LastIndex(authority, "@")
-	if at < 0 {
-		return ""
-	}
-	return authority[:at+1]
-}
+// credentials matches the "user:password@" part of every URL in a text, such
+// as an error message, and captures the scheme before it and the user name
+// and password. It is matched by hand rather than with net/url so that a
+// URL net/url refuses still has its credentials removed. A password holding
+// "@" is matched whole, since the match runs to the last "@" before the
+// path.
+var credentials = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)([^/?#\s'"]*)@`)
 
-// RedactURL returns s without the user name and password an https URL may
-// hold, so it can be shown. The user name goes too, since a GitHub token is
-// often given in its place. The SSH form's user (git@) is not a secret and
-// is kept.
+// RedactURL returns s without the user name and password that any URL in it
+// may hold, so it can be shown. The user name goes too, since a GitHub token
+// is often given in its place. The SSH form's user (git@) is not a secret
+// and is kept.
 func RedactURL(s string) string {
-	if u := userinfo(s); u != "" {
-		return httpsPrefix + s[len(httpsPrefix)+len(u):]
-	}
-	return s
+	return credentials.ReplaceAllString(s, "$1")
 }
 
-// Clone downloads only the latest commit of url's default branch into dir,
-// which must be empty. Cancelling ctx stops git. Errors never show the
-// credentials url may hold.
-func Clone(ctx context.Context, url, dir string) error {
-	// "--" stops a url starting with "-" from being read as an option.
-	cmd := exec.CommandContext(ctx, "git", Args(dir, "clone", "--depth", "1", "--single-branch", "--no-tags", "--quiet", "--", url, dir)...)
+// Clone downloads only the latest commit of remote's default branch into
+// dir, which must be empty. Cancelling ctx stops git. Errors never show the
+// credentials remote may hold.
+func Clone(ctx context.Context, remote, dir string) error {
+	// "--" stops a URL starting with "-" from being read as an option.
+	cmd := exec.CommandContext(ctx, "git", Args(dir, "clone", "--depth", "1", "--single-branch", "--no-tags", "--quiet", "--", remote, dir)...)
 	err := proc.Run(ctx, cmd)
 	var failed *proc.Error
 	if errors.As(err, &failed) {
-		failed.Program = "git clone " + RedactURL(url)
-		failed.Stderr = hideCredentials(failed.Stderr, url)
+		failed.Program = "git clone " + RedactURL(remote)
+		failed.Stderr = hideCredentials(failed.Stderr, remote)
 	}
 	return err
 }
 
-// hideCredentials removes the user name and password url may hold from git's
-// error output.
-func hideCredentials(out, url string) string {
-	u := userinfo(url)
-	if u == "" {
+// hideCredentials removes the user name and password from every URL in
+// git's error output, and hides the password remote holds wherever else it
+// appears, as given and with its %-escapes undone. A user name with no
+// password is only removed from URLs, so a name that is also in the path,
+// as in https://you@github.com/you/backup.git, still reads normally.
+func hideCredentials(out, remote string) string {
+	out = RedactURL(out)
+	m := credentials.FindStringSubmatch(remote)
+	if m == nil {
 		return out
 	}
-	out = strings.ReplaceAll(out, u, "")
-	// The secret is the password, or the user name when there is none,
-	// since a token is often given in its place.
-	user, pass, _ := strings.Cut(strings.TrimSuffix(u, "@"), ":")
-	if secret := cmp.Or(pass, user); secret != "" {
-		out = strings.ReplaceAll(out, secret, "***")
+	_, pass, _ := strings.Cut(m[2], ":")
+	if pass == "" {
+		return out
+	}
+	out = strings.ReplaceAll(out, pass, "***")
+	if plain, err := url.PathUnescape(pass); err == nil && plain != "" {
+		out = strings.ReplaceAll(out, plain, "***")
 	}
 	return out
 }
