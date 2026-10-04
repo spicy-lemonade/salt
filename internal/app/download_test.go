@@ -47,11 +47,6 @@ func TestRestoreFromURL(t *testing.T) {
 		url := tt.url
 		t.Run(tt.name, func(t *testing.T) {
 			e := remoteEnv(t)
-			var downloaded string
-			e.git.clone = func(_ context.Context, dir string) error {
-				downloaded = dir
-				return os.CopyFS(dir, os.DirFS(e.root))
-			}
 			dest := filepath.Join(t.TempDir(), "restored")
 			if err := e.app.Restore(RestoreOptions{Repo: url, To: dest, Paths: []string{"USER.md"}}); err != nil {
 				t.Fatalf("Restore: %v\n%s", err, e.ui.out.String())
@@ -62,8 +57,8 @@ func TestRestoreFromURL(t *testing.T) {
 			if !slices.Equal(e.git.cloned, []string{url}) {
 				t.Fatalf("cloned %q, want %q", e.git.cloned, url)
 			}
-			if filepath.Dir(downloaded) != e.app.Home || !strings.HasPrefix(filepath.Base(downloaded), "salt-download-") {
-				t.Fatalf("downloaded into %s, want a salt-download- folder in %s", downloaded, e.app.Home)
+			if d := e.git.clonedInto; filepath.Dir(d) != e.app.Home || !strings.HasPrefix(filepath.Base(d), "salt-download-") {
+				t.Fatalf("downloaded into %s, want a salt-download- folder in %s", d, e.app.Home)
 			}
 			out := e.ui.out.String()
 			if !strings.Contains(out, "salt: downloading the latest backup from "+tt.shown+"\n") {

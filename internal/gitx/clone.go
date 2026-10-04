@@ -60,8 +60,10 @@ func RedactURL(s string) string {
 // dir, which must be empty. Cancelling ctx stops git. Errors never show the
 // credentials remote may hold.
 func Clone(ctx context.Context, remote, dir string) error {
-	// "--" stops a URL starting with "-" from being read as an option.
-	cmd := exec.CommandContext(ctx, "git", Args(dir, "clone", "--depth", "1", "--single-branch", "--no-tags", "--quiet", "--", remote, dir)...)
+	// "--" stops a URL starting with "-" from being read as an option. git
+	// runs in dir and clones into ".", so a relative dir is not taken twice.
+	// --depth 1 also fetches only the default branch.
+	cmd := exec.CommandContext(ctx, "git", Args(dir, "clone", "--depth", "1", "--no-tags", "--quiet", "--", remote, ".")...)
 	err := proc.Run(ctx, cmd)
 	var failed *proc.Error
 	if errors.As(err, &failed) {

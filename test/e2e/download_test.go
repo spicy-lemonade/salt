@@ -87,6 +87,19 @@ func TestRestoreFromURL(t *testing.T) {
 	}
 }
 
+// A relative HOME gives a relative download folder, which git must not take
+// as relative to itself once it runs there.
+func TestRestoreFromURLWithARelativeHome(t *testing.T) {
+	e := newEnv(t)
+	remoteBackup(t, e)
+	dest := filepath.Join(t.TempDir(), "restored")
+	e.with("HOME="+filepath.Base(e.home)).must(filepath.Dir(e.home), "salt", "restore", "https://example.test/backup.git", "--to", dest)
+	if b, err := os.ReadFile(filepath.Join(dest, "memories", "USER.md")); err != nil || string(b) != "The user moved to Cork.\n" {
+		t.Fatalf("restored USER.md = %q, %v", b, err)
+	}
+	noDownloadsLeft(t, e)
+}
+
 func TestRestoreFromURLFailures(t *testing.T) {
 	e := newEnv(t)
 	served := remoteBackup(t, e)
