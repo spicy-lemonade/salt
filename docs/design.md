@@ -503,6 +503,9 @@ can take a long time, and the message names both and points to `--name`. A
 name that clashes with a file or folder in SRC is only known once salt reads
 SRC, so that clash is refused after the copies are made, which are then
 removed, with the same advice. `seal.Clash` holds the rule for both checks.
+When names clash only because case is ignored, such as a database `state.db`
+and a file `State.db` in SRC, the message names both and says so, since such
+a backup would restore on Linux and it is not obvious why it is refused.
 
 The backup gets the live database file's permissions and last-modified date.
 They are read before the copy, because the copy can change them: after a

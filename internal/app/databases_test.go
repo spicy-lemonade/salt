@@ -207,9 +207,9 @@ func TestSealDatabaseNameClash(t *testing.T) {
 		"same db, twice": {fc.dbs(db, db), "the database ~/agent/memory.db is given twice. Give it once"},
 		"chosen name":    {[]source.Database{fc.db(db), named(t, fc.db(other), "memory.db")}, "would both be backed up as memory.db"},
 		"folder above": {[]source.Database{fc.db(db), named(t, fc.db(other), "memory.db/agent2.db")},
-			"the databases ~/agent/memory.db and ~/agent2/memory.db would be backed up as memory.db and memory.db/agent2.db, which clash"},
+			"the databases ~/agent/memory.db and ~/agent2/memory.db would be backed up as memory.db and memory.db/agent2.db, which clash because a file cannot also be a folder. Give one"},
 		"case only": {[]source.Database{fc.db(db), named(t, fc.db(other), "Memory.DB")},
-			"would be backed up as memory.db and Memory.DB, which clash because a file cannot also be a folder and macOS and Windows ignore case. Give one of them another name with --name NAME before its --fake"},
+			"would be backed up as memory.db and Memory.DB, which clash because macOS and Windows ignore case. Give one of them another name with --name NAME before its --fake"},
 	} {
 		err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: tc.dbs})
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -223,13 +223,13 @@ func TestSealDatabaseNameClash(t *testing.T) {
 }
 
 // A database whose name, its own or a chosen one, is a file or folder in the
-// source is refused with advice.
+// source, also when only the case differs, is refused with advice.
 func TestSealDatabaseSourceClash(t *testing.T) {
 	e, fc, src, db := sqliteEnv(t)
 	os.WriteFile(filepath.Join(src, "memory.db"), []byte("old copy"), 0o644)
 	os.MkdirAll(filepath.Join(src, "agent"), 0o755)
 	os.WriteFile(filepath.Join(src, "agent", "SOUL.md"), []byte("be kind"), 0o644)
-	for _, name := range []string{"", "agent", "agent/SOUL.md", "memory.db/state.db"} {
+	for _, name := range []string{"", "agent", "agent/SOUL.md", "memory.db/state.db", "AGENT"} {
 		d := source.Database(fc.db(db))
 		if name != "" {
 			d = named(t, d, name)
@@ -238,6 +238,9 @@ func TestSealDatabaseSourceClash(t *testing.T) {
 		if !errors.Is(err, seal.ErrDuplicatePath) || !strings.Contains(err.Error(), "each database salt copies is backed up under its own name") ||
 			!strings.Contains(err.Error(), "Give the database another name with --name NAME before its option") {
 			t.Errorf("named %q: %v", name, err)
+		}
+		if name == "AGENT" && !strings.Contains(err.Error(), "agent and AGENT would clash on macOS and Windows, since those ignore case") {
+			t.Errorf("named %q does not say case is ignored: %v", name, err)
 		}
 	}
 	assertNoCopiesLeft(t, fc)

@@ -114,6 +114,11 @@ func TestSealExtraRefusesClashes(t *testing.T) {
 			t.Errorf("%s: %v, want ErrDuplicatePath", name, err)
 		}
 	}
+	// A clash only because case is ignored names both paths and says why, so
+	// a backup refused for it is easy to fix.
+	if _, err := f.sealExtra(x("Soul.md")); err == nil || !strings.Contains(err.Error(), "SOUL.md and Soul.md would clash on macOS and Windows, since those ignore case") {
+		t.Errorf("case only: %v", err)
+	}
 	for _, rel := range []string{"", "/abs.db", "../up.db", "."} {
 		if _, err := f.sealExtra(x(rel)); err == nil || !strings.Contains(err.Error(), "unsafe path") {
 			t.Errorf("%q: %v, want unsafe path", rel, err)
@@ -134,29 +139,32 @@ func TestSealExtraMissingFile(t *testing.T) {
 }
 
 // Two paths clash when they are the same or one is a folder above the
-// other, ignoring case. Paths that only share a folder, or a beginning, do
-// not.
+// other, ignoring case, and clash only by case when they would not clash
+// with case kept. Paths that only share a folder, or a beginning, do not
+// clash.
 func TestClash(t *testing.T) {
 	for _, tc := range []struct {
-		a, b string
-		want bool
+		a, b            string
+		clash, caseOnly bool
 	}{
-		{"state.db", "state.db", true},
-		{"state.db", "State.DB", true},
-		{"agent", "agent/state.db", true},
-		{"Agent/state.db", "agent", true},
-		{"a/b/c.db", "A/B", true},
-		{"agent/state.db", "agent/SOUL.md", false},
-		{"agent", "agent2/state.db", false},
-		{"state.db", "state.db2", false},
-		{"state", "state.db", false},
-		{"a.db", "b.db", false},
+		{"state.db", "state.db", true, false},
+		{"state.db", "State.DB", true, true},
+		{"agent", "agent/state.db", true, false},
+		{"Agent/state.db", "agent", true, true},
+		{"a/b/c.db", "A/B", true, true},
+		{"agent/state.db", "agent/SOUL.md", false, false},
+		{"agent", "agent2/state.db", false, false},
+		{"state.db", "state.db2", false, false},
+		{"state", "state.db", false, false},
+		{"a.db", "b.db", false, false},
 	} {
-		if got := Clash(tc.a, tc.b); got != tc.want {
-			t.Errorf("Clash(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
-		}
-		if got := Clash(tc.b, tc.a); got != tc.want {
-			t.Errorf("Clash(%q, %q) = %v, want %v", tc.b, tc.a, got, tc.want)
+		for _, p := range [][2]string{{tc.a, tc.b}, {tc.b, tc.a}} {
+			if got := Clash(p[0], p[1]); got != tc.clash {
+				t.Errorf("Clash(%q, %q) = %v, want %v", p[0], p[1], got, tc.clash)
+			}
+			if got := CaseOnly(p[0], p[1]); got != tc.caseOnly {
+				t.Errorf("CaseOnly(%q, %q) = %v, want %v", p[0], p[1], got, tc.caseOnly)
+			}
 		}
 	}
 }

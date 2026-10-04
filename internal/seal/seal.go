@@ -394,6 +394,11 @@ func addExtra(items []item, extra []Extra) ([]item, error) {
 			return nil, err
 		}
 		for _, it := range items {
+			if CaseOnly(it.rel, rel) {
+				// When rel clashes with a folder above a source file, name the folder.
+				other := it.rel[:min(len(it.rel), len(rel))]
+				return nil, fmt.Errorf("%w: %s and %s would clash on macOS and Windows, since those ignore case", ErrDuplicatePath, other, rel)
+			}
 			if Clash(it.rel, rel) {
 				return nil, fmt.Errorf("%w: %s", ErrDuplicatePath, rel)
 			}
@@ -409,13 +414,25 @@ func addExtra(items []item, extra []Extra) ([]item, error) {
 // Case is ignored, as macOS and Windows ignore it, so a backup made elsewhere
 // still restores there.
 func Clash(a, b string) bool {
+	return clash(a, b, strings.EqualFold)
+}
+
+// CaseOnly reports whether a and b clash only because case is ignored, such
+// as State.db and state.db. They could both be backed up and restored on
+// Linux, but not on macOS or Windows.
+func CaseOnly(a, b string) bool {
+	return Clash(a, b) && !clash(a, b, func(x, y string) bool { return x == y })
+}
+
+// clash is Clash with equal deciding whether two paths are the same.
+func clash(a, b string, equal func(x, y string) bool) bool {
 	if len(a) > len(b) {
 		a, b = b, a
 	}
 	if len(a) == len(b) {
-		return strings.EqualFold(a, b)
+		return equal(a, b)
 	}
-	return b[len(a)] == '/' && strings.EqualFold(a, b[:len(a)])
+	return b[len(a)] == '/' && equal(a, b[:len(a)])
 }
 
 // removeStale deletes ciphertext no longer referenced by the index, leftover
