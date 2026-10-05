@@ -148,8 +148,12 @@ type SealOptions struct {
 }
 
 // Seal encrypts o.Src, and safe copies of o.Databases, into the salt repository
-// at o.Repo.
+// at o.Repo. An empty o.Src is refused: sealing nothing would remove every
+// file sealed before, as when a backup script's variable is unset.
 func (a *App) Seal(o SealOptions) error {
+	if o.Src == "" {
+		return errors.New("seal: SRC is empty. Give the folder to seal")
+	}
 	r, signer, err := a.openToSeal(o.Repo)
 	if err != nil {
 		return err
