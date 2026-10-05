@@ -234,6 +234,11 @@ the repo changes less often.
 `--keep-days 1` keeps only the backups from the latest day with a change.
 The latest backup is never dropped.
 
+To keep a database for longer than prune does, give a full copy a dated name,
+such as `memory-2026-09-30.db` or a Postgres dump `memory-2026-09-30.sql`,
+and keep it in the folder that is backed up. Salt encrypts whatever files are
+there, so this works for any database.
+
 ### How it works
 
 Each kept backup's commit is copied exactly, with the same files, author,
@@ -685,6 +690,21 @@ inside one of them is backed up with it. Mnemosyne's default blob folder,
 does not either. Its `config.yaml` can hold API
 keys (`mnemosyne config set`, or `mnemosyne config migrate`, which copies
 every `MNEMOSYNE_*` variable into it), so it is checked for them.
+
+| On the machine | In the backup |
+|---|---|
+| `~/.hermes/mnemosyne/data` and `config.yaml` (or under `$HERMES_HOME`) | `hermes/mnemosyne/` |
+| `~/.hermes/profiles/<name>/mnemosyne/data` and `config.yaml` | `hermes/profiles/<name>/mnemosyne/` |
+| `~/.hermes/mnemosyne/blobs` (or `$MNEMOSYNE_BLOB_DIR`) | `mnemosyne-blobs/` |
+| `$MNEMOSYNE_DATA_DIR` | `mnemosyne-data/` |
+| `$MNEMOSYNE_SHARED_DB_PATH` | `mnemosyne-shared.db` |
+| `~/.mnemosyne/data` (or `$MNEMOSYNE_HOME/data`) | `mnemosyne-home/data/` |
+
+Cron does not see variables set in the person's shell, so any of these the
+agent uses must be set in the cron line too, such as
+`HERMES_HOME=/srv/hermes /opt/homebrew/bin/salt backup --preset mnemosyne REPO`.
+To get the memory back, restore into a new folder, stop the agent, and copy
+each folder back to where it came from, such as `hermes/` to `~/.hermes/`.
 
 ## Out of scope
 
