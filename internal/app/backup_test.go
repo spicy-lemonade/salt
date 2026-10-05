@@ -457,6 +457,25 @@ func TestBackupPushRecordOutlivesTheCache(t *testing.T) {
 	}
 }
 
+// A setting named like a secret that holds only a number is not taken for
+// one, so its file is backed up, with a warning naming the setting but not
+// its value.
+func TestBackupWarnsOfNumberSecrets(t *testing.T) {
+	e, home, presets := backupEnv(t)
+	os.WriteFile(filepath.Join(home, "tool", "settings.yaml"), []byte("api_key: 98765"), 0o644)
+	if err := e.backup(presets); err != nil {
+		t.Fatal(err)
+	}
+	out := e.ui.out.String()
+	want := "salt: warning: the setting api_key in ~/tool/settings.yaml holds a number, which salt does not take for a secret, so the file is backed up. If it is a secret, keep it in an environment variable\n"
+	if out != want {
+		t.Fatalf("output %q, want %q", out, want)
+	}
+	if got := e.restored(); got["tool/settings.yaml"] != "api_key: 98765" {
+		t.Fatalf("restored %v", got)
+	}
+}
+
 // A place backed up last time and not found now, such as a profile whose
 // folder is gone, is named once, and the backup goes on. The next backup
 // no longer holds it, so it is not named again.

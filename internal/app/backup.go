@@ -75,6 +75,9 @@ func (a *App) Backup(o BackupOptions) error {
 	for _, s := range found.Skipped {
 		a.UI.Printf("salt: skipped %s (not a file)\n", s)
 	}
+	for _, n := range found.Numbers {
+		a.UI.Printf("salt: warning: the setting %s in %s holds a number, which salt does not take for a secret, so the file is backed up. If it is a secret, keep it in an environment variable\n", n.Key, a.short(n.Path))
+	}
 	a.warnMissing(r.Root, o.Presets, found.Places)
 	// A signal stops the backup before the next step that changes the repo,
 	// saying how far it got. Prune most of all must not start after one.

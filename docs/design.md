@@ -664,7 +664,12 @@ same code reads them all, so adding a tool means adding one file:
   below the setting, or a YAML alias, which salt does not follow), the file
   is left out and salt prints one line naming the file and the setting,
   never its value. Numbers, true or false, and null never count, so
-  `max_tokens: 512` is not taken for a secret. A file that
+  `max_token: 512` is not taken for a secret. Secrets almost always mix
+  letters and digits, so one that is only a number is unusual. When a
+  setting named in `keys` holds a number and no text, the file is backed up,
+  and salt prints a warning naming the file and the setting, never its
+  value, saying to keep it in an environment variable if it is a secret.
+  A file that
   cannot be read, cannot be read as YAML, or is over 1 MiB is left out too.
   Salt never changes the file to remove the secret.
 

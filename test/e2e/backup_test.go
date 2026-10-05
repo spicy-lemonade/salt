@@ -63,6 +63,7 @@ func TestBackupMnemosyne(t *testing.T) {
 	makeDB(t, e, sqlite, filepath.Join(e.home, ".mnemosyne", "data", "shared", "mnemosyne.db"), 2)
 	write(t, filepath.Join(hermes, "mnemosyne", "config.yaml"), "vec_weight: 0.5\nllm_api_key: \"\"\n")
 	write(t, filepath.Join(hermes, "profiles", "coder", "mnemosyne", "config.yaml"), "llm_api_key: sk-secret\n")
+	write(t, filepath.Join(hermes, "profiles", "writer", "mnemosyne", "config.yaml"), "providers:\n  openai:\n    apiKey: sk-secret\n")
 	write(t, filepath.Join(hermes, "mnemosyne", "blobs", "ab", "abcd", "abcdef"), "an attached image")
 	write(t, filepath.Join(hermes, "mnemosyne", "models", "model.gguf"), "a downloaded model")
 	write(t, filepath.Join(hermes, "mnemosyne", "logs", "diagnose.log"), "a log")
@@ -71,7 +72,8 @@ func TestBackupMnemosyne(t *testing.T) {
 	commits := commitCount(e, b.remote)
 
 	out := e.must(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
-	want := "salt: left ~/.hermes/profiles/coder/mnemosyne/config.yaml out of the backup because its setting llm_api_key holds a secret. Keep secrets in environment variables so the file can be backed up\n"
+	want := "salt: left ~/.hermes/profiles/coder/mnemosyne/config.yaml out of the backup because its setting llm_api_key holds a secret. Keep secrets in environment variables so the file can be backed up\n" +
+		"salt: left ~/.hermes/profiles/writer/mnemosyne/config.yaml out of the backup because its setting apiKey holds a secret. Keep secrets in environment variables so the file can be backed up\n"
 	if out != want {
 		t.Fatalf("backup printed:\n%s", out)
 	}

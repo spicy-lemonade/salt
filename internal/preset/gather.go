@@ -2,6 +2,7 @@ package preset
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -44,6 +45,10 @@ type Found struct {
 	LeftOut []LeftOut
 	// Skipped lists what is neither a file nor a folder, such as a symlink.
 	Skipped []string
+	// Numbers lists settings named like a secret that hold a number and no
+	// text, in files that are backed up. Secrets almost always mix letters
+	// and digits, so a number is not taken for one, but the person is told.
+	Numbers []Setting
 	// Places lists the slash path of every place found, so one backed up
 	// last time and missing now can be named.
 	Places []string
@@ -60,6 +65,9 @@ func (f *Found) Paths() []string {
 	}
 	return paths
 }
+
+// Setting names the setting Key in the file at Path.
+type Setting struct{ Path, Key string }
 
 // LeftOut is a file left out of the backup, and why. Secret is true when a
 // setting in it holds a secret, and false when it could not be checked.
@@ -246,13 +254,24 @@ func (w *walker) walk(s *spot, by []*Preset) error {
 		if walked == real {
 			names = append(names, filepath.Base(pl.Abs))
 		}
+		var number string
 		for _, sec := range w.secrets {
 			if !slices.ContainsFunc(names, func(n string) bool { return matchAny(sec.Files, n) }) {
 				continue
 			}
-			if why, secret := secretIn(at, sec.Keys); why != "" {
+			why, secret, num := secretIn(at, sec.Keys)
+			if why != "" {
 				w.f.LeftOut = append(w.f.LeftOut, LeftOut{Path: at, Why: why, Secret: secret})
 				return nil
+			}
+			number = cmp.Or(number, num)
+		}
+		// added records what one more file found tells: which presets back
+		// something up, and a number in it named like a secret.
+		added := func() {
+			w.mark(here)
+			if number != "" {
+				w.f.Numbers = append(w.f.Numbers, Setting{Path: at, Key: number})
 			}
 		}
 		isDB, err := source.IsSQLite(at)
@@ -268,7 +287,7 @@ func (w *walker) walk(s *spot, by []*Preset) error {
 				return err
 			}
 			w.f.Databases = append(w.f.Databases, db)
-			w.mark(here)
+			added()
 			return nil
 		}
 		if infoHook != nil {
@@ -279,7 +298,7 @@ func (w *walker) walk(s *spot, by []*Preset) error {
 			return skipGone(err)
 		}
 		w.f.Files = append(w.f.Files, seal.Extra{Rel: to, Path: at, Mode: info.Mode(), ModTime: info.ModTime(), Live: true})
-		w.mark(here)
+		added()
 		return nil
 	})
 }
@@ -319,61 +338,92 @@ func isSidecar(p string) (bool, error) {
 // secretIn says why the file at p must be left out: one of the settings
 // keys names holds a value, and secret is true, or the file could not be
 // read as YAML to check. It returns "" when the file can be backed up, or
-// when it no longer exists, which the caller then finds and skips.
-func secretIn(p string, keys []string) (why string, secret bool) {
+// when it no longer exists, which the caller then finds and skips. number
+// is the first setting keys names that holds a number and no text, which is
+// not taken for a secret.
+func secretIn(p string, keys []string) (why string, secret bool, number string) {
 	file, err := os.Open(p)
 	if errors.Is(err, fs.ErrNotExist) {
-		return "", false
+		return "", false, ""
 	}
 	if err != nil {
-		return fmt.Sprintf("it could not be read to check it for secrets (%v)", err), false
+		return fmt.Sprintf("it could not be read to check it for secrets (%v)", err), false, ""
 	}
 	defer file.Close()
 	b, err := io.ReadAll(io.LimitReader(file, maxSecretsFile+1))
 	if err != nil {
-		return fmt.Sprintf("it could not be read to check it for secrets (%v)", err), false
+		return fmt.Sprintf("it could not be read to check it for secrets (%v)", err), false, ""
 	}
 	if len(b) > maxSecretsFile {
-		return "it is too large to check for secrets", false
+		return "it is too large to check for secrets", false, ""
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	for {
 		var doc yaml.Node
 		err := dec.Decode(&doc)
 		if errors.Is(err, io.EOF) {
-			return "", false
+			return "", false, number
 		}
 		if err != nil {
-			return "it could not be read as YAML to check it for secrets", false
+			return "it could not be read as YAML to check it for secrets", false, ""
 		}
-		if key := secretKey(&doc, keys); key != "" {
-			return fmt.Sprintf("its setting %s holds a secret", key), true
+		text, num := secretKeys(&doc, keys)
+		if text != "" {
+			return fmt.Sprintf("its setting %s holds a secret", text), true, ""
 		}
+		number = cmp.Or(number, num)
 	}
 }
 
-// secretKey returns the first setting in n, at any depth, whose name matches
-// keys in lower case and that holds a value, or "".
-func secretKey(n *yaml.Node, keys []string) string {
+// secretKeys returns the first setting in n, at any depth, whose name
+// matches keys in lower case and that holds a value, and the first such
+// setting that holds a number and no value, or "" for either.
+func secretKeys(n *yaml.Node, keys []string) (text, number string) {
 	switch n.Kind {
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, c := range n.Content {
-			if k := secretKey(c, keys); k != "" {
-				return k
+			t, num := secretKeys(c, keys)
+			if t != "" {
+				return t, ""
 			}
+			number = cmp.Or(number, num)
 		}
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k, v := n.Content[i], n.Content[i+1]
-			if matchAny(keys, strings.ToLower(k.Value)) && hasValue(v) {
-				return k.Value
+			if matchAny(keys, strings.ToLower(k.Value)) {
+				if hasValue(v) {
+					return k.Value, ""
+				}
+				if hasNumber(v) {
+					number = cmp.Or(number, k.Value)
+				}
 			}
-			if found := secretKey(v, keys); found != "" {
-				return found
+			t, num := secretKeys(v, keys)
+			if t != "" {
+				return t, ""
 			}
+			number = cmp.Or(number, num)
 		}
 	}
-	return ""
+	return "", number
+}
+
+// hasNumber reports whether n holds a number, an integer or a decimal, at
+// any depth.
+func hasNumber(n *yaml.Node) bool {
+	switch n.Kind {
+	case yaml.ScalarNode:
+		return n.Tag == "!!int" || n.Tag == "!!float"
+	case yaml.MappingNode:
+		for i := 1; i < len(n.Content); i += 2 {
+			if hasNumber(n.Content[i]) {
+				return true
+			}
+		}
+		return false
+	}
+	return slices.ContainsFunc(n.Content, hasNumber)
 }
 
 // hasValue reports whether n holds text that could be a secret: a string

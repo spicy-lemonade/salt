@@ -73,7 +73,7 @@ func TestGather(t *testing.T) {
 	write(t, filepath.Join(tool, "run.log"), "log")
 	write(t, filepath.Join(tool, "cache", "model.bin"), "model")
 	write(t, filepath.Join(tool, ".DS_Store"), "finder")
-	write(t, filepath.Join(tool, "settings.yaml"), "level: 3\napi_key: \"\"\n")
+	write(t, filepath.Join(tool, "settings.yaml"), "level: 3\napi_key: \"\"\ntoken: 12345\n")
 	write(t, filepath.Join(home, "profiles", "work", "tool", "settings.yaml"), "llm:\n  api_key: sk-123\n")
 	write(t, filepath.Join(home, "profiles", "work", "tool", "bank", "memory.db"), sqliteFile)
 	write(t, filepath.Join(home, "single.txt"), "one file")
@@ -110,6 +110,10 @@ func TestGather(t *testing.T) {
 	}
 	if len(f.Skipped) != 1 || !strings.HasSuffix(f.Skipped[0], "link.md") {
 		t.Errorf("skipped = %v", f.Skipped)
+	}
+	// The settings file is backed up, and its number named.
+	if want := []Setting{{Path: filepath.Join(tool, "settings.yaml"), Key: "token"}}; !slices.Equal(f.Numbers, want) {
+		t.Errorf("numbers = %+v, want %+v", f.Numbers, want)
 	}
 	if want := []string{"tool", "profiles/work/tool", "single.txt"}; !slices.Equal(f.Places, want) {
 		t.Errorf("places = %v, want %v", f.Places, want)
@@ -369,15 +373,38 @@ func TestSecretIn(t *testing.T) {
 	} {
 		p := filepath.Join(dir, "f.yaml")
 		write(t, p, content)
-		if got, secret := secretIn(p, keys); got != want || secret != strings.HasSuffix(want, "holds a secret") {
+		if got, secret, _ := secretIn(p, keys); got != want || secret != strings.HasSuffix(want, "holds a secret") {
 			t.Errorf("secretIn(%.40q) = %q, want %q", content, got, want)
 		}
 	}
+	// A setting named like a secret that holds a number and no text is not
+	// taken for a secret, since secrets almost always mix letters and
+	// digits, but is named so the person can be told.
+	for content, want := range map[string]string{
+		"token: 123456\n":                "token",
+		"token: 0x1F\n":                  "token",
+		"token: 1.5\n":                   "token",
+		"token:\n  pin: 1234\n":          "token",
+		"a: 1\n---\ntoken: 7\n":          "token",
+		"llm_api_key: 1\ntoken: 2\n":     "llm_api_key",
+		"token: false\n":                 "",
+		"token: null\n":                  "",
+		"tokens: 5\n":                    "",
+		"token: 5\napi_key: sk-1\n":      "",
+		"token:\n  1: abc\n":             "",
+		"token:\n  pin: 1\n  key: abc\n": "",
+	} {
+		p := filepath.Join(dir, "f.yaml")
+		write(t, p, content)
+		if _, _, got := secretIn(p, keys); got != want {
+			t.Errorf("secretIn(%q) names the number in %q, want %q", content, got, want)
+		}
+	}
 	// A file deleted since it was listed is for the caller to skip.
-	if got, secret := secretIn(filepath.Join(dir, "missing"), keys); got != "" || secret {
+	if got, secret, _ := secretIn(filepath.Join(dir, "missing"), keys); got != "" || secret {
 		t.Errorf("missing file: %q", got)
 	}
-	if got, _ := secretIn(dir, keys); !strings.Contains(got, "could not be read") {
+	if got, _, _ := secretIn(dir, keys); !strings.Contains(got, "could not be read") {
 		t.Errorf("folder: %q", got)
 	}
 }
