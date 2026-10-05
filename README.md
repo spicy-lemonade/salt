@@ -72,6 +72,10 @@ Run `crontab -e` and add this line to run it every day at 6am. Use the path that
 
 ### Presets
 
+| Preset | What it backs up |
+|---|---|
+| `mnemosyne` | [Mnemosyne](https://github.com/mnemosyne-oss/mnemosyne) memory, on its own or inside Hermes and its profiles |
+
 A preset is a small JSON file in [`internal/preset/presets`](internal/preset/presets) that says where a tool keeps its memory. The [design doc](docs/design.md#presets) shows what each one backs up. If the tool's folders are set by environment variables, set them in the cron line too, since cron doesn't see your shell's variables.
 
 To get your memory back, restore into a new folder (see [Getting your files back](#-getting-your-files-back)), stop the agent, then copy each folder back to where it came from.
