@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/spicy-lemonade/salt/internal/proc"
 )
@@ -151,8 +153,9 @@ func CopySQLite(ctx context.Context, live, dst string) error {
 
 // sqliteCommand builds the sqlite3 command that backs up live into dst. It
 // runs in dst's folder, so the copy is named without a path. live must be an
-// absolute path, so it is never mistaken for an option and does not depend on
-// the folder sqlite3 runs in. -init skips the person's ~/.sqliterc.
+// absolute path, so it does not depend on the folder sqlite3 runs in. It is
+// opened as a URI (see sqliteURI), never mistaken for an option. -init skips
+// the person's ~/.sqliterc.
 //
 // The backup copies a few pages at a time and starts again whenever another
 // program saves to the database, so a large, busy database might never finish.
@@ -174,7 +177,20 @@ func sqliteCommand(ctx context.Context, live, dst string, wal bool) (*exec.Cmd, 
 		// A read starts the transaction; its output goes nowhere.
 		args = append(args, "-cmd", "BEGIN", "-cmd", "SELECT count(*) FROM sqlite_master")
 	}
-	cmd := exec.CommandContext(ctx, "sqlite3", append(args, live, ".backup "+name)...)
+	cmd := exec.CommandContext(ctx, "sqlite3", append(args, sqliteURI(live), ".backup "+name)...)
 	cmd.Dir = filepath.Dir(dst)
 	return cmd, nil
+}
+
+// sqliteURI returns the URI that opens the database at the absolute path
+// live with mode=rw. sqlite3 otherwise creates a database that is missing,
+// so one the tool deletes after salt checks it would be made again, empty,
+// in the tool's folder. Characters a URI gives a meaning to, such as ? and
+// %, are escaped.
+func sqliteURI(live string) string {
+	p := filepath.ToSlash(live)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p // a Windows path such as C:/x, which SQLite takes as /C:/x
+	}
+	return "file:" + (&url.URL{Path: p}).EscapedPath() + "?mode=rw"
 }

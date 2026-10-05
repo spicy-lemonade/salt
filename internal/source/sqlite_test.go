@@ -120,15 +120,19 @@ func TestCopySQLiteWithoutSQLite3(t *testing.T) {
 	}
 }
 
+// The database is opened as a URI with mode=rw, which sqlite3 never creates,
+// so a database deleted after salt checked it is not made again, empty, in
+// the tool's folder. Characters a URI gives a meaning to are escaped.
 func TestSQLiteCommand(t *testing.T) {
 	dir := t.TempDir()
+	live := filepath.Join(dir, "a b%?#", "-live.db")
 	base := []string{"sqlite3", "-init", os.DevNull, "-bail", "-cmd", ".timeout 30000"}
-	tail := []string{filepath.Join(dir, "-live.db"), ".backup 0.db"}
+	tail := []string{"file:" + filepath.ToSlash(dir) + "/a%20b%25%3F%23/-live.db?mode=rw", ".backup 0.db"}
 	for wal, extra := range map[bool][]string{
 		false: nil,
 		true:  {"-cmd", "BEGIN", "-cmd", "SELECT count(*) FROM sqlite_master"},
 	} {
-		cmd, err := sqliteCommand(context.Background(), filepath.Join(dir, "-live.db"), filepath.Join(dir, "tmp", "0.db"), wal)
+		cmd, err := sqliteCommand(context.Background(), live, filepath.Join(dir, "tmp", "0.db"), wal)
 		if err != nil {
 			t.Fatal(err)
 		}

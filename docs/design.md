@@ -440,7 +440,7 @@ it is, so you would only find out when you restore it.
 
 For SQLite, `salt seal --sqlite DB SRC REPO` makes the copy itself
 (`internal/source`). It runs
-`sqlite3 -init /dev/null -bail -cmd ".timeout 30000" DB ".backup N"`
+`sqlite3 -init /dev/null -bail -cmd ".timeout 30000" "file:DB?mode=rw" ".backup N"`
 inside a new private temporary folder, seals the copy at the top of the
 backup under DB's file name, and always removes the folder, also when the
 copy or the seal fails or salt is stopped with Ctrl-C or SIGTERM. SQLite's
@@ -456,7 +456,10 @@ save until the backup ends, so salt leaves it out: the agent never waits for
 salt, and a save during the copy only makes the copy start again. Two copies of an unchanged database
 are identical, so an unchanged database makes no commit. Before starting
 `sqlite3`, salt refuses a path that is missing or is not a SQLite database,
-because `sqlite3` would create an empty database at a missing path.
+because `sqlite3` would create an empty database at a missing path. It also
+opens DB as a URI with `mode=rw`, escaping characters such as `?` and `%`,
+so a database deleted after that check, as a tool may do while salt backs
+it up, is an error and never made again, empty, in the tool's folder.
 
 For Postgres, `salt seal --postgres CONN SRC REPO` dumps the database with
 `pg_dump --no-password --format=plain --lock-wait-timeout=30000
