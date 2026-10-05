@@ -5,6 +5,7 @@
 package preset
 
 import (
+	"bytes"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -103,11 +104,17 @@ func GetAll(names []string) ([]*Preset, error) {
 	return presets, nil
 }
 
-// Parse reads the preset called name from its JSON and checks it.
+// Parse reads the preset called name from its JSON and checks it. A field
+// salt does not know is refused, so a misspelt one never drops a rule.
 func Parse(name string, b []byte) (*Preset, error) {
 	var p Preset
-	if err := json.Unmarshal(b, &p); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p); err != nil {
 		return nil, fmt.Errorf("preset %s: %w", name, err)
+	}
+	if dec.More() {
+		return nil, fmt.Errorf("preset %s: there is more after the preset", name)
 	}
 	if err := p.check(name); err != nil {
 		return nil, fmt.Errorf("preset %s: %w", name, err)
@@ -140,6 +147,11 @@ func (p *Preset) check(name string) error {
 	for _, s := range p.Secrets {
 		if len(s.Files) == 0 || len(s.Keys) == 0 {
 			return errors.New("a secrets rule needs files and keys")
+		}
+		for _, k := range s.Keys {
+			if k != strings.ToLower(k) {
+				return fmt.Errorf("the secrets key %q must be in lower case, as settings are matched in lower case", k)
+			}
 		}
 	}
 	for _, pat := range slices.Concat(p.Skip, secretPatterns(p.Secrets)) {

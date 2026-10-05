@@ -49,7 +49,8 @@ func TestNamesAreSorted(t *testing.T) {
 
 func TestParseRefusesBadPresets(t *testing.T) {
 	for want, body := range map[string]string{
-		"unexpected end of JSON":   `{`,
+		"unexpected EOF":           `{`,
+		"more after the preset":    `{"name": "t", "paths": [{"from": "/a", "to": "a"}]} {}`,
 		"not the file's name":      `{"name": "other", "paths": [{"from": "/a", "to": "a"}]}`,
 		"no paths":                 `{"name": "t"}`,
 		"has no from":              `{"name": "t", "paths": [{"to": "a"}]}`,
@@ -67,6 +68,11 @@ func TestParseRefusesBadPresets(t *testing.T) {
 		"needs files and keys":     `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"]}]}`,
 		`bad pattern "["`:          `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "skip": ["["]}`,
 		`bad pattern "[k"`:         `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["[k"]}]}`,
+		// A misspelt field would otherwise be dropped, and with it a rule.
+		`unknown field "secret"`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secret": [{"files": ["x"], "keys": ["k"]}]}`,
+		`unknown field "key"`:    `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "key": ["k"]}]}`,
+		// Settings are matched in lower case, so API_KEY would never match.
+		`"*API_KEY" must be in lower case`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["*API_KEY"]}]}`,
 	} {
 		_, err := Parse("t", []byte(body))
 		if err == nil || !strings.Contains(err.Error(), want) || !strings.HasPrefix(err.Error(), "preset t: ") {

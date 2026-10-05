@@ -644,7 +644,8 @@ same code reads them all, so adding a tool means adding one file:
 }
 ```
 
-- `name` is the file's name without `.json`.
+- `name` is the file's name without `.json`. A field salt does not know is
+  refused, so a misspelt one, such as `secret`, never drops a rule.
 - `from` is where a file or folder is. `${VAR}` is an environment variable,
   and the path is skipped when it is unset or empty. `${VAR:-DEFAULT}` uses
   DEFAULT then. A leading `~` is the home folder. A part that is only `*`
@@ -657,7 +658,8 @@ same code reads them all, so adding a tool means adding one file:
   skipped, as in `salt seal`.
 - `secrets` lists files that may hold secrets, and the settings in them that
   do. Such a file is read as YAML (which includes JSON), every document in
-  it, and every setting at any depth is checked, its name in lower case. If
+  it, and every setting at any depth is checked, its name in lower case, so
+  `keys` are written in lower case too. If
   one named in `keys` holds text (a string that is not empty, at any depth
   below the setting, or a YAML alias, which salt does not follow), the file
   is left out and salt prints one line naming the file and the setting,
