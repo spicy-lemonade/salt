@@ -379,6 +379,24 @@ func TestGatherSkipsWhatVanishes(t *testing.T) {
 		t.Fatal("a gathered file is not marked live")
 	}
 
+	// A file deleted once it was checked, as its permissions and date are
+	// read, is skipped too.
+	write(t, filepath.Join(tool, "late.md"), "late")
+	vanish = nil
+	infoHook = func(p string) {
+		if filepath.Base(p) == "late.md" {
+			os.Remove(p)
+		}
+	}
+	t.Cleanup(func() { infoHook = nil })
+	f, err = envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files, _ := rels(f); !slices.Equal(files, []string{"tool/kept.md"}) {
+		t.Fatalf("files %v", files)
+	}
+
 	vanish = []string{"."}
 	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("Gather = %v", err)

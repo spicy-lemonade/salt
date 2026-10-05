@@ -26,9 +26,10 @@ const maxSecretsFile = 1 << 20
 // A safe copy of the database already holds what is in them.
 var sidecars = []string{"-wal", "-shm", "-journal"}
 
-// listedHook lets tests delete a file or folder once the walk has listed it.
-// It is always nil outside tests.
-var listedHook func(path string)
+// listedHook lets tests delete a file or folder once the walk has listed
+// it, and infoHook a file once it has been checked, just before its
+// permissions and date are read. Both are always nil outside tests.
+var listedHook, infoHook func(path string)
 
 // ErrNothing means a preset found nothing to back up on this machine.
 var ErrNothing = errors.New("found nothing to back up")
@@ -216,6 +217,9 @@ func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, s
 			}
 			f.Databases = append(f.Databases, db)
 			return nil
+		}
+		if infoHook != nil {
+			infoHook(walked)
 		}
 		info, err := d.Info()
 		if err != nil {
