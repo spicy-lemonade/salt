@@ -431,9 +431,9 @@ func walkSource(src string, exclude []string, res *Result, fn func(string) strin
 
 // addExtra adds the extra files to the source items, refusing a path that is
 // unsafe or clashes with a file or folder already there. With foldCase,
-// paths that differ only by case clash too (see ClashRule). Each path is
-// looked up, not compared with every other, so the time grows with the
-// number of files, not its square.
+// paths that differ only by case clash too, as they do with plain paths on
+// macOS and Windows. Each path is looked up, not compared with every other,
+// so the time grows with the number of files, not its square.
 func addExtra(items []item, extra []Extra, foldCase bool) ([]item, error) {
 	if len(extra) == 0 {
 		return items, nil
@@ -447,7 +447,7 @@ func addExtra(items []item, extra []Extra, foldCase bool) ([]item, error) {
 		if err != nil {
 			return nil, err
 		}
-		if other, ok := t.clash(rel); ok {
+		if _, other, ok := t.clash(rel); ok {
 			if !Clash(other, rel) {
 				return nil, fmt.Errorf("%w: %s and %s differ only by case, and with --plain-paths the repo would keep them as one file on macOS and Windows", ErrDuplicatePath, other, rel)
 			}
@@ -460,26 +460,28 @@ func addExtra(items []item, extra []Extra, foldCase bool) ([]item, error) {
 	return items, nil
 }
 
-// FirstClash returns the first cleaned slash path in rels that clashes with
-// one before it, by ClashRule(!foldCase), and the path or folder it clashes
-// with.
-func FirstClash(rels []string, foldCase bool) (rel, other string, ok bool) {
+// FirstClash returns the index i of the first cleaned slash path in rels
+// that cannot be in a backup with one before it, and the index j of that
+// one. With foldCase, paths that differ only by case clash too.
+func FirstClash(rels []string, foldCase bool) (i, j int, ok bool) {
 	t := newTaken(foldCase)
-	for _, rel := range rels {
-		if other, ok := t.clash(rel); ok {
-			return rel, other, true
+	for i, rel := range rels {
+		if j, _, ok := t.clash(rel); ok {
+			return i, j, true
 		}
 		t.add(rel)
 	}
-	return "", "", false
+	return 0, 0, false
 }
 
 // taken holds the paths in a backup, and every folder above them, by key, so
-// a clash is found by lookup. Each key maps to the path or folder as given.
+// a clash is found by lookup. Each key maps to the index in paths of the
+// path that took it.
 type taken struct {
 	key     func(string) string
-	files   map[string]string
-	folders map[string]string
+	paths   []string
+	files   map[string]int
+	folders map[string]int
 }
 
 func newTaken(foldCase bool) *taken {
@@ -487,39 +489,55 @@ func newTaken(foldCase bool) *taken {
 	if foldCase {
 		key = foldKey
 	}
-	return &taken{key: key, files: map[string]string{}, folders: map[string]string{}}
+	return &taken{key: key, files: map[string]int{}, folders: map[string]int{}}
 }
 
 // add records the cleaned slash path rel and the folders above it.
 func (t *taken) add(rel string) {
-	t.files[t.key(rel)] = rel
+	n := len(t.paths)
+	t.paths = append(t.paths, rel)
+	t.files[t.key(rel)] = n
 	for i := range len(rel) {
-		if rel[i] == '/' {
-			t.folders[t.key(rel[:i])] = rel[:i]
+		if rel[i] != '/' {
+			continue
+		}
+		if k := t.key(rel[:i]); !hasKey(t.folders, k) {
+			t.folders[k] = n
 		}
 	}
 }
 
-// clash returns the path or folder already taken that rel clashes with: the
-// same path, a folder rel would be a file at, or a file above rel. When rel
-// clashes with a folder above a file, the folder is named.
-func (t *taken) clash(rel string) (string, bool) {
+// clash returns the index of the path already taken that rel clashes with,
+// and what in it rel clashes with: the path itself, the folder above it that
+// rel would be a file at, or the file above rel.
+func (t *taken) clash(rel string) (j int, other string, ok bool) {
 	k := t.key(rel)
-	if other, ok := t.files[k]; ok {
-		return other, true
+	if j, ok := t.files[k]; ok {
+		return j, t.paths[j], true
 	}
-	if other, ok := t.folders[k]; ok {
-		return other, true
+	if j, ok := t.folders[k]; ok {
+		return j, firstParts(t.paths[j], strings.Count(rel, "/")+1), true
 	}
 	for i := range len(rel) {
 		if rel[i] != '/' {
 			continue
 		}
-		if other, ok := t.files[t.key(rel[:i])]; ok {
-			return other, true
+		if j, ok := t.files[t.key(rel[:i])]; ok {
+			return j, t.paths[j], true
 		}
 	}
-	return "", false
+	return 0, "", false
+}
+
+func hasKey(m map[string]int, k string) bool {
+	_, ok := m[k]
+	return ok
+}
+
+// firstParts returns the first n parts of the slash path p.
+func firstParts(p string, n int) string {
+	parts := strings.SplitN(p, "/", n+1)
+	return strings.Join(parts[:min(n, len(parts))], "/")
 }
 
 // foldKey returns s with each letter replaced by the smallest of the letters
@@ -544,35 +562,7 @@ func foldKey(s string) string {
 // Paths are compared exactly, case included, as salt keeps every name as it
 // was given: state.db and State.db are two names.
 func Clash(a, b string) bool {
-	return clash(a, b, func(x, y string) bool { return x == y })
-}
-
-// ClashRule returns the rule for whether two paths clash in a repo. With
-// encrypted paths it is Clash. With plain paths each path is also a file name
-// in the repo, and macOS and Windows ignore case in file names, so two paths
-// that differ only by case would be one file there: case is ignored.
-func ClashRule(encryptPaths bool) func(a, b string) bool {
-	if encryptPaths {
-		return Clash
-	}
-	return func(a, b string) bool { return clash(a, b, strings.EqualFold) }
-}
-
-// clash is Clash with equal deciding whether two path parts are the same.
-// The paths are compared part by part, never by length in bytes, since case
-// folding can change a letter's length: the Kelvin sign folds to k.
-func clash(a, b string, equal func(x, y string) bool) bool {
-	for {
-		pa, restA, moreA := strings.Cut(a, "/")
-		pb, restB, moreB := strings.Cut(b, "/")
-		if !equal(pa, pb) {
-			return false
-		}
-		if !moreA || !moreB {
-			return true
-		}
-		a, b = restA, restB
-	}
+	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
 // removeStale deletes ciphertext no longer referenced by the index, leftover

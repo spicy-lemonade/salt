@@ -287,7 +287,6 @@ func TestSealLiveExtraGone(t *testing.T) {
 // whose length in bytes changes when folded. Paths that only share a folder,
 // or a beginning, never clash.
 func TestClash(t *testing.T) {
-	plain := ClashRule(false)
 	for _, tc := range []struct {
 		a, b         string
 		exact, folds bool
@@ -313,18 +312,12 @@ func TestClash(t *testing.T) {
 			if got := Clash(p[0], p[1]); got != tc.exact {
 				t.Errorf("Clash(%q, %q) = %v, want %v", p[0], p[1], got, tc.exact)
 			}
-			if got := ClashRule(true)(p[0], p[1]); got != tc.exact {
-				t.Errorf("ClashRule(true)(%q, %q) = %v, want %v", p[0], p[1], got, tc.exact)
-			}
-			if got := plain(p[0], p[1]); got != tc.folds {
-				t.Errorf("ClashRule(false)(%q, %q) = %v, want %v", p[0], p[1], got, tc.folds)
-			}
-			// addExtra looks paths up rather than comparing them, and must
-			// agree with the rules.
+			// Paths are looked up rather than compared, and the lookup must
+			// agree with Clash, and ignore case only when folding.
 			for fold, want := range map[bool]bool{false: tc.exact, true: tc.folds} {
 				tk := newTaken(fold)
 				tk.add(p[0])
-				if _, got := tk.clash(p[1]); got != want {
+				if _, _, got := tk.clash(p[1]); got != want {
 					t.Errorf("taken(fold %v) of %q clashes with %q = %v, want %v", fold, p[0], p[1], got, want)
 				}
 			}
@@ -379,17 +372,23 @@ func TestSealOnlyExtra(t *testing.T) {
 	}
 }
 
-// FirstClash names the first path that clashes with one before it, and
-// what it clashes with, by the rule for the repo's paths.
+// FirstClash finds the first path that clashes with one before it, and
+// which one, by the rule for the repo's paths.
 func TestFirstClash(t *testing.T) {
 	rels := []string{"a/b.md", "c.md", "A/B.md", "a"}
-	if rel, other, ok := FirstClash(rels, false); !ok || rel != "a" || other != "a" {
-		t.Errorf("exact: %q %q %v", rel, other, ok)
+	if i, j, ok := FirstClash(rels, false); !ok || i != 3 || j != 0 {
+		t.Errorf("exact: %d %d %v", i, j, ok)
 	}
-	if rel, other, ok := FirstClash(rels, true); !ok || rel != "A/B.md" || other != "a/b.md" {
-		t.Errorf("folded: %q %q %v", rel, other, ok)
+	if i, j, ok := FirstClash(rels, true); !ok || i != 2 || j != 0 {
+		t.Errorf("folded: %d %d %v", i, j, ok)
 	}
 	if _, _, ok := FirstClash([]string{"a/b", "a/c", "b"}, true); ok {
 		t.Error("paths sharing a folder clashed")
+	}
+	// A path clashing with the folder above a file names that folder.
+	tk := newTaken(true)
+	tk.add("Agent/x/state.db")
+	if j, other, ok := tk.clash("agent/X"); !ok || j != 0 || other != "Agent/x" {
+		t.Errorf("folder: %d %q %v", j, other, ok)
 	}
 }

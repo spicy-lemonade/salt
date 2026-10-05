@@ -544,7 +544,7 @@ databases whose names clash are refused before any copy is made, since a dump
 can take a long time, and the message names both and points to `--name`. A
 name that clashes with a file or folder in SRC is only known once salt reads
 SRC, so that clash is refused after the copies are made, which are then
-removed, with the same advice. `seal.ClashRule` gives the rule for both checks.
+removed, with the same advice. `seal.FirstClash` finds the clash for both checks, by looking each name up rather than comparing every pair.
 
 The backup gets the live database file's permissions and last-modified date.
 They are read before the copy, because the copy can change them: after a

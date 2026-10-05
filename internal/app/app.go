@@ -277,26 +277,25 @@ func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Data
 	// Two databases whose names clash are refused before any copy is made,
 	// since a copy can take a long time. A clash with a source file is only
 	// known once seal reads the source.
-	clashes := seal.ClashRule(r.Format.EncryptPaths)
+	names := make([]string, len(dbs))
 	for i, db := range dbs {
-		for _, prev := range dbs[:i] {
-			if !clashes(prev.Name(), db.Name()) {
-				continue
-			}
-			if prev.String() == db.String() && prev.Name() == db.Name() {
-				return nil, nil, fmt.Errorf("the database %s is given twice. Give it once", a.short(db.String()))
-			}
-			if prev.Name() == db.Name() {
-				return nil, nil, fmt.Errorf("the databases %s and %s would both be backed up as %s. Give one of them another name with --name NAME before its %s",
-					a.short(prev.String()), a.short(db.String()), db.Name(), db.Flag())
-			}
-			why := "a file cannot also be a folder"
-			if !seal.Clash(prev.Name(), db.Name()) {
-				why = "they differ only by case, and with --plain-paths the repo would keep them as one file on macOS and Windows"
-			}
-			return nil, nil, fmt.Errorf("the databases %s and %s would be backed up as %s and %s, which clash because %s. Give one of them another name with --name NAME before its %s",
-				a.short(prev.String()), a.short(db.String()), prev.Name(), db.Name(), why, db.Flag())
+		names[i] = db.Name()
+	}
+	if i, j, ok := seal.FirstClash(names, !r.Format.EncryptPaths); ok {
+		prev, db := dbs[j], dbs[i]
+		if prev.String() == db.String() && prev.Name() == db.Name() {
+			return nil, nil, fmt.Errorf("the database %s is given twice. Give it once", a.short(db.String()))
 		}
+		if prev.Name() == db.Name() {
+			return nil, nil, fmt.Errorf("the databases %s and %s would both be backed up as %s. Give one of them another name with --name NAME before its %s",
+				a.short(prev.String()), a.short(db.String()), db.Name(), db.Flag())
+		}
+		why := "a file cannot also be a folder"
+		if !seal.Clash(prev.Name(), db.Name()) {
+			why = "they differ only by case, and with --plain-paths the repo would keep them as one file on macOS and Windows"
+		}
+		return nil, nil, fmt.Errorf("the databases %s and %s would be backed up as %s and %s, which clash because %s. Give one of them another name with --name NAME before its %s",
+			a.short(prev.String()), a.short(db.String()), prev.Name(), db.Name(), why, db.Flag())
 	}
 	if ctx == nil {
 		ctx = context.Background()

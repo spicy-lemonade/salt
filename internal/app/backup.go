@@ -61,8 +61,9 @@ func (a *App) Backup(o BackupOptions) error {
 	}
 	// Checked before any database is copied, with advice that fits presets:
 	// the paths come from them, not from the person.
-	if rel, other, ok := seal.FirstClash(found.Paths(), !r.Format.EncryptPaths); ok {
-		return fmt.Errorf("%w: the presets would back up %s and %s, which cannot both be in one backup. This is a problem in the presets, so please report it", seal.ErrDuplicatePath, other, rel)
+	paths := found.Paths()
+	if i, j, ok := seal.FirstClash(paths, !r.Format.EncryptPaths); ok {
+		return fmt.Errorf("%w: the presets would back up %s and %s, which cannot both be in one backup. This is a problem in the presets, so please report it", seal.ErrDuplicatePath, paths[j], paths[i])
 	}
 	for _, l := range found.LeftOut {
 		advice := ""

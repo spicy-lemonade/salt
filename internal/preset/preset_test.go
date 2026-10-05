@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/spicy-lemonade/salt/internal/seal"
 )
 
 // Every built-in preset loads, and backs up each path under its own name, so
@@ -24,20 +26,12 @@ func TestBuiltinPresetsAreValid(t *testing.T) {
 		}
 		var tos []string
 		for _, x := range p.Paths {
-			for _, prev := range tos {
-				if clash(prev, x.To) {
-					t.Errorf("%s: %s and %s clash", n, prev, x.To)
-				}
-			}
 			tos = append(tos, x.To)
 		}
+		if i, j, ok := seal.FirstClash(tos, true); ok {
+			t.Errorf("%s: %s and %s clash", n, tos[j], tos[i])
+		}
 	}
-}
-
-// clash reports whether a and b are the same path or one is a folder above
-// the other.
-func clash(a, b string) bool {
-	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
 func TestGetUnknownPreset(t *testing.T) {
