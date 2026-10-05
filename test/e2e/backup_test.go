@@ -121,8 +121,9 @@ func TestBackupMnemosyne(t *testing.T) {
 	assertDB(t, e, sqlite, filepath.Join(dest, "mnemosyne-data/mnemosyne.db"), 4)
 }
 
-// salt backup stops, and says why, when the preset finds nothing, and when
-// the push fails, without showing a password in origin's URL.
+// salt backup stops, and says why, when the preset finds nothing, when
+// sqlite3 makes no copy of a database, and when the push fails, without
+// showing a password in origin's URL.
 func TestBackupFailures(t *testing.T) {
 	e := newEnv(t)
 	b := newBackupRepo(t, e)
@@ -131,6 +132,23 @@ func TestBackupFailures(t *testing.T) {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 	before := commitCount(e, b.dir)
+
+	// A copy sqlite3 did not make is not taken for a database that went away
+	// while salt backed it up, which salt backup leaves out.
+	noCopy := t.TempDir()
+	if err := os.WriteFile(filepath.Join(noCopy, "sqlite3"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db := filepath.Join(e.home, ".hermes", "mnemosyne", "data", "mnemosyne.db")
+	write(t, db, "SQLite format 3\x00pages")
+	out, code = e.with("PATH="+noCopy+":"+filepath.Dir(e.bin)+":/usr/bin:/bin").run(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	if code != 1 || !strings.Contains(out, "/.hermes/mnemosyne/data/mnemosyne.db: sqlite3 finished without making a copy") {
+		t.Fatalf("no copy made: exit %d:\n%s", code, out)
+	}
+	if got := commitCount(e, b.dir); got != before {
+		t.Fatal("a backup without the database was committed")
+	}
+	os.Remove(db)
 
 	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "x"), "a file")
 	e.must(b.dir, "git", "remote", "set-url", "origin", "https://agent:hunter2@127.0.0.1:1/backup.git")

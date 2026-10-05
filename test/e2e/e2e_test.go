@@ -48,8 +48,14 @@ func newEnvAt(t *testing.T, home string) *env {
 	if bin == "" || !filepath.IsAbs(bin) {
 		t.Fatalf("SALT_BIN must be an absolute path to a prebuilt salt, got %q", bin)
 	}
+	// SALT_E2E_PATH (make e2e E2E_PATH=DIR) puts DIR before the system's
+	// folders, so salt runs another sqlite3, such as a newer one.
+	path := filepath.Dir(bin)
+	if extra := os.Getenv("SALT_E2E_PATH"); extra != "" {
+		path += ":" + extra
+	}
 	e := &env{t: t, bin: bin, home: home, vars: []string{
-		"PATH=" + filepath.Dir(bin) + ":/usr/local/go/bin:/usr/bin:/bin",
+		"PATH=" + path + ":/usr/local/go/bin:/usr/bin:/bin",
 		"HOME=" + home,
 		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
 		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"),

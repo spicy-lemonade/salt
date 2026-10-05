@@ -439,17 +439,22 @@ can give a broken copy with no warning, and Salt would encrypt it exactly as
 it is, so you would only find out when you restore it.
 
 For SQLite, `salt seal --sqlite DB SRC REPO` makes the copy itself
-(`internal/source`). It runs
-`sqlite3 -init /dev/null -bail -cmd ".timeout 30000" "file:DB?mode=rw" ".backup N"`
-inside a new private temporary folder, seals the copy at the top of the
-backup under DB's file name, and always removes the folder, also when the
-copy or the seal fails or salt is stopped with Ctrl-C or SIGTERM. SQLite's
+(`internal/source`). It runs `sqlite3 -init /dev/null -bail "file:DB?mode=rw"`
+inside a new private temporary folder and sends it the commands
+`.timeout 30000` and `.backup N` on stdin, one per line. With `-bail`, a
+command that fails stops `sqlite3` with an error. The commands are not
+given with `-cmd`, because `sqlite3` 3.53 with `-bail` stops after the
+first SQL command given that way and exits 0 without a copy. If `sqlite3`
+exits 0 without making a copy anyway, salt stops and says so. Salt seals
+the copy at the top of the backup under DB's file name, and always removes
+the folder, also when the copy or the seal fails or salt is stopped with
+Ctrl-C or SIGTERM. SQLite's
 backup gives a consistent copy while other programs write, and copies page
 by page, so nothing is held in memory. It starts again whenever another
 program saves to the database, so a large, busy database might never finish.
-For a database in WAL mode (header bytes 18 and 19 are 2), salt adds
-`-cmd BEGIN -cmd "SELECT count(*) FROM sqlite_master"`: the read transaction
-makes the backup copy the database as it was at that moment, so it never
+For a database in WAL mode (header bytes 18 and 19 are 2), salt sends
+`BEGIN;` and `SELECT count(*) FROM sqlite_master;` before `.backup`: the
+read transaction makes the backup copy the database as it was at that moment, so it never
 starts again, and other programs keep saving to the `-wal` file. In
 rollback-journal mode a read transaction would make other programs wait to
 save until the backup ends, so salt leaves it out: the agent never waits for
