@@ -675,11 +675,15 @@ database named with `--sqlite`, or a file in `salt seal`'s source folder,
 still stops the seal when it is missing, since the person named it.
 
 A place found twice, such as a folder named both by a variable and by its
-default, or by two presets, is backed up once, under the first path. A place
-inside another, such as one preset's data folder inside another preset's
-folder, is backed up under its own path with its own preset's rules, and the
-folder around it leaves it out. So nothing is backed up twice, whatever order
-the presets are given in. Two places backed up at the same path are refused
+default, or by two presets, is backed up once, under the first path, taking
+presets in name order. A place inside another, such as one preset's data
+folder inside another preset's folder, is backed up under its own path, and
+the folder around it leaves it out. Where presets overlap, a file is backed
+up if any preset that reaches it would back it up, so adding a preset never
+drops a file another one backs up. A preset reaches a place inside its own
+unless it skips a folder on the way. Every preset's secrets rules apply to
+every file. So nothing is backed up twice, and the backup is the same
+whatever order the presets are given in. Two places backed up at the same path are refused
 before anything is copied. A place that contains the backup repo, or is
 inside it, is refused, comparing real paths with symlinks followed.
 

@@ -70,14 +70,17 @@ type LeftOut struct {
 
 // Gather finds everything the presets back up on this machine. show is how
 // paths are written in messages. A preset that finds nothing is an error.
-// A place found twice, such as a folder named by two paths or by two
-// presets, is backed up only under the first path. A place inside another
-// is backed up under its own path, and the outer one leaves it out, so
-// nothing is backed up twice whatever order the presets are given in. A
-// place that contains the backup repo at repo, or is inside it, is refused
-// before anything is read. A file deleted while it is gathered, as a tool's
-// files can be at any time, is skipped, and every file is marked live, so
-// seal skips one deleted before it is read too.
+// Each place is walked once. A place found twice, such as a folder named by
+// two paths or by two presets, is backed up under the first path, taking
+// presets in name order. A place inside another is backed up under its own
+// path, and the outer walk leaves it out. Where presets overlap, a file is
+// backed up if any preset that reaches it would back it up, and every
+// preset's secrets rules apply to every file, so the result never depends
+// on the order the presets are given in. A place that contains the backup
+// repo at repo, or is inside it, is refused before anything is read. A file
+// deleted while it is gathered, as a tool's files can be at any time, is
+// skipped, and every file is marked live, so seal skips one deleted before
+// it is read too.
 func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*Found, error) {
 	// Places have their symlinks followed, so the repo's are too before
 	// comparing them.
@@ -85,11 +88,12 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 	if err != nil {
 		return nil, err
 	}
-	f := &Found{}
-	byReal := map[string]*spot{}
+	presets = slices.SortedFunc(slices.Values(presets), func(a, b *Preset) int { return strings.Compare(a.Name, b.Name) })
+	w := &walker{f: &Found{}, spots: map[string]*spot{}, found: map[*Preset]bool{}, show: show}
 	var spots []*spot
 	lookedIn := map[*Preset][]string{}
 	for _, p := range presets {
+		w.secrets = append(w.secrets, p.Secrets...)
 		var looked []string
 		for _, x := range p.Paths {
 			if where, ok := e.expand(x.From); ok {
@@ -100,17 +104,19 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 				return nil, err
 			}
 			for _, pl := range places {
-				f.Places = append(f.Places, pl.Rel)
+				w.f.Places = append(w.f.Places, pl.Rel)
 				real, err := filepath.EvalSymlinks(pl.Abs)
 				if err != nil {
 					return nil, err
 				}
-				if s, ok := byReal[real]; ok {
-					s.users = append(s.users, p)
+				if s, ok := w.spots[real]; ok {
+					if !slices.Contains(s.users, p) {
+						s.users = append(s.users, p)
+					}
 					continue
 				}
-				s := &spot{preset: p, place: pl, real: real, users: []*Preset{p}}
-				byReal[real] = s
+				s := &spot{place: pl, real: real, users: []*Preset{p}}
+				w.spots[real] = s
 				spots = append(spots, s)
 			}
 		}
@@ -122,35 +128,76 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 		}
 	}
 	for _, s := range spots {
-		before := len(f.Files) + len(f.Databases)
-		if err := f.walk(s.preset, s.real, s.place, byReal, show); err != nil {
+		if err := w.walk(s, reaching(s, spots)); err != nil {
 			return nil, err
 		}
-		s.found = len(f.Files) + len(f.Databases) - before
 	}
 	for _, p := range presets {
-		if !slices.ContainsFunc(spots, func(s *spot) bool { return s.found > 0 && slices.Contains(s.users, p) }) {
+		if !w.found[p] {
 			return nil, fmt.Errorf("%w for the %s preset. It looks in %s", ErrNothing, p.Name, strings.Join(lookedIn[p], ", "))
 		}
 	}
-	return f, nil
+	return w.f, nil
 }
 
 // spot is a place a preset found, once symlinks are followed. users lists
-// every preset that found it; it is walked once, with preset's rules.
+// every preset that found it. It is walked once, under place's path.
 type spot struct {
-	preset *Preset
-	place  Place
-	real   string
-	users  []*Preset
-	found  int // files and databases its walk added
+	place Place
+	real  string
+	users []*Preset
 }
 
-// walk adds the file or folder pl, which is at real once symlinks are
-// followed, using p's rules. Paths are given as pl names them. A place in
-// spots found inside it is left to its own walk, so it is backed up once,
-// under its own path and with its own preset's rules.
-func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, show func(string) string) error {
+// reaching returns the presets that back up what is in the spot s: those
+// that found it, and those that found a place around it and skip none of
+// the folders between, including s itself.
+func reaching(s *spot, spots []*spot) []*Preset {
+	by := slices.Clone(s.users)
+	for _, o := range spots {
+		if o == s || !seal.Within(s.real, o.real) {
+			continue
+		}
+		rel, err := filepath.Rel(o.real, s.real)
+		if err != nil {
+			continue
+		}
+		parts := strings.Split(rel, string(filepath.Separator))
+		for _, p := range o.users {
+			if !slices.Contains(by, p) && !slices.ContainsFunc(parts, func(n string) bool { return skips(p, n) }) {
+				by = append(by, p)
+			}
+		}
+	}
+	return by
+}
+
+// skips reports whether p never backs up a file or folder called name.
+func skips(p *Preset, name string) bool {
+	return slices.Contains(seal.DefaultExclude, name) || matchAny(p.Skip, name)
+}
+
+// walker gathers the files in each spot into f.
+type walker struct {
+	f *Found
+	// spots holds every spot by its real path, so a walk leaves out the
+	// places inside it that are walked on their own.
+	spots map[string]*spot
+	// secrets holds every preset's secrets rules.
+	secrets []Secret
+	// found records each preset that backs up something found.
+	found map[*Preset]bool
+	show  func(string) string
+}
+
+// walk adds the file or folder in the spot s, which the presets by back up.
+// A file or folder is backed up when any of by that reaches it does not
+// skip it. Paths are given as s's place names them, and a place in spots
+// inside it is left to its own walk, so it is backed up once, under its own
+// path.
+func (w *walker) walk(s *spot, by []*Preset) error {
+	pl, real := s.place, s.real
+	// reach holds, for each folder walked, the presets that reach it.
+	reach := map[string][]*Preset{}
 	return filepath.WalkDir(real, func(walked string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if walked == real {
@@ -161,10 +208,24 @@ func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, s
 		if listedHook != nil {
 			listedHook(walked)
 		}
-		if _, ok := spots[walked]; ok && walked != real {
+		if _, ok := w.spots[walked]; ok && walked != real {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		here := by
+		if walked != real {
+			here = slices.DeleteFunc(slices.Clone(reach[filepath.Dir(walked)]), func(p *Preset) bool { return skips(p, d.Name()) })
+			if len(here) == 0 {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+		}
+		if d.IsDir() {
+			reach[walked] = here
 			return nil
 		}
 		sub, err := filepath.Rel(real, walked)
@@ -172,17 +233,8 @@ func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, s
 			return err
 		}
 		at, to := filepath.Join(pl.Abs, sub), path.Join(pl.Rel, filepath.ToSlash(sub))
-		if walked != real && (slices.Contains(seal.DefaultExclude, d.Name()) || matchAny(p.Skip, d.Name())) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
 		if !d.Type().IsRegular() {
-			f.Skipped = append(f.Skipped, show(at))
+			w.f.Skipped = append(w.f.Skipped, w.show(at))
 			return nil
 		}
 		if sidecar, err := isSidecar(walked); sidecar || err != nil {
@@ -194,12 +246,12 @@ func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, s
 		if walked == real {
 			names = append(names, filepath.Base(pl.Abs))
 		}
-		for _, s := range p.Secrets {
-			if !slices.ContainsFunc(names, func(n string) bool { return matchAny(s.Files, n) }) {
+		for _, sec := range w.secrets {
+			if !slices.ContainsFunc(names, func(n string) bool { return matchAny(sec.Files, n) }) {
 				continue
 			}
-			if why, secret := secretIn(at, s.Keys); why != "" {
-				f.LeftOut = append(f.LeftOut, LeftOut{Path: at, Why: why, Secret: secret})
+			if why, secret := secretIn(at, sec.Keys); why != "" {
+				w.f.LeftOut = append(w.f.LeftOut, LeftOut{Path: at, Why: why, Secret: secret})
 				return nil
 			}
 		}
@@ -215,7 +267,8 @@ func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, s
 			if err != nil {
 				return err
 			}
-			f.Databases = append(f.Databases, db)
+			w.f.Databases = append(w.f.Databases, db)
+			w.mark(here)
 			return nil
 		}
 		if infoHook != nil {
@@ -225,9 +278,17 @@ func (f *Found) walk(p *Preset, real string, pl Place, spots map[string]*spot, s
 		if err != nil {
 			return skipGone(err)
 		}
-		f.Files = append(f.Files, seal.Extra{Rel: to, Path: at, Mode: info.Mode(), ModTime: info.ModTime(), Live: true})
+		w.f.Files = append(w.f.Files, seal.Extra{Rel: to, Path: at, Mode: info.Mode(), ModTime: info.ModTime(), Live: true})
+		w.mark(here)
 		return nil
 	})
+}
+
+// mark records that each of by backs up something found.
+func (w *walker) mark(by []*Preset) {
+	for _, p := range by {
+		w.found[p] = true
+	}
 }
 
 // skipGone returns nil for an error saying a file or folder no longer

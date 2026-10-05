@@ -161,7 +161,7 @@ func TestGatherTakesEachPlaceOnce(t *testing.T) {
 }
 
 // Two presets whose places overlap back each file up once, whatever order
-// they are given in, each with its own rules, and neither finds nothing.
+// they are given in, and neither finds nothing.
 func TestGatherOverlappingPresets(t *testing.T) {
 	home := t.TempDir()
 	write(t, filepath.Join(home, "agent", "notes.md"), "notes")
@@ -198,6 +198,92 @@ func TestGatherOverlappingPresets(t *testing.T) {
 		t.Fatal(err)
 	}
 	if files, _ := rels(f); len(files) != 3 || !strings.HasPrefix(files[0], "agent/") {
+		t.Fatalf("files = %v", files)
+	}
+}
+
+// Where presets overlap, a file is backed up if any preset that reaches it
+// would back it up, so adding a preset never drops a file another backs up.
+// A preset reaches a place inside its own unless it skips a folder on the
+// way. Every preset's secrets rules apply to every file.
+func TestGatherOverlapRules(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, "agent", "run.log"), "log")
+	write(t, filepath.Join(home, "agent", "memory", "m.md"), "memory")
+	write(t, filepath.Join(home, "agent", "memory", "run.log"), "inner log")
+	write(t, filepath.Join(home, "agent", "memory", "draft.tmp"), "draft")
+	write(t, filepath.Join(home, "agent", "memory", "settings.yaml"), "token: abc")
+	write(t, filepath.Join(home, "agent", "cache", "memory", "c.md"), "cached")
+	write(t, filepath.Join(home, "agent", "cache", "memory", "c.tmp"), "cached draft")
+	outer, err := Parse("outer", []byte(`{"name": "outer", "paths": [{"from": "~/agent", "to": "agent"}],
+		"skip": ["*.log", "cache"],
+		"secrets": [{"files": ["settings.yaml"], "keys": ["token"]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := Parse("inner", []byte(`{"name": "inner", "paths": [
+		{"from": "~/agent/memory", "to": "agent/memory"},
+		{"from": "~/agent/cache/memory", "to": "cached"}],
+		"skip": ["*.tmp"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, order := range [][]*Preset{{outer, inner}, {inner, outer}} {
+		f, err := envOf(home, nil).Gather(order, t.TempDir(), plain)
+		if err != nil {
+			t.Fatalf("%s first: %v", order[0].Name, err)
+		}
+		// The inner preset backs up the log in its place, and the outer one
+		// the draft. The outer one skips cache, so only the inner one's rules
+		// apply there.
+		want := []string{"agent/memory/draft.tmp", "agent/memory/m.md", "agent/memory/run.log", "cached/c.md"}
+		if files, _ := rels(f); !slices.Equal(files, want) {
+			t.Errorf("%s first: files = %v, want %v", order[0].Name, files, want)
+		}
+		if len(f.LeftOut) != 1 || filepath.Base(f.LeftOut[0].Path) != "settings.yaml" {
+			t.Errorf("%s first: the outer preset's secrets rule was not used: %+v", order[0].Name, f.LeftOut)
+		}
+	}
+}
+
+// A place two presets name is backed up under the path of the one first by
+// name, whatever order they are given in, with both presets' rules.
+func TestGatherSamePlaceAnyOrder(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, "agent", "a.md"), "a")
+	write(t, filepath.Join(home, "agent", "config.yaml"), "api_key: sk-1")
+	b, err := Parse("b", []byte(`{"name": "b", "paths": [{"from": "~/agent", "to": "bee"}],
+		"secrets": [{"files": ["config.yaml"], "keys": ["api_key"]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := Parse("a", []byte(`{"name": "a", "paths": [{"from": "~/agent", "to": "ay"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, order := range [][]*Preset{{a, b}, {b, a}} {
+		f, err := envOf(home, nil).Gather(order, t.TempDir(), plain)
+		if err != nil {
+			t.Fatalf("%s first: %v", order[0].Name, err)
+		}
+		if files, _ := rels(f); !slices.Equal(files, []string{"ay/a.md"}) || len(f.LeftOut) != 1 {
+			t.Errorf("%s first: files = %v, left out %+v", order[0].Name, files, f.LeftOut)
+		}
+	}
+}
+
+// A preset whose place holds nothing but another preset's place still finds
+// what is in it.
+func TestGatherOuterPlaceHoldsOnlyAnother(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, "agent", "memory", "m.md"), "memory")
+	outer, _ := Parse("outer", []byte(`{"name": "outer", "paths": [{"from": "~/agent", "to": "agent"}]}`))
+	inner, _ := Parse("inner", []byte(`{"name": "inner", "paths": [{"from": "~/agent/memory", "to": "memory"}]}`))
+	f, err := envOf(home, nil).Gather([]*Preset{outer, inner}, t.TempDir(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files, _ := rels(f); !slices.Equal(files, []string{"memory/m.md"}) {
 		t.Fatalf("files = %v", files)
 	}
 }
