@@ -114,11 +114,10 @@ Run `crontab -e` and add this line to run it every day at 6am. Use the path that
 0 6 * * * /opt/homebrew/bin/salt backup --preset NAME "$HOME/my-backup-repo" >> "$HOME/backup.log" 2>&1
 ```
 
-- Your repo then holds only what the presets find, and anything else in it is removed, as `salt seal --prune` does. Give `salt backup` a repo of its own, and repeat `--preset` for each tool you use.
-- A settings file holding an API key or other secret is left out, with one line naming the file and setting. Keep secrets in environment variables so the file is backed up.
-- `--keep-days N` sets how many days with a change to keep. The default is 5, as with `salt prune`.
-- The repo needs a remote named `origin`, and `git push` must work without asking for a password. Running `gh auth setup-git` once is an easy way to do this. Salt never overwrites a backup this machine didn't push, even after a `git fetch`.
-- Salt prints nothing when the backup works, but names any folder from the last backup it can't find, such as on an unmounted drive.
+- Your repo then holds only what the presets find, so give `salt backup` a repo of its own. Repeat `--preset` for each tool you use.
+- A settings file holding an API key or other secret is left out, and Salt names it. Keep secrets in environment variables instead.
+- `--keep-days N` keeps the last N days with a change. The default is 5.
+- `git push` to `origin` must work without a password prompt. Running `gh auth setup-git` once does this.
 
 ### Presets
 
@@ -160,13 +159,11 @@ On a new laptop, install Salt and restore straight from your backup repo's URL. 
 salt restore https://github.com/you/my-backup-repo.git --to ~/restored-files
 ```
 
-SSH URLs such as `git@github.com:you/my-backup-repo.git` work too, using the login git already has, such as an SSH key. Avoid putting a token in the URL, since other programs on your laptop can see the command line.
+SSH URLs work too. Don't put a token in the URL, since other programs on your laptop can see it.
 
-Salt restores into a new folder, with the original names and folders, and never overwrites anything, so you can check the files before copying them back.
+Salt restores into a new folder and never overwrites anything, so you can check the files before copying them back.
 
-Backing up never needs the key that unlocks your backups, only a signing key Salt keeps in a private file. So you can delete the private key from your laptop (see [Uninstall](#-uninstall)) and keep just your 12 words.
-
-To back up from a new laptop, clone your backup repo, then run `salt trust my-backup-repo` once to approve its keys. If your key isn't saved there, Salt asks for your 12 words or passphrase once to set up signing.
+To back up from a new laptop, clone your backup repo and run `salt trust my-backup-repo` once. Salt asks for your 12 words or passphrase if it needs them.
 
 ## 🩺 Checking everything works
 
