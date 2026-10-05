@@ -17,6 +17,7 @@ import (
 
 	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/gitx"
+	"github.com/spicy-lemonade/salt/internal/guard"
 	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/prune"
@@ -65,12 +66,17 @@ type GitOps interface {
 	// Clone downloads only the latest commit of url into the empty folder
 	// dir (see gitx.Clone).
 	Clone(ctx context.Context, url, dir string) error
+	// Branch returns the checked-out branch, or gitx.ErrDetached.
+	Branch(repoRoot string) (string, error)
 	// Stage stages every change, removed files included.
 	Stage(repoRoot string) error
 	// Commit commits what is staged, and nothing when nothing is.
-	Commit(repoRoot, msg string) error
-	// Push pushes the checked-out branch to origin (see gitx.Push).
-	Push(ctx context.Context, repoRoot string) error
+	Commit(ctx context.Context, repoRoot, msg string) error
+	// Head returns the commit checked out.
+	Head(repoRoot string) (string, error)
+	// Push pushes the checked-out branch to origin if origin's branch is at
+	// one of known, or nothing there is lost (see gitx.Push).
+	Push(ctx context.Context, repoRoot string, known []string) error
 }
 
 // RealGit runs git through gitx (hooks disabled).
@@ -94,9 +100,15 @@ func (RealGit) Prune(root string, keepDays int) (*prune.Result, error) {
 func (RealGit) Clone(ctx context.Context, url, dir string) error {
 	return gitx.Clone(ctx, url, dir)
 }
-func (RealGit) Stage(root string) error                     { return gitx.StageAll(root) }
-func (RealGit) Commit(root, msg string) error               { return gitx.CommitStaged(root, msg) }
-func (RealGit) Push(ctx context.Context, root string) error { return gitx.Push(ctx, root) }
+func (RealGit) Branch(root string) (string, error) { return gitx.Branch(root) }
+func (RealGit) Stage(root string) error            { return gitx.StageAll(root) }
+func (RealGit) Commit(ctx context.Context, root, msg string) error {
+	return gitx.CommitStaged(ctx, root, msg)
+}
+func (RealGit) Head(root string) (string, error) { return gitx.Head(root) }
+func (RealGit) Push(ctx context.Context, root string, known []string) error {
+	return gitx.Push(ctx, root, known)
+}
 
 // HookSearchPath is where the pre-commit hook looks for salt: the caller's
 // PATH plus Homebrew's locations (see hook.Script).
@@ -129,6 +141,10 @@ type SealOptions struct {
 	Files []seal.Extra
 	// Context stops the database copies early. Nil means never.
 	Context context.Context
+	// Live is true when Databases were found on this machine, as a preset
+	// finds them, rather than given by the person. A database deleted
+	// before it is copied is then left out instead of failing the seal.
+	Live bool
 }
 
 // Seal encrypts o.Src, and safe copies of o.Databases, into the salt repository
@@ -138,6 +154,11 @@ func (a *App) Seal(o SealOptions) error {
 	if err != nil {
 		return err
 	}
+	unlock, err := a.lockRepo(r.Root)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	res, err := a.seal(r, signer, o)
 	if err != nil {
 		return err
@@ -154,6 +175,26 @@ func (a *App) Seal(o SealOptions) error {
 		return nil // not a git repo, so nothing is pushed
 	}
 	return a.checkStorage(r.Root, "salt: the backup was sealed, but")
+}
+
+// lockRepo stops two salts changing the repo at root at once, such as a
+// backup still running, on a slow push, when the next one starts: each
+// would delete the objects the other had just written. The lock is a file
+// in the cache folder, named by the repo's real path.
+func (a *App) lockRepo(root string) (unlock func(), err error) {
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, err
+	}
+	p, err := seal.RepoFile(a.CacheDir, real, "lock-", "")
+	if err != nil {
+		return nil, err
+	}
+	unlock, err = guard.Lock(p)
+	if errors.Is(err, guard.ErrLocked) {
+		return nil, fmt.Errorf("%s: %w", a.short(root), err)
+	}
+	return unlock, err
 }
 
 // openToSeal opens the salt repository at path for sealing. It refuses one
@@ -179,8 +220,9 @@ func (a *App) openToSeal(path string) (*repo.Repo, ed25519.PrivateKey, error) {
 }
 
 // seal copies o.Databases safely, then seals them, o.Src and o.Files into r.
+// The caller has already opened the repo as r, so o.Repo is ignored.
 func (a *App) seal(r *repo.Repo, signer ed25519.PrivateKey, o SealOptions) (*seal.Result, error) {
-	extra, cleanup, err := a.copyDatabases(o.Context, r, o.Databases)
+	extra, cleanup, err := a.copyDatabases(o.Context, r, o.Databases, o.Live)
 	if err != nil {
 		return nil, err
 	}
@@ -202,8 +244,8 @@ func (a *App) seal(r *repo.Repo, signer ed25519.PrivateKey, o SealOptions) (*sea
 
 // copyDatabases makes a safe copy of each live database in a new private
 // temporary folder, and returns them as files to seal. cleanup removes the
-// folder.
-func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Database) (extra []seal.Extra, cleanup func(), err error) {
+// folder. With skipGone, a database that no longer exists is left out.
+func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Database, skipGone bool) (extra []seal.Extra, cleanup func(), err error) {
 	if len(dbs) == 0 {
 		return nil, func() {}, nil
 	}
@@ -243,10 +285,12 @@ func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Data
 		return nil, nil, err
 	}
 	cleanup = func() { os.RemoveAll(tmp) }
-	extra = make([]seal.Extra, len(dbs))
 	for i, db := range dbs {
 		dst := filepath.Join(tmp, strconv.Itoa(i))
 		meta, err := db.Copy(ctx, source.CopyOptions{Dst: dst, Key: key})
+		if skipGone && errors.Is(err, fs.ErrNotExist) && ctx.Err() == nil {
+			continue // cleanup removes any part of a copy it made
+		}
 		if err != nil {
 			cleanup()
 			switch {
@@ -257,7 +301,7 @@ func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Data
 			}
 			return nil, nil, fmt.Errorf("copying the database %s: %w", a.short(db.String()), err)
 		}
-		extra[i] = seal.Extra{Rel: db.Name(), Path: dst, Mode: meta.Mode, ModTime: meta.ModTime}
+		extra = append(extra, seal.Extra{Rel: db.Name(), Path: dst, Mode: meta.Mode, ModTime: meta.ModTime})
 	}
 	return extra, cleanup, nil
 }

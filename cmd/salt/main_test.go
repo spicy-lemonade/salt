@@ -86,9 +86,11 @@ func (g *noGit) Clone(context.Context, string, string) error {
 	return errors.New("no git in unit tests")
 }
 
-func (*noGit) Stage(string) error                 { return nil }
-func (*noGit) Commit(string, string) error        { return nil }
-func (*noGit) Push(context.Context, string) error { return nil }
+func (*noGit) Branch(string) (string, error)                { return "main", nil }
+func (*noGit) Stage(string) error                           { return nil }
+func (*noGit) Commit(context.Context, string, string) error { return nil }
+func (*noGit) Head(string) (string, error)                  { return "h", nil }
+func (*noGit) Push(context.Context, string, []string) error { return nil }
 
 func (g *noGit) Prune(_ string, keepDays int) (*prune.Result, error) {
 	g.pruneDays = append(g.pruneDays, keepDays)
@@ -188,7 +190,12 @@ func TestRunBackup(t *testing.T) {
 		t.Fatalf("unknown preset: %v", err)
 	}
 	var ue usageError
-	err = run("backup", []string{"--preset", preset.Names()[0], "--keep-days", "2", t.TempDir()})
+	first := preset.Names()[0]
+	err = run("backup", []string{"--preset", first, "--preset", first, "repo"})
+	if !errors.As(err, &ue) || !strings.Contains(err.Error(), "backup: the preset "+first+" is given twice") {
+		t.Fatalf("a preset given twice: %v", err)
+	}
+	err = run("backup", []string{"--preset", first, "--keep-days", "2", t.TempDir()})
 	if err == nil || errors.As(err, &ue) || !strings.Contains(err.Error(), "not a salt repository") {
 		t.Fatalf("backup: %v", err)
 	}
@@ -255,6 +262,11 @@ func TestRunSealVerifyRestore(t *testing.T) {
 	calls := testGit.storageCalls
 	if err := run("seal", []string{"--prune", "--sqlite", filepath.Join(dbs, "state.db"), src, root, "--sqlite", filepath.Join(dbs, "memory.db")}); err != nil {
 		t.Fatalf("seal: %v", err)
+	}
+	// A database the person names must exist; only a preset's may vanish.
+	missing := filepath.Join(dbs, "missing.db")
+	if err := run("seal", []string{"--sqlite", missing, src, root}); err == nil || !strings.Contains(err.Error(), "missing.db does not exist; check the path given to") {
+		t.Fatalf("seal --sqlite missing.db: %v", err)
 	}
 	if testGit.storageCalls != calls+1 {
 		t.Fatalf("seal asked git about storage %d time(s), want once", testGit.storageCalls-calls)

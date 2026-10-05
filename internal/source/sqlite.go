@@ -67,50 +67,68 @@ func (s *SQLite) Copy(ctx context.Context, o CopyOptions) (Meta, error) {
 // sqlite3 would create a new, empty database at a missing path and back that
 // up.
 func checkSQLite(path string) (wal bool, err error) {
-	// The type is checked before opening: opening a named pipe would wait
-	// forever for a writer.
-	fi, err := os.Stat(path)
+	head, size, err := readHead(path)
 	if err != nil {
 		return false, err
 	}
-	if !fi.Mode().IsRegular() {
-		return false, ErrNotSQLite
-	}
-	if fi.Size() == 0 {
+	if size == 0 {
 		return false, nil
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
-	// A short file or a read error leaves fewer bytes than the header, and the
-	// file is refused. sqlite3 would fail on the same read error.
-	head := make([]byte, 20)
-	n, _ := io.ReadFull(f, head)
-	if n < len(sqliteHeader) || string(head[:len(sqliteHeader)]) != sqliteHeader {
+	if !hasHeader(head) {
 		return false, ErrNotSQLite
 	}
-	return n == len(head) && head[18] == walVersion && head[19] == walVersion, nil
+	return len(head) == headLen && head[18] == walVersion && head[19] == walVersion, nil
 }
 
-// IsSQLite reports whether the regular file at path starts with SQLite's
+// IsSQLite reports whether path is a regular file that starts with SQLite's
 // header. Unlike checkSQLite, an empty file does not count, so only files
-// that are already databases are found.
+// that are already databases are found. Anything but a regular file is not
+// a database.
 func IsSQLite(path string) (bool, error) {
-	f, err := os.Open(path)
+	head, _, err := readHead(path)
+	if errors.Is(err, ErrNotSQLite) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
-	defer f.Close()
-	head := make([]byte, len(sqliteHeader))
-	if _, err := io.ReadFull(f, head); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return false, nil
-		}
-		return false, err
+	return hasHeader(head), nil
+}
+
+// headLen is how much of a database file readHead reads: the header string
+// and the bytes up to the WAL mode marks.
+const headLen = 20
+
+// readHead returns as much of the first headLen bytes of the regular file at
+// path as could be read, and its size. Anything but a regular file is
+// ErrNotSQLite. The type is checked before opening: opening a named pipe
+// would wait forever for a writer. A short file or a read error leaves fewer
+// bytes than the header, and the file is not taken for a database. sqlite3
+// would fail on the same read error.
+func readHead(path string) (head []byte, size int64, err error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, 0, err
 	}
-	return string(head) == sqliteHeader, nil
+	if !fi.Mode().IsRegular() {
+		return nil, 0, ErrNotSQLite
+	}
+	if fi.Size() == 0 {
+		return nil, 0, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer f.Close()
+	head = make([]byte, headLen)
+	n, _ := io.ReadFull(f, head)
+	return head[:n], fi.Size(), nil
+}
+
+// hasHeader reports whether head starts with SQLite's header.
+func hasHeader(head []byte) bool {
+	return len(head) >= len(sqliteHeader) && string(head[:len(sqliteHeader)]) == sqliteHeader
 }
 
 // CopySQLite writes a consistent copy of the SQLite database at live to dst

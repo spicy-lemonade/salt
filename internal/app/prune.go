@@ -22,6 +22,11 @@ func (a *App) Prune(repoRoot string, keepDays int) error {
 	if err := a.checkTrusted(r); err != nil {
 		return err
 	}
+	unlock, err := a.lockRepo(r.Root)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	res, err := a.Git.Prune(r.Root, keepDays)
 	if res == nil {
 		return err

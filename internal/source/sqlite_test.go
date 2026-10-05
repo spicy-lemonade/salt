@@ -221,7 +221,16 @@ func TestIsSQLite(t *testing.T) {
 	if _, err := IsSQLite(filepath.Join(dir, "missing")); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("missing: %v", err)
 	}
-	if _, err := IsSQLite(dir); err == nil {
-		t.Error("IsSQLite read a folder")
+	// A folder, or a named pipe that would block a read, is not a database,
+	// and is never opened.
+	if ok, err := IsSQLite(dir); ok || err != nil {
+		t.Errorf("folder: %v, %v", ok, err)
+	}
+	pipe := filepath.Join(dir, "pipe")
+	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := IsSQLite(pipe); ok || err != nil {
+		t.Errorf("named pipe: %v, %v", ok, err)
 	}
 }

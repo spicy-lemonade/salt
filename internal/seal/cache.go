@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -67,12 +69,12 @@ func cacheKey(recipients []string, encryptPaths bool) string {
 }
 
 func cachePath(dir, repoRoot string) (string, error) {
-	return repoFile(dir, repoRoot, "seal-", ".json")
+	return RepoFile(dir, repoRoot, "seal-", ".json")
 }
 
-// repoFile names the local file holding what salt keeps for the repo at
-// repoRoot.
-func repoFile(dir, repoRoot, prefix, ext string) (string, error) {
+// RepoFile names the local file, in the cache folder dir, holding what salt
+// keeps for the repo at repoRoot.
+func RepoFile(dir, repoRoot, prefix, ext string) (string, error) {
 	abs, err := filepath.Abs(repoRoot)
 	if err != nil {
 		return "", err
@@ -90,7 +92,7 @@ const copyKeyLen = 32
 // source.CopyOptions). It is kept 0600 next to the change cache and never
 // committed. If it is lost, a new one only means one more commit.
 func CopyKey(dir, repoRoot string) (string, error) {
-	p, err := repoFile(dir, repoRoot, "copykey-", "")
+	p, err := RepoFile(dir, repoRoot, "copykey-", "")
 	if err != nil {
 		return "", err
 	}
@@ -103,10 +105,29 @@ func CopyKey(dir, repoRoot string) (string, error) {
 	raw := make([]byte, copyKeyLen/2)
 	rand.Read(raw)
 	key := hex.EncodeToString(raw)
-	if err := writePrivate(p, []byte(key)); err != nil {
+	if err := WritePrivate(p, []byte(key)); err != nil {
 		return "", err
 	}
 	return key, nil
+}
+
+// CachedPaths returns, sorted, the backup path of every file the last seal
+// into the repo at repoRoot sealed, as its change cache in dir records them.
+// It returns none when there is no cache or it cannot be read.
+func CachedPaths(dir, repoRoot string) []string {
+	p, err := cachePath(dir, repoRoot)
+	if err != nil {
+		return nil
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil
+	}
+	var c cache
+	if json.Unmarshal(b, &c) != nil {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(c.Files))
 }
 
 func loadCache(path, key string) *cache {
@@ -127,11 +148,11 @@ func (c *cache) save(path string) error {
 	if err != nil {
 		return err
 	}
-	return writePrivate(path, b)
+	return WritePrivate(path, b)
 }
 
-// writePrivate replaces the file at path with b, readable only by its owner.
-func writePrivate(path string, b []byte) error {
+// WritePrivate replaces the file at path with b, readable only by its owner.
+func WritePrivate(path string, b []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}

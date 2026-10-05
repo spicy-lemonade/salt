@@ -133,7 +133,7 @@ func TestBackupFailures(t *testing.T) {
 	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "x"), "a file")
 	e.must(b.dir, "git", "remote", "set-url", "origin", "https://agent:hunter2@127.0.0.1:1/backup.git")
 	out, code = e.run(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
-	if code != 1 || !strings.Contains(out, "the backup was committed but not pushed: git push") || strings.Contains(out, "hunter2") {
+	if code != 1 || !strings.Contains(out, "the backup was committed but not pushed: git ls-remote") || strings.Contains(out, "hunter2") {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 	if got := commitCount(e, b.dir); got == before {
@@ -153,5 +153,69 @@ func TestBackupFailures(t *testing.T) {
 	}
 	if subject := strings.TrimSpace(e.must(b.remote, "git", "log", "-1", "--format=%s")); subject != "elsewhere" {
 		t.Fatalf("the remote's latest commit is %q", subject)
+	}
+	// Fetching it, as an editor might in the background, does not let salt
+	// overwrite it either.
+	e.must(b.dir, "git", "fetch", "-q", "origin")
+	out, code = e.run(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	if code != 1 || !strings.Contains(out, "salt will not overwrite it") {
+		t.Fatalf("after a fetch: exit %d:\n%s", code, out)
+	}
+	if subject := strings.TrimSpace(e.must(b.remote, "git", "log", "-1", "--format=%s")); subject != "elsewhere" {
+		t.Fatalf("after a fetch, the remote's latest commit is %q", subject)
+	}
+}
+
+// A commit pushed by hand from this machine is already in the local branch,
+// so salt backup pushes on top of it.
+func TestBackupAfterAPushByHand(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "x"), "a file")
+	e.must(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	write(t, filepath.Join(b.dir, "README.md"), "my backups")
+	e.must(b.dir, "git", "add", "README.md")
+	e.must(b.dir, "git", "commit", "-qm", "readme")
+	e.must(b.dir, "git", "push", "-q", "origin", "HEAD")
+	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "y"), "another file")
+	e.must(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	if subject := strings.TrimSpace(e.must(b.remote, "git", "log", "-1", "--format=%s")); subject != "salt backup" {
+		t.Fatalf("the remote's latest commit is %q", subject)
+	}
+}
+
+// salt backup refuses to back up with no branch checked out, before it
+// commits anything, and a commit that git refuses, here because signing it
+// fails, fails with git's own reason, not a bare exit status.
+func TestBackupGitStepFailures(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "x"), "a file")
+	before := commitCount(e, b.dir)
+	e.must(b.dir, "git", "checkout", "-q", "--detach")
+	out, code := e.run(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	if code != 1 || !strings.Contains(out, "no branch is checked out (detached HEAD)") || commitCount(e, b.dir) != before {
+		t.Fatalf("detached: exit %d:\n%s", code, out)
+	}
+
+	e.must(b.dir, "git", "checkout", "-q", "-")
+	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "y"), "another file")
+	// salt's own commits are never signed, so a signing key that cannot be
+	// used, as under cron, does not stop the backup.
+	e.must(b.dir, "git", "config", "commit.gpgsign", "true")
+	e.must(b.dir, "git", "config", "gpg.program", "false")
+	head := e.must(b.dir, "git", "rev-parse", "HEAD")
+	if out, code := e.run(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir); code != 0 || e.must(b.dir, "git", "rev-parse", "HEAD") == head {
+		t.Fatalf("signing on: exit %d:\n%s", code, out)
+	}
+	if sig := strings.TrimSpace(e.must(b.dir, "git", "log", "-1", "--format=%G?")); sig != "N" {
+		t.Fatalf("salt's commit has signature status %q, want none", sig)
+	}
+
+	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "z"), "a third file")
+	e.must(b.dir, "git", "config", "commit.cleanup", "bogus")
+	out, code = e.run(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	if code != 1 || !strings.Contains(out, "committing the backup: git commit:") || !strings.Contains(out, "bogus") {
+		t.Fatalf("commit: exit %d:\n%s", code, out)
 	}
 }

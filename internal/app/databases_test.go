@@ -180,6 +180,46 @@ func TestSealDatabaseCopyFails(t *testing.T) {
 	}
 }
 
+// A database found on this machine, as a preset finds them, that is deleted
+// before or while it is copied is left out, and the rest is sealed. Without
+// Live the same database stops the seal (see TestSealDatabaseCopyFails), and
+// a signal still stops it either way.
+func TestSealLiveDatabaseGone(t *testing.T) {
+	for name, vanish := range map[string]func(d *fakeDB){
+		"deleted before": func(d *fakeDB) { os.Remove(d.path) },
+		"deleted while copied": func(d *fakeDB) {
+			d.copy = func(_ context.Context, o source.CopyOptions) (source.Meta, error) {
+				os.WriteFile(o.Dst, []byte("part of a copy"), 0o600)
+				d.fc.made = append(d.fc.made, o.Dst)
+				return source.Meta{}, fs.ErrNotExist
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, fc, src, db := sqliteEnv(t)
+			gone := fc.db(filepath.Join(filepath.Dir(db), "gone.db"))
+			os.WriteFile(gone.path, []byte("SQLite format 3\x00"), 0o644)
+			vanish(gone)
+			if err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: []source.Database{fc.db(db), gone}, Live: true}); err != nil {
+				t.Fatal(err)
+			}
+			assertNoCopiesLeft(t, fc)
+			if got := e.restored(); !mapsEqual(got, map[string]string{"memory.db": "SQLite format 3\x00memories"}) {
+				t.Fatalf("restored %v", got)
+			}
+		})
+	}
+	e, fc, src, db := sqliteEnv(t)
+	fc.err = fs.ErrNotExist
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: fc.dbs(db), Live: true, Context: ctx})
+	if !errors.Is(err, ErrInterrupted) {
+		t.Fatalf("Seal: %v", err)
+	}
+	assertNoCopiesLeft(t, fc)
+}
+
 // The copies are removed when sealing itself fails, too.
 func TestSealDatabaseRemovesCopiesWhenSealFails(t *testing.T) {
 	e, fc, src, db := sqliteEnv(t)

@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,8 +12,11 @@ import (
 	"testing"
 
 	"github.com/spicy-lemonade/salt/internal/check"
+	"github.com/spicy-lemonade/salt/internal/gitx"
+	"github.com/spicy-lemonade/salt/internal/guard"
 	"github.com/spicy-lemonade/salt/internal/preset"
 	"github.com/spicy-lemonade/salt/internal/prune"
+	"github.com/spicy-lemonade/salt/internal/seal"
 )
 
 // backupEnv is a set-up backup repo and a home folder holding a tool's files,
@@ -130,6 +135,20 @@ func TestBackupLeavesOutSecrets(t *testing.T) {
 	}
 }
 
+// A file left out because it could not be checked says so, without the
+// advice about secrets, since none was found.
+func TestBackupLeavesOutUncheckedFile(t *testing.T) {
+	e, home, presets := backupEnv(t)
+	os.WriteFile(filepath.Join(home, "tool", "settings.yaml"), []byte("api_key: [unclosed"), 0o644)
+	if err := e.backup(presets); err != nil {
+		t.Fatal(err)
+	}
+	want := "salt: left ~/tool/settings.yaml out of the backup because it could not be read as YAML to check it for secrets\n"
+	if out := e.ui.out.String(); out != want {
+		t.Fatalf("output %q, want %q", out, want)
+	}
+}
+
 // Nothing is sealed or sent to git when the backup cannot be pushed, is not
 // a git repo, or the presets find nothing.
 func TestBackupRefusesBeforeSealing(t *testing.T) {
@@ -148,6 +167,8 @@ func TestBackupRefusesBeforeSealing(t *testing.T) {
 				e.t.Fatal(err)
 			}
 		}, "must not contain each other"},
+		"detached": {func(e *testEnv, _ string) { e.git.branchErr = gitx.ErrDetached },
+			"no branch is checked out"},
 		"not a salt repo": {func(e *testEnv, _ string) { e.root = e.t.TempDir() },
 			"not a salt repository"},
 	} {
@@ -163,6 +184,22 @@ func TestBackupRefusesBeforeSealing(t *testing.T) {
 				t.Fatalf("git was asked %v", e.git.calls)
 			}
 		})
+	}
+}
+
+// Two places the presets back up at the same path are refused before
+// anything is sealed, blaming the presets, not the person.
+func TestBackupRefusesClashingPaths(t *testing.T) {
+	e, _, _ := backupEnv(t)
+	p, err := preset.Parse("t", []byte(`{"name": "t", "paths": [
+		{"from": "~/tool/notes.md", "to": "same"},
+		{"from": "~/tool/settings.yaml", "to": "same"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = e.backup([]*preset.Preset{p})
+	if !errors.Is(err, seal.ErrDuplicatePath) || !strings.Contains(err.Error(), "the presets would back up same and same") || len(e.git.calls) != 0 {
+		t.Fatalf("backup = %v, git calls %v", err, e.git.calls)
 	}
 }
 
@@ -183,6 +220,8 @@ func TestBackupGitFailures(t *testing.T) {
 		"commit":  {func(g *fakeGit) { g.commitErr = boom }, "committing the backup: boom", []string{"stage", "commit salt backup"}, false},
 		"prune": {func(g *fakeGit) { g.prune, g.pruneErr = nil, boom },
 			"the backup was committed, but dropping old backups failed, so it was not pushed: boom", []string{"stage", "commit salt backup"}, true},
+		"head": {func(g *fakeGit) { g.headErr = boom },
+			"the backup was committed but not pushed: boom", []string{"stage", "commit salt backup"}, true},
 		"push": {func(g *fakeGit) { g.push = func(context.Context) error { return boom } },
 			"the backup was committed but not pushed: boom", []string{"stage", "commit salt backup", "push"}, true},
 	} {
@@ -225,10 +264,183 @@ func TestBackupInterruptedPush(t *testing.T) {
 	if !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "committed but not pushed") {
 		t.Fatalf("backup = %v", err)
 	}
-	// A context cancelled before the backup stops it after sealing, before
-	// git is asked anything.
+	// A context cancelled before the backup stops it before anything is
+	// sealed or git is asked anything.
 	e.git.calls = nil
-	if err := e.app.Backup(BackupOptions{Repo: e.root, Presets: presets, KeepDays: 1, Context: ctx}); !errors.Is(err, ErrInterrupted) || len(e.git.calls) != 0 {
+	e.git.storageCalls = 0
+	if err := e.app.Backup(BackupOptions{Repo: e.root, Presets: presets, KeepDays: 1, Context: ctx}); !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "nothing was backed up") || len(e.git.calls) != 0 {
 		t.Fatalf("backup = %v, calls %v", err, e.git.calls)
+	}
+}
+
+// A signal during a git step stops the backup before the next one: above
+// all, prune never rewrites history after Ctrl-C.
+func TestBackupStopsBetweenSteps(t *testing.T) {
+	for name, tc := range map[string]struct {
+		during func(g *fakeGit, cancel func())
+		want   string
+		calls  []string
+	}{
+		"stage": {func(g *fakeGit, cancel func()) { g.onStage = cancel },
+			"sealed and staged but not committed", []string{"stage"}},
+		"commit": {func(g *fakeGit, cancel func()) {
+			g.onCommit = func() error { cancel(); return context.Canceled }
+		}, "sealed and staged but not committed", []string{"stage", "commit salt backup"}},
+		"commit done": {func(g *fakeGit, cancel func()) { g.onCommit = func() error { cancel(); return nil } },
+			"old backups were not dropped and it was not pushed", []string{"stage", "commit salt backup"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, _, presets := backupEnv(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tc.during(e.git, cancel)
+			err := e.app.Backup(BackupOptions{Repo: e.root, Presets: presets, KeepDays: 1, Context: ctx})
+			if !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("backup = %v", err)
+			}
+			if !slices.Equal(e.git.calls, tc.calls) || len(e.git.pruneDays) != 0 {
+				t.Fatalf("git calls %v, pruned %v", e.git.calls, e.git.pruneDays)
+			}
+		})
+	}
+}
+
+// Each push is told the commits this machine pushed, or tried to push, to
+// origin since its last successful push, so a push whose answer was lost
+// still counts as this machine's on the next run.
+func TestBackupRemembersPushes(t *testing.T) {
+	e, _, presets := backupEnv(t)
+	boom := errors.New("connection dropped")
+	steps := []struct {
+		head   string
+		failed error
+	}{{"h1", nil}, {"h2", boom}, {"h3", boom}, {"h4", nil}, {"h5", nil}}
+	for _, st := range steps {
+		e.git.head = st.head
+		e.git.push = func(context.Context) error { return st.failed }
+		if err := e.backup(presets); !errors.Is(err, st.failed) {
+			t.Fatalf("%s: backup = %v", st.head, err)
+		}
+	}
+	want := [][]string{nil, {"h1"}, {"h1", "h2"}, {"h1", "h2", "h3"}, {"h4"}}
+	if len(e.git.known) != len(want) {
+		t.Fatalf("pushes were told %v", e.git.known)
+	}
+	for i := range want {
+		if !slices.Equal(e.git.known[i], want[i]) {
+			t.Errorf("push %d was told %v, want %v", i+1, e.git.known[i], want[i])
+		}
+	}
+}
+
+// A damaged record of pushes is set aside, and the remote-tracking branch is
+// used; a record that cannot be written stops the push before it starts.
+func TestBackupPushRecordProblems(t *testing.T) {
+	e, _, presets := backupEnv(t)
+	p, err := seal.RepoFile(e.app.CacheDir, e.root, "pushed-", ".json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Dir(p), 0o700)
+	os.WriteFile(p, []byte("{not json"), 0o600)
+	if err := e.backup(presets); err != nil || e.git.known[0] != nil {
+		t.Fatalf("backup = %v, push told %v", err, e.git.known)
+	}
+	os.Remove(p)
+	os.Mkdir(p, 0o700) // a folder where the record goes cannot be replaced
+	os.WriteFile(filepath.Join(p, "x"), nil, 0o600)
+	e.git.calls = nil
+	if err := e.backup(presets); err == nil || slices.Contains(e.git.calls, "push") {
+		t.Fatalf("backup = %v, calls %v", err, e.git.calls)
+	}
+}
+
+// The record holds at most maxKnownPushes commits.
+func TestBackupCapsThePushRecord(t *testing.T) {
+	e, _, presets := backupEnv(t)
+	e.git.push = func(context.Context) error { return errors.New("offline") }
+	for i := range maxKnownPushes + 5 {
+		e.git.head = fmt.Sprint("h", i)
+		e.backup(presets)
+	}
+	if last := e.git.known[len(e.git.known)-1]; len(last) != maxKnownPushes || last[len(last)-1] != fmt.Sprint("h", maxKnownPushes+3) {
+		t.Fatalf("last push was told %d commits, ending %v", len(last), last[len(last)-1])
+	}
+}
+
+// While another salt works on the repo, backup, seal and prune each refuse
+// at once, before changing anything, and work again once it is done.
+func TestRepoLock(t *testing.T) {
+	e, _, presets := backupEnv(t)
+	real, err := filepath.EvalSymlinks(e.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := seal.RepoFile(e.app.CacheDir, real, "lock-", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := guard.Lock(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, run := range map[string]func() error{
+		"backup": func() error { return e.backup(presets) },
+		"seal":   func() error { return e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}) },
+		"prune":  func() error { return e.app.Prune(e.root, 3) },
+	} {
+		if err := run(); !errors.Is(err, guard.ErrLocked) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if len(e.git.calls) != 0 || len(e.git.pruneDays) != 0 {
+		t.Fatalf("git was asked %v, pruned %v", e.git.calls, e.git.pruneDays)
+	}
+	unlock()
+	if err := e.backup(presets); err != nil {
+		t.Fatal(err)
+	}
+	// A repo that has gone cannot be locked.
+	if _, err := e.app.lockRepo(filepath.Join(t.TempDir(), "gone")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("lockRepo on a missing repo: %v", err)
+	}
+}
+
+// A place backed up last time and not found now, such as a profile whose
+// folder is gone, is named once, and the backup goes on. The next backup
+// no longer holds it, so it is not named again.
+func TestBackupWarnsOfMissingPlaces(t *testing.T) {
+	e, home, presets := backupEnv(t)
+	write := func(rel string) {
+		p := filepath.Join(home, rel)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte(rel), 0o644)
+	}
+	write("tool/profiles/home/notes.md")
+	write("tool/profiles/home/sub/more.md")
+	if err := e.backup(presets); err != nil {
+		t.Fatal(err)
+	}
+	if out := e.ui.out.String(); out != "" {
+		t.Fatalf("the first backup printed %q", out)
+	}
+	os.RemoveAll(filepath.Join(home, "tool", "profiles", "home"))
+	os.Remove(filepath.Join(home, "tool", "profiles", "work", "notes.md")) // a file gone from a place still found
+	if err := e.backup(presets); err != nil {
+		t.Fatal(err)
+	}
+	want := "salt: tool/profiles/home was in the last backup but was not found this time, so it is no longer backed up. Its earlier copies stay in history until prune drops them\n"
+	if out := e.ui.out.String(); out != want {
+		t.Fatalf("output %q, want %q", out, want)
+	}
+	if got := e.restored(); !mapsEqual(got, map[string]string{"tool/notes.md": "notes", "tool/settings.yaml": "level: 3"}) {
+		t.Fatalf("restored %v", got)
+	}
+	e.ui.out.Reset()
+	if err := e.backup(presets); err != nil {
+		t.Fatal(err)
+	}
+	if out := e.ui.out.String(); out != "" {
+		t.Fatalf("the third backup printed %q", out)
 	}
 }
