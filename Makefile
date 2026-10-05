@@ -10,6 +10,8 @@
 #     every salt they start, so the real keychain is never touched
 #   - uses a coverage-recording build of salt (bin/e2e/salt), so code only the
 #     e2e tests reach (git, the hook, main) is counted in coverage-e2e.out
+#   - puts E2E_PATH, if given, on salt's PATH before the system's folders, so
+#     salt runs another sqlite3: make e2e E2E_PATH="$(brew --prefix sqlite)/bin"
 
 # bash, not /bin/sh: Ubuntu's sh (dash) has no `ulimit -u`.
 SHELL := /bin/bash
@@ -34,7 +36,7 @@ e2e:
 	rm -rf coverage-e2e && mkdir -p coverage-e2e
 	@procs=$$(ps -U "$$(id -u)" | wc -l | tr -d ' '); \
 	ulimit -u $$((procs + $(E2E_EXTRA_PROCS))) && \
-	SALT_E2E=1 SALT_BIN="$(CURDIR)/bin/e2e/salt" GOCOVERDIR="$(CURDIR)/coverage-e2e" GOMEMLIMIT=1GiB \
+	SALT_E2E=1 SALT_E2E_PATH="$(E2E_PATH)" SALT_BIN="$(CURDIR)/bin/e2e/salt" GOCOVERDIR="$(CURDIR)/coverage-e2e" GOMEMLIMIT=1GiB \
 	go test -tags e2e -p 1 -count=1 -timeout 120s ./test/e2e/...
 	go tool covdata textfmt -i=coverage-e2e -o coverage-e2e.out
 

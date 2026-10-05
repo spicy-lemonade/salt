@@ -3,6 +3,7 @@ package source
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -120,24 +121,48 @@ func TestCopySQLiteWithoutSQLite3(t *testing.T) {
 	}
 }
 
+// A copy sqlite3 did not make is errNoCopy, never fs.ErrNotExist, which
+// would report the live database as missing. Any other error reading dst is
+// returned as it is.
+func TestCheckCopied(t *testing.T) {
+	dir := t.TempDir()
+	made := writeFile(t, filepath.Join(dir, "0"), sqliteHeader)
+	if err := checkCopied(made); err != nil {
+		t.Fatalf("a copy that exists: %v", err)
+	}
+	err := checkCopied(filepath.Join(dir, "1"))
+	if !errors.Is(err, errNoCopy) || errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a copy that is missing: %v", err)
+	}
+	// A path through a regular file fails with "not a directory".
+	err = checkCopied(filepath.Join(made, "2"))
+	if err == nil || errors.Is(err, errNoCopy) || errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a copy that cannot be read: %v", err)
+	}
+}
+
 // The database is opened as a URI with mode=rw, which sqlite3 never creates,
 // so a database deleted after salt checked it is not made again, empty, in
 // the tool's folder. Characters a URI gives a meaning to are escaped.
 func TestSQLiteCommand(t *testing.T) {
 	dir := t.TempDir()
 	live := filepath.Join(dir, "a b%?#", "-live.db")
-	base := []string{"sqlite3", "-init", os.DevNull, "-bail", "-cmd", ".timeout 30000"}
-	tail := []string{"file:" + filepath.ToSlash(dir) + "/a%20b%25%3F%23/-live.db?mode=rw", ".backup 0.db"}
-	for wal, extra := range map[bool][]string{
-		false: nil,
-		true:  {"-cmd", "BEGIN", "-cmd", "SELECT count(*) FROM sqlite_master"},
+	args := []string{"sqlite3", "-init", os.DevNull, "-bail", "file:" + filepath.ToSlash(dir) + "/a%20b%25%3F%23/-live.db?mode=rw"}
+	// The commands go on stdin: with -bail, sqlite3 3.53 exits 0 without a
+	// copy after the first SQL command given with -cmd.
+	for wal, script := range map[bool]string{
+		false: ".timeout 30000\n.backup 0.db\n",
+		true:  ".timeout 30000\nBEGIN;\nSELECT count(*) FROM sqlite_master;\n.backup 0.db\n",
 	} {
 		cmd, err := sqliteCommand(context.Background(), live, filepath.Join(dir, "tmp", "0.db"), wal)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if want := slices.Concat(base, extra, tail); !slices.Equal(cmd.Args, want) {
-			t.Fatalf("wal %v: args = %q, want %q", wal, cmd.Args, want)
+		if !slices.Equal(cmd.Args, args) {
+			t.Fatalf("wal %v: args = %q, want %q", wal, cmd.Args, args)
+		}
+		if got, err := io.ReadAll(cmd.Stdin); err != nil || string(got) != script {
+			t.Fatalf("wal %v: stdin = %q, %v, want %q", wal, got, err, script)
 		}
 		if cmd.Dir != filepath.Join(dir, "tmp") {
 			t.Fatalf("dir = %q", cmd.Dir)

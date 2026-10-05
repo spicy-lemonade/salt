@@ -25,6 +25,17 @@ func (e *env) with(vars ...string) *env {
 	return &c
 }
 
+// stubPath returns a PATH setting under which salt finds a stand-in for
+// program, a shell script running script, before the real one.
+func (e *env) stubPath(t *testing.T, program, script string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, program), []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return "PATH=" + dir + ":" + filepath.Dir(e.bin) + ":/usr/bin:/bin"
+}
+
 // backupRepo is a salt repo cloned from a bare remote, with a snapshot folder
 // whose contents a test changes day by day.
 type backupRepo struct {

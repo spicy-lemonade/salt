@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
@@ -22,8 +23,12 @@ const sqliteHeader = "SQLite format 3\x00"
 // ErrNotSQLite means a file given as a SQLite database is not one.
 var ErrNotSQLite = errors.New("not a SQLite database")
 
+// errNoCopy means sqlite3 succeeded but wrote no copy. It is not
+// fs.ErrNotExist, which would report the live database as missing.
+var errNoCopy = errors.New("sqlite3 finished without making a copy")
+
 // copyName limits the copy's file name to characters sqlite3 never needs
-// quoted.
+// quoted. It also keeps the name to one line of the commands sqlite3 reads.
 var copyName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // walVersion in header bytes 18 and 19 marks a database in WAL mode.
@@ -138,7 +143,8 @@ func hasHeader(head []byte) bool {
 // database. live must be an absolute path. sqlite3 copies it page by page,
 // so it is never held in memory.
 // dst's file name must start with a letter or digit and may only use
-// letters, digits, '.', '_' and '-'.
+// letters, digits, '.', '_' and '-'. dst must not exist yet, so a copy
+// that sqlite3 did not make is never taken for one it did.
 func CopySQLite(ctx context.Context, live, dst string) error {
 	wal, err := checkSQLite(live)
 	if err != nil {
@@ -148,7 +154,22 @@ func CopySQLite(ctx context.Context, live, dst string) error {
 	if err != nil {
 		return err
 	}
-	return proc.Run(ctx, cmd)
+	if err := proc.Run(ctx, cmd); err != nil {
+		return err
+	}
+	return checkCopied(dst)
+}
+
+// checkCopied returns errNoCopy if sqlite3 exited 0 without writing dst.
+func checkCopied(dst string) error {
+	switch _, err := os.Lstat(dst); {
+	case err == nil:
+		return nil
+	case errors.Is(err, fs.ErrNotExist):
+		return errNoCopy
+	default:
+		return err
+	}
 }
 
 // sqliteCommand builds the sqlite3 command that backs up live into dst. It
@@ -156,6 +177,10 @@ func CopySQLite(ctx context.Context, live, dst string) error {
 // absolute path, so it does not depend on the folder sqlite3 runs in. It is
 // opened as a URI (see sqliteURI), never mistaken for an option. -init skips
 // the person's ~/.sqliterc.
+//
+// The commands are sent on stdin, one per line. With -bail, a failing command
+// stops sqlite3 with an error. Some versions (3.53) stop after the first SQL
+// command given with -cmd when -bail is set, exiting 0 without a copy.
 //
 // The backup copies a few pages at a time and starts again whenever another
 // program saves to the database, so a large, busy database might never finish.
@@ -172,13 +197,15 @@ func sqliteCommand(ctx context.Context, live, dst string, wal bool) (*exec.Cmd, 
 	if !copyName.MatchString(name) {
 		return nil, fmt.Errorf("copy name %q needs quoting", name)
 	}
-	args := []string{"-init", os.DevNull, "-bail", "-cmd", ".timeout " + strconv.FormatInt(waitTimeout.Milliseconds(), 10)}
+	script := ".timeout " + strconv.FormatInt(waitTimeout.Milliseconds(), 10) + "\n"
 	if wal {
 		// A read starts the transaction; its output goes nowhere.
-		args = append(args, "-cmd", "BEGIN", "-cmd", "SELECT count(*) FROM sqlite_master")
+		script += "BEGIN;\nSELECT count(*) FROM sqlite_master;\n"
 	}
-	cmd := exec.CommandContext(ctx, "sqlite3", append(args, sqliteURI(live), ".backup "+name)...)
+	script += ".backup " + name + "\n"
+	cmd := exec.CommandContext(ctx, "sqlite3", "-init", os.DevNull, "-bail", sqliteURI(live))
 	cmd.Dir = filepath.Dir(dst)
+	cmd.Stdin = strings.NewReader(script)
 	return cmd, nil
 }
 

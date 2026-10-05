@@ -259,10 +259,7 @@ func TestSealPostgresFailures(t *testing.T) {
 	os.MkdirAll(b.src, 0o755)
 	port := strconv.Itoa(s.port)
 	wrong := "postgresql://agent:wrong-s3cret@127.0.0.1:" + port + "/memory"
-	failing := t.TempDir()
-	if err := os.WriteFile(filepath.Join(failing, "pg_dump"), []byte("#!/bin/sh\ncase \"$1\" in --help) exit 0;; esac\necho \"pg_dump: error: connection to server lost\" >&2\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	failing := e.stubPath(t, "pg_dump", "case \"$1\" in --help) exit 0;; esac\necho \"pg_dump: error: connection to server lost\" >&2\nexit 1")
 	for name, tc := range map[string]struct {
 		args []string
 		vars []string
@@ -275,7 +272,7 @@ func TestSealPostgresFailures(t *testing.T) {
 		"not postgres":     {[]string{"--postgres", "mysql://agent:s3cret@127.0.0.1/memory"}, nil, "is not a Postgres connection"},
 		"unset variable":   {[]string{"--postgres-env", "SALT_TEST_UNSET"}, nil, "SALT_TEST_UNSET given to --postgres-env is not set"},
 		"no pg_dump":       {[]string{"--postgres", s.url("memory")}, []string{"PATH=" + filepath.Dir(e.bin)}, "salt needs the pg_dump program"},
-		"pg_dump fails":    {[]string{"--postgres", s.url("memory")}, []string{"PATH=" + failing + ":" + filepath.Dir(e.bin) + ":/usr/bin:/bin"}, "connection to server lost"},
+		"pg_dump fails":    {[]string{"--postgres", s.url("memory")}, []string{failing}, "connection to server lost"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out := assertSealFails(t, saltWithPg(e, s).with(tc.vars...), b, tc.want, tc.args...)

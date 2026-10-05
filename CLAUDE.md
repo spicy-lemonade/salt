@@ -92,6 +92,9 @@ make vet
 # real keychain is never touched. Never run `go test -tags e2e` directly.
 make e2e
 
+# End-to-end tests with another sqlite3 first on salt's PATH, such as Homebrew's
+make e2e E2E_PATH="$(brew --prefix sqlite)/bin"
+
 # Run a specific test
 go test ./internal/seal -run TestRoundTrip
 ```

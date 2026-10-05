@@ -65,6 +65,12 @@ func TestSealSplitsAFileOverTheLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(b.src, "MEMORY.md"), "small\n")
+	// Ciphertext never compresses and has no deltas, so git's attempts at
+	// both only take time: over half this test's, and more on a slow macOS
+	// runner. They are turned off in this clone alone, so what salt writes
+	// and checks is unchanged.
+	e.must(b.dir, "git", "config", "core.compression", "0")
+	write(t, filepath.Join(b.dir, ".git", "info", "attributes"), "*.age -delta\n")
 
 	e.must(b.base, "salt", "seal", "--prune", b.src, b.dir)
 	e.must(b.dir, "git", "add", "-A")

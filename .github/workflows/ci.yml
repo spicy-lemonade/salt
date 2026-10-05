@@ -60,7 +60,16 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - run: make e2e
+      # Linux runs the distribution's sqlite3. macOS runs Homebrew's, a
+      # recent release, so a change in a new sqlite3 is caught.
+      - name: make e2e
+        if: runner.os != 'macOS'
+        run: make e2e
+      - name: make e2e with Homebrew's sqlite3
+        if: runner.os == 'macOS'
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install sqlite
+          make e2e E2E_PATH="$(brew --prefix sqlite)/bin"
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v5
