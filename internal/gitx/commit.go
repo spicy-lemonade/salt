@@ -63,10 +63,10 @@ func Branch(dir string) (string, error) {
 	return branch, err
 }
 
-// PushTimeout is the longest a push, with its check of origin, may take.
-// git also gives up on a transfer that stalls (see stallLimit), but an SSH
-// connection can hang without git noticing.
-var PushTimeout = 2 * time.Hour
+// RemoteTimeout is the longest each git command that talks to origin may
+// take. git also gives up on a transfer that stalls (see stallLimit), but an
+// SSH connection can hang without git noticing.
+var RemoteTimeout = 2 * time.Hour
 
 // stallLimit makes git stop an HTTP transfer slower than 1 KiB/s for a
 // minute, which by default it waits on for ever.
@@ -74,48 +74,53 @@ var stallLimit = []string{"-c", "http.lowSpeedLimit=1024", "-c", "http.lowSpeedT
 
 // ErrRemoteMoved means origin's branch holds a commit this machine did not
 // push, so pushing would overwrite it.
-var ErrRemoteMoved = errors.New("origin's branch is at a commit this machine has not pushed, such as a backup pushed from another machine, so salt will not overwrite it. Check what is there and bring it into this repo before backing up again")
+var ErrRemoteMoved = errors.New("origin's branch is at a commit this machine has not pushed, such as a backup pushed from another machine, so salt will not overwrite it. Check what is there before backing up again. Each machine needs its own backup repo or branch")
 
 // Head returns the commit checked out in the repository at dir.
 func Head(dir string) (string, error) {
 	return Run(dir, "rev-parse", "--verify", "HEAD")
 }
 
+// Lease reads where origin's copy of the branch checked out in the
+// repository at dir is, and returns that commit for Push to lease to, or ""
+// when origin has no such branch. It refuses with ErrRemoteMoved unless the
+// commit is in known, already held by the local branch, or nothing, so
+// nothing there is lost. known lists the commits this machine pushed, or
+// tried to push, there. The remote-tracking branch never counts, since a
+// fetch moves it to whatever another machine pushed. Call Lease before
+// rewriting the branch's history: the branch then still holds the commit
+// this machine last pushed, and any pushed by hand. Cancelling ctx stops
+// git, and so does RemoteTimeout.
+func Lease(ctx context.Context, dir string, known []string) (string, error) {
+	branch, err := Branch(dir)
+	if err != nil {
+		return "", err
+	}
+	ref := "refs/heads/" + branch
+	out, err := remote(ctx, dir, "git ls-remote", "ls-remote", "origin", ref)
+	if err != nil {
+		return "", err
+	}
+	return leaseFor(remoteTip(out, ref), known, func(tip string) bool {
+		_, err := Run(dir, "merge-base", "--is-ancestor", tip, "HEAD")
+		return err == nil
+	})
+}
+
 // Push pushes the checked-out branch of the repository at dir to the same
-// branch on origin, replacing history salt prune rewrote. It first reads
-// where origin's branch is, and pushes only if that is a commit in known,
-// a commit the local branch already holds, or nothing. known lists the
-// commits this machine pushed, or tried to push, there; when it is empty,
-// the remote-tracking branch stands in for it. The push is then leased to
-// that exact commit (--force-with-lease=ref:commit), so a backup pushed from
-// elsewhere in the meantime is never lost, even if something fetched into
-// the repo since. git never waits for a password to be typed, and errors
-// never show the credentials origin's URL may hold. Cancelling ctx stops
-// git, and so does PushTimeout.
-func Push(ctx context.Context, dir string, known []string) error {
+// branch on origin, replacing history salt prune rewrote, but only while
+// origin's branch is still at lease, as Lease returned it ("" for no
+// branch): --force-with-lease=ref:lease. A backup pushed from elsewhere
+// since Lease looked is never lost, even if something fetched into the repo
+// meanwhile. git never waits for a password to be typed, and errors never
+// show the credentials origin's URL may hold. Cancelling ctx stops git, and
+// so does RemoteTimeout.
+func Push(ctx context.Context, dir, lease string) error {
 	branch, err := Branch(dir)
 	if err != nil {
 		return err
 	}
 	ref := "refs/heads/" + branch
-	if len(known) == 0 {
-		if tracking, err := Run(dir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+branch); err == nil {
-			known = []string{tracking}
-		}
-	}
-	ctx, cancel := context.WithTimeout(ctx, PushTimeout)
-	defer cancel()
-	out, err := remote(ctx, dir, "git ls-remote", "ls-remote", "origin", ref)
-	if err != nil {
-		return err
-	}
-	lease, err := leaseFor(remoteTip(out, ref), known, func(tip string) bool {
-		_, err := Run(dir, "merge-base", "--is-ancestor", tip, "HEAD")
-		return err == nil
-	})
-	if err != nil {
-		return err
-	}
 	_, err = remote(ctx, dir, "git push", "push", "--quiet", "--force-with-lease="+ref+":"+lease, "origin", ref+":"+ref)
 	return err
 }
@@ -146,9 +151,12 @@ const maxRemoteOutput = 64 << 10
 
 // remote runs a git command that talks to origin, named name in errors, and
 // returns its output. git never waits for a password to be typed, an HTTP
-// transfer that stalls is stopped, and errors never show the credentials
-// origin's URL may hold.
+// transfer that stalls is stopped, the command is stopped after
+// RemoteTimeout, and errors never show the credentials origin's URL may
+// hold.
 func remote(ctx context.Context, dir, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, RemoteTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", Args(dir, append(slices.Clone(stallLimit), args...)...)...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	stdout := &proc.LimitedBuffer{Max: maxRemoteOutput}
@@ -160,7 +168,7 @@ func remote(ctx context.Context, dir, name string, args ...string) (string, erro
 		failed.Program = name
 		failed.Stderr = hideCredentials(failed.Stderr, Remote(dir))
 	case errors.Is(err, context.DeadlineExceeded):
-		err = fmt.Errorf("%s took longer than %v, so salt stopped it", name, PushTimeout)
+		err = fmt.Errorf("%s took longer than %v, so salt stopped it", name, RemoteTimeout)
 	}
 	return stdout.String(), err
 }

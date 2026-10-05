@@ -133,7 +133,7 @@ func TestBackupFailures(t *testing.T) {
 	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "x"), "a file")
 	e.must(b.dir, "git", "remote", "set-url", "origin", "https://agent:hunter2@127.0.0.1:1/backup.git")
 	out, code = e.run(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
-	if code != 1 || !strings.Contains(out, "the backup was committed but not pushed: git ls-remote") || strings.Contains(out, "hunter2") {
+	if code != 1 || !strings.Contains(out, "salt could not check origin, so old backups were not dropped and it was not pushed: git ls-remote") || strings.Contains(out, "hunter2") {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 	if got := commitCount(e, b.dir); got == before {
@@ -167,7 +167,8 @@ func TestBackupFailures(t *testing.T) {
 }
 
 // A commit pushed by hand from this machine is already in the local branch,
-// so salt backup pushes on top of it.
+// so salt backup pushes on top of it, even when its prune then rewrites
+// the branch so that it no longer holds that commit.
 func TestBackupAfterAPushByHand(t *testing.T) {
 	e := newEnv(t)
 	b := newBackupRepo(t, e)
@@ -178,9 +179,11 @@ func TestBackupAfterAPushByHand(t *testing.T) {
 	e.must(b.dir, "git", "commit", "-qm", "readme")
 	e.must(b.dir, "git", "push", "-q", "origin", "HEAD")
 	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "y"), "another file")
-	e.must(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
-	if subject := strings.TrimSpace(e.must(b.remote, "git", "log", "-1", "--format=%s")); subject != "salt backup" {
-		t.Fatalf("the remote's latest commit is %q", subject)
+	// One day is kept, so the set-up commit, from an earlier day, is dropped.
+	e.must(b.base, "salt", "backup", "--preset", "mnemosyne", "--keep-days", "1", b.dir)
+	log := e.must(b.remote, "git", "log", "--format=%s")
+	if subject, _, _ := strings.Cut(log, "\n"); subject != "salt backup" || strings.Contains(log, "Set up salt") {
+		t.Fatalf("the remote's history is:\n%s", log)
 	}
 }
 

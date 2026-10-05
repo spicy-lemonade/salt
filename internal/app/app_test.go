@@ -78,18 +78,21 @@ type fakeGit struct {
 	clone      func(ctx context.Context, dir string) error
 	cloned     []string
 	clonedInto string
-	// calls records Stage, Commit and Push in order; each fails with its
-	// error.
+	// calls records Stage, Commit, Lease, Prune and Push in order; each
+	// fails with its error.
 	calls     []string
 	stageErr  error
 	commitErr error
 	push      func(ctx context.Context) error
 	branchErr error
-	// head is what Head returns, h1 when empty; known records what each
-	// Push was given.
+	// lease stands in for Lease, which finds "tip" when it is nil; known
+	// records what each Lease was given, and leased what each Push was.
+	lease  func(ctx context.Context) (string, error)
+	known  [][]string
+	leased []string
+	// head is what Head returns, h1 when empty.
 	head    string
 	headErr error
-	known   [][]string
 	// onStage and onCommit run during Stage and Commit; onCommit's error
 	// is Commit's.
 	onStage  func()
@@ -114,6 +117,7 @@ func (f *fakeGit) Storage(root string) ([]check.StorageProblem, int, error) {
 }
 
 func (f *fakeGit) Prune(_ string, keepDays int) (*prune.Result, error) {
+	f.calls = append(f.calls, "prune")
 	f.pruneDays = append(f.pruneDays, keepDays)
 	return f.prune, f.pruneErr
 }
@@ -152,9 +156,18 @@ func (f *fakeGit) Head(string) (string, error) {
 	return f.head, f.headErr
 }
 
-func (f *fakeGit) Push(ctx context.Context, _ string, known []string) error {
-	f.calls = append(f.calls, "push")
+func (f *fakeGit) Lease(ctx context.Context, _ string, known []string) (string, error) {
+	f.calls = append(f.calls, "lease")
 	f.known = append(f.known, known)
+	if f.lease == nil {
+		return "tip", nil
+	}
+	return f.lease(ctx)
+}
+
+func (f *fakeGit) Push(ctx context.Context, _, lease string) error {
+	f.calls = append(f.calls, "push")
+	f.leased = append(f.leased, lease)
 	if f.push == nil {
 		return nil
 	}

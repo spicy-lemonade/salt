@@ -594,20 +594,24 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
    itself instead. It is never signed, whatever `commit.gpgsign` says: it
    holds only ciphertext, its index is signed with salt's own key, and a
    signing key that asks for a passphrase would stop every scheduled backup;
-5. drops old backups as `salt prune` does, keeping `--keep-days N` days with
+5. reads where origin's branch is (`git ls-remote`), and goes on only if
+   that is a commit this machine pushed or tried to push (kept in
+   `pushed-<hash>.json` in salt's cache folder), a commit the local branch
+   holds, or nothing. This is checked before prune rewrites the branch,
+   while the branch still holds the commit this machine last pushed and any
+   commit pushed by hand. The remote-tracking branch never counts, since a
+   fetch moves it to whatever another machine pushed;
+6. drops old backups as `salt prune` does, keeping `--keep-days N` days with
    a change (5 by default);
-6. pushes the branch to `origin`. It first reads where origin's branch is
-   (`git ls-remote`) and pushes only if that is a commit this machine pushed
-   or tried to push (kept in `pushed-<hash>.json` in salt's cache folder),
-   a commit the local branch already holds, or nothing. The push is leased
-   to that exact commit (`--force-with-lease=ref:commit`), so a backup
-   pushed from another machine is never overwritten, even if something has
-   fetched into the repo since. A push whose answer was lost when the
-   connection dropped still counts as this machine's on the next run. git
-   is not asked to prompt for a password (`GIT_TERMINAL_PROMPT=0`; ssh can
-   still ask on a terminal, but cron has none), errors never show
-   credentials from origin's URL, an HTTP transfer slower than 1 KiB/s for
-   a minute is stopped, and the whole push is stopped after 2 hours.
+7. pushes the branch to `origin`, leased to the commit step 5 found there
+   (`--force-with-lease=ref:commit`), so a backup pushed from another
+   machine is never overwritten, even if something has fetched into the repo
+   since. A push whose answer was lost when the connection dropped still
+   counts as this machine's on the next run. git is not asked to prompt for
+   a password (`GIT_TERMINAL_PROMPT=0`; ssh can still ask on a terminal, but
+   cron has none), errors never show credentials from origin's URL, an HTTP
+   transfer slower than 1 KiB/s for a minute is stopped, and `git ls-remote`
+   and `git push` are each stopped after 2 hours.
 
 A failure stops the steps that follow. A backup committed but not pushed is
 pushed by the next run. Ctrl-C or SIGTERM stops a database copy, the commit

@@ -74,8 +74,9 @@ func (e *testEnv) restored() map[string]string {
 	return files
 }
 
-// A backup seals only what the presets find, then stages, commits, prunes
-// and pushes, and prints nothing.
+// A backup seals only what the presets find, then stages, commits, checks
+// origin, prunes and pushes, and prints nothing. Origin is checked before
+// prune rewrites history, and the push is leased to what it found there.
 func TestBackup(t *testing.T) {
 	e, _, presets := backupEnv(t)
 	if err := e.backup(presets); err != nil {
@@ -84,8 +85,11 @@ func TestBackup(t *testing.T) {
 	if out := e.ui.out.String(); out != "" {
 		t.Fatalf("backup printed %q", out)
 	}
-	if want := []string{"stage", "commit salt backup", "push"}; !slices.Equal(e.git.calls, want) {
+	if want := []string{"stage", "commit salt backup", "lease", "prune", "push"}; !slices.Equal(e.git.calls, want) {
 		t.Fatalf("git calls = %v, want %v", e.git.calls, want)
+	}
+	if !slices.Equal(e.git.leased, []string{"tip"}) {
+		t.Fatalf("pushes were leased to %v", e.git.leased)
 	}
 	if !slices.Equal(e.git.pruneDays, []int{3}) {
 		t.Fatalf("prune days = %v", e.git.pruneDays)
@@ -218,12 +222,14 @@ func TestBackupGitFailures(t *testing.T) {
 			"problems reported", []string{"stage"}, false},
 		"storage": {func(g *fakeGit) { g.storageTotal = 1 }, "problems reported", []string{"stage"}, false},
 		"commit":  {func(g *fakeGit) { g.commitErr = boom }, "committing the backup: boom", []string{"stage", "commit salt backup"}, false},
+		"lease": {func(g *fakeGit) { g.lease = func(context.Context) (string, error) { return "", gitx.ErrRemoteMoved } },
+			"salt could not check origin, so old backups were not dropped and it was not pushed: origin's branch", []string{"stage", "commit salt backup", "lease"}, false},
 		"prune": {func(g *fakeGit) { g.prune, g.pruneErr = nil, boom },
-			"the backup was committed, but dropping old backups failed, so it was not pushed: boom", []string{"stage", "commit salt backup"}, true},
+			"the backup was committed, but dropping old backups failed, so it was not pushed: boom", []string{"stage", "commit salt backup", "lease", "prune"}, true},
 		"head": {func(g *fakeGit) { g.headErr = boom },
-			"the backup was committed but not pushed: boom", []string{"stage", "commit salt backup"}, true},
+			"the backup was committed but not pushed: boom", []string{"stage", "commit salt backup", "lease", "prune"}, true},
 		"push": {func(g *fakeGit) { g.push = func(context.Context) error { return boom } },
-			"the backup was committed but not pushed: boom", []string{"stage", "commit salt backup", "push"}, true},
+			"the backup was committed but not pushed: boom", []string{"stage", "commit salt backup", "lease", "prune", "push"}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e, _, presets := backupEnv(t)
@@ -288,6 +294,9 @@ func TestBackupStopsBetweenSteps(t *testing.T) {
 		}, "sealed and staged but not committed", []string{"stage", "commit salt backup"}},
 		"commit done": {func(g *fakeGit, cancel func()) { g.onCommit = func() error { cancel(); return nil } },
 			"old backups were not dropped and it was not pushed", []string{"stage", "commit salt backup"}},
+		"lease": {func(g *fakeGit, cancel func()) {
+			g.lease = func(context.Context) (string, error) { cancel(); return "", context.Canceled }
+		}, "old backups were not dropped and it was not pushed", []string{"stage", "commit salt backup", "lease"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e, _, presets := backupEnv(t)
@@ -333,8 +342,8 @@ func TestBackupRemembersPushes(t *testing.T) {
 	}
 }
 
-// A damaged record of pushes is set aside, and the remote-tracking branch is
-// used; a record that cannot be written stops the push before it starts.
+// A damaged record of pushes is set aside, and a record that cannot be
+// written stops the push before it starts.
 func TestBackupPushRecordProblems(t *testing.T) {
 	e, _, presets := backupEnv(t)
 	p, err := seal.RepoFile(e.app.CacheDir, e.root, "pushed-", ".json")

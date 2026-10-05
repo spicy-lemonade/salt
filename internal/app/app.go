@@ -74,9 +74,12 @@ type GitOps interface {
 	Commit(ctx context.Context, repoRoot, msg string) error
 	// Head returns the commit checked out.
 	Head(repoRoot string) (string, error)
-	// Push pushes the checked-out branch to origin if origin's branch is at
-	// one of known, or nothing there is lost (see gitx.Push).
-	Push(ctx context.Context, repoRoot string, known []string) error
+	// Lease reads where origin's branch is and returns it for Push, if it is
+	// one of known or nothing there is lost (see gitx.Lease).
+	Lease(ctx context.Context, repoRoot string, known []string) (string, error)
+	// Push pushes the checked-out branch to origin if origin's branch is
+	// still at lease (see gitx.Push).
+	Push(ctx context.Context, repoRoot, lease string) error
 }
 
 // RealGit runs git through gitx (hooks disabled).
@@ -106,8 +109,11 @@ func (RealGit) Commit(ctx context.Context, root, msg string) error {
 	return gitx.CommitStaged(ctx, root, msg)
 }
 func (RealGit) Head(root string) (string, error) { return gitx.Head(root) }
-func (RealGit) Push(ctx context.Context, root string, known []string) error {
-	return gitx.Push(ctx, root, known)
+func (RealGit) Lease(ctx context.Context, root string, known []string) (string, error) {
+	return gitx.Lease(ctx, root, known)
+}
+func (RealGit) Push(ctx context.Context, root, lease string) error {
+	return gitx.Push(ctx, root, lease)
 }
 
 // HookSearchPath is where the pre-commit hook looks for salt: the caller's

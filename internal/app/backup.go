@@ -109,17 +109,36 @@ func (a *App) Backup(o BackupOptions) error {
 	if err := stopped("the backup was committed, but old backups were not dropped and it was not pushed"); err != nil {
 		return err
 	}
+	// Origin is checked before prune rewrites the branch: a commit pushed by
+	// hand is held by the branch only until then.
+	record, known, err := a.pushRecord(r.Root)
+	if err != nil {
+		return err
+	}
+	lease, err := a.Git.Lease(ctx, r.Root, known)
+	if err != nil {
+		if interrupted(ctx, err) {
+			return fmt.Errorf("backup %w: the backup was committed, but old backups were not dropped and it was not pushed", ErrInterrupted)
+		}
+		return fmt.Errorf("the backup was committed, but salt could not check origin, so old backups were not dropped and it was not pushed: %w", err)
+	}
 	_, err = a.Git.Prune(r.Root, o.KeepDays)
 	if err := a.pruneCleanup(err); err != nil {
 		return fmt.Errorf("the backup was committed, but dropping old backups failed, so it was not pushed: %w", err)
 	}
-	if err := a.push(ctx, r.Root); err != nil {
-		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+	if err := a.push(ctx, r.Root, record, known, lease); err != nil {
+		if interrupted(ctx, err) {
 			return fmt.Errorf("backup %w: the backup was committed but not pushed", ErrInterrupted)
 		}
 		return fmt.Errorf("the backup was committed but not pushed: %w", err)
 	}
 	return nil
+}
+
+// interrupted reports whether err came from Ctrl-C or SIGTERM, which may
+// reach git before ctx is cancelled.
+func interrupted(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, context.Canceled)
 }
 
 // warnMissing names each place the last backup held that was not found this
@@ -146,20 +165,27 @@ func (a *App) warnMissing(root string, presets []*preset.Preset, places []string
 // maxKnownPushes caps how many commits salt remembers trying to push.
 const maxKnownPushes = 100
 
-// push pushes the backup to origin. Salt remembers, in its cache folder, the
-// commit it last pushed and every one it has tried to push since, before
-// each push. A push that reached origin, but whose answer was lost when the
-// connection dropped, then still counts as this machine's on the next run,
-// even after prune rewrote the branch.
-func (a *App) push(ctx context.Context, root string) error {
-	p, err := seal.RepoFile(a.CacheDir, root, "pushed-", ".json")
+// pushRecord returns where salt remembers, in its cache folder, the commit
+// it last pushed from the repo at root and every one it has tried to push
+// since, and those commits. A push that reached origin, but whose answer was
+// lost when the connection dropped, then still counts as this machine's on
+// the next run, even after prune rewrote the branch. A damaged record is set
+// aside, and only a commit the branch holds then counts.
+func (a *App) pushRecord(root string) (path string, known []string, err error) {
+	path, err = seal.RepoFile(a.CacheDir, root, "pushed-", ".json")
 	if err != nil {
-		return err
+		return "", nil, err
 	}
-	var known []string
-	if b, err := os.ReadFile(p); err == nil && json.Unmarshal(b, &known) != nil {
-		known = nil // a damaged record only means the remote-tracking branch is used
+	if b, err := os.ReadFile(path); err == nil && json.Unmarshal(b, &known) != nil {
+		known = nil
 	}
+	return path, known, nil
+}
+
+// push pushes the backup to origin, leased to the commit Lease found there.
+// It first adds the commit it pushes to known in the record at path, and
+// once the push is done, the record holds only that commit.
+func (a *App) push(ctx context.Context, root, path string, known []string, lease string) error {
 	head, err := a.Git.Head(root)
 	if err != nil {
 		return err
@@ -168,14 +194,14 @@ func (a *App) push(ctx context.Context, root string) error {
 	if !slices.Contains(tried, head) {
 		tried = append(tried, head)
 	}
-	if err := writeKnown(p, tried[max(0, len(tried)-maxKnownPushes):]); err != nil {
+	if err := writeKnown(path, tried[max(0, len(tried)-maxKnownPushes):]); err != nil {
 		return err
 	}
-	if err := a.Git.Push(ctx, root, known); err != nil {
+	if err := a.Git.Push(ctx, root, lease); err != nil {
 		return err
 	}
 	// Losing this only keeps older commits known until the next push.
-	writeKnown(p, []string{head})
+	writeKnown(path, []string{head})
 	return nil
 }
 
