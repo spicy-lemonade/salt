@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
 )
 
 // ErrLocked means another salt holds the lock, such as last night's backup
@@ -23,11 +22,8 @@ func Lock(path string) (unlock func(), err error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := tryLock(f); err != nil {
 		f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, ErrLocked
-		}
 		return nil, err
 	}
 	return func() { f.Close() }, nil

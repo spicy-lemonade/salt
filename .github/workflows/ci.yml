@@ -29,6 +29,12 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: make vet
+      # Salt is only released for macOS and Linux, but must still build on
+      # Windows, which has no flock. Some tests make named pipes, which
+      # Windows lacks, so only salt itself is built.
+      - name: build for Windows
+        if: matrix.os == 'ubuntu-latest'
+        run: GOOS=windows go build ./...
       - run: make test
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest'
