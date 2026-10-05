@@ -419,8 +419,12 @@ start another until the machine runs out of memory. These rules prevent that:
    the number of processes, and keeps the tests away from the real keychain.
 6. At most 4 files are worked on at once, with a 512 MB soft memory limit.
 7. Only one salt seals, backs up or prunes a repo at a time. Each takes a
-   lock (`flock`) on a file in salt's cache folder named after the repo, and
-   a second one stops at once instead of waiting. The system drops the lock
+   lock (`flock`) on `.git/salt/lock` in the repo, and a second one stops at
+   once instead of waiting. The lock is never committed, and is the same
+   file whatever the environment, so a cron job and a shell, which can have
+   different cache folders, still share it. A repo with no `.git` folder,
+   which `salt seal` accepts, is locked through a file in salt's cache
+   folder named after the repo instead. The system drops the lock
    when salt ends, however it ends. Without it, a backup still pushing when
    the next one starts would delete the objects the other had just written.
 
@@ -596,7 +600,7 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
    signing key that asks for a passphrase would stop every scheduled backup;
 5. reads where origin's branch is (`git ls-remote`), and goes on only if
    that is a commit this machine pushed or tried to push (kept in
-   `pushed-<hash>.json` in salt's cache folder), a commit the local branch
+   `.git/salt/pushed.json`, never committed), a commit the local branch
    holds, or nothing. This is checked before prune rewrites the branch,
    while the branch still holds the commit this machine last pushed and any
    commit pushed by hand. The remote-tracking branch never counts, since a

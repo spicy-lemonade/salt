@@ -189,14 +189,10 @@ func (a *App) Seal(o SealOptions) error {
 
 // lockRepo stops two salts changing the repo at root at once, such as a
 // backup still running, on a slow push, when the next one starts: each
-// would delete the objects the other had just written. The lock is a file
-// in the cache folder, named by the repo's real path.
+// would delete the objects the other had just written. The lock is the
+// state file lock (see stateFile).
 func (a *App) lockRepo(root string) (unlock func(), err error) {
-	real, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return nil, err
-	}
-	p, err := seal.RepoFile(a.CacheDir, real, "lock-", "")
+	p, err := a.stateFile(root, "lock", "")
 	if err != nil {
 		return nil, err
 	}
@@ -205,6 +201,24 @@ func (a *App) lockRepo(root string) (unlock func(), err error) {
 		return nil, fmt.Errorf("%s: %w", a.short(root), err)
 	}
 	return unlock, err
+}
+
+// stateFile returns where salt keeps what it must remember about the repo
+// at root on this machine, such as its lock: name+ext in a salt folder in
+// the repo's .git folder. That is never committed, and is the same whatever
+// the environment, so a cron job and a shell agree on it. A repo with no
+// .git folder, which salt seal accepts, or whose .git is a file, as in a
+// git worktree, keeps it in the cache folder instead, named by the repo's
+// real path.
+func (a *App) stateFile(root, name, ext string) (string, error) {
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	if fi, err := os.Stat(filepath.Join(real, ".git")); err == nil && fi.IsDir() {
+		return filepath.Join(real, ".git", "salt", name+ext), nil
+	}
+	return seal.RepoFile(a.CacheDir, real, name+"-", ext)
 }
 
 // openToSeal opens the salt repository at path for sealing. It refuses one

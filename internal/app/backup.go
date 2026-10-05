@@ -165,14 +165,14 @@ func (a *App) warnMissing(root string, presets []*preset.Preset, places []string
 // maxKnownPushes caps how many commits salt remembers trying to push.
 const maxKnownPushes = 100
 
-// pushRecord returns where salt remembers, in its cache folder, the commit
-// it last pushed from the repo at root and every one it has tried to push
-// since, and those commits. A push that reached origin, but whose answer was
+// pushRecord returns where salt remembers the commit it last pushed from the
+// repo at root and every one it has tried to push since (the state file
+// pushed.json, see stateFile), and those commits. A push that reached origin, but whose answer was
 // lost when the connection dropped, then still counts as this machine's on
 // the next run, even after prune rewrote the branch. A damaged record is set
 // aside, and only a commit the branch holds then counts.
 func (a *App) pushRecord(root string) (path string, known []string, err error) {
-	path, err = seal.RepoFile(a.CacheDir, root, "pushed-", ".json")
+	path, err = a.stateFile(root, "pushed", ".json")
 	if err != nil {
 		return "", nil, err
 	}

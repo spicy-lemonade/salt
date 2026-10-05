@@ -346,10 +346,7 @@ func TestBackupRemembersPushes(t *testing.T) {
 // written stops the push before it starts.
 func TestBackupPushRecordProblems(t *testing.T) {
 	e, _, presets := backupEnv(t)
-	p, err := seal.RepoFile(e.app.CacheDir, e.root, "pushed-", ".json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := filepath.Join(e.root, ".git", "salt", "pushed.json")
 	os.MkdirAll(filepath.Dir(p), 0o700)
 	os.WriteFile(p, []byte("{not json"), 0o600)
 	if err := e.backup(presets); err != nil || e.git.known[0] != nil {
@@ -379,20 +376,17 @@ func TestBackupCapsThePushRecord(t *testing.T) {
 
 // While another salt works on the repo, backup, seal and prune each refuse
 // at once, before changing anything, and work again once it is done.
+//
+// The lock is in the repo's .git folder, so a salt with another cache
+// folder, as cron can have when XDG_CACHE_HOME is set only in the person's
+// shell, is refused too.
 func TestRepoLock(t *testing.T) {
 	e, _, presets := backupEnv(t)
-	real, err := filepath.EvalSymlinks(e.root)
+	unlock, err := guard.Lock(filepath.Join(e.root, ".git", "salt", "lock"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := seal.RepoFile(e.app.CacheDir, real, "lock-", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	unlock, err := guard.Lock(p)
-	if err != nil {
-		t.Fatal(err)
-	}
+	e.app.CacheDir = t.TempDir()
 	for name, run := range map[string]func() error{
 		"backup": func() error { return e.backup(presets) },
 		"seal":   func() error { return e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}) },
@@ -412,6 +406,54 @@ func TestRepoLock(t *testing.T) {
 	// A repo that has gone cannot be locked.
 	if _, err := e.app.lockRepo(filepath.Join(t.TempDir(), "gone")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("lockRepo on a missing repo: %v", err)
+	}
+}
+
+// A repo with no .git folder, which salt seal accepts, is locked through a
+// file in the cache folder instead.
+func TestRepoLockWithoutGit(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	if err := os.RemoveAll(filepath.Join(e.root, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	real, err := filepath.EvalSymlinks(e.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := seal.RepoFile(e.app.CacheDir, real, "lock-", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := guard.Lock(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); !errors.Is(err, guard.ErrLocked) {
+		t.Fatalf("seal: %v", err)
+	}
+	unlock()
+	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The record of pushes is kept in the repo's .git folder, so a backup run
+// with another cache folder still knows what this machine pushed.
+func TestBackupPushRecordOutlivesTheCache(t *testing.T) {
+	e, _, presets := backupEnv(t)
+	e.git.push = func(context.Context) error { return errors.New("connection dropped") }
+	e.backup(presets)
+	e.app.CacheDir = t.TempDir()
+	e.git.push = nil
+	if err := e.backup(presets); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.git.known[1]; !slices.Equal(got, []string{"h1"}) {
+		t.Fatalf("the second lease was told %v, want [h1]", got)
+	}
+	if _, err := os.Stat(filepath.Join(e.root, ".git", "salt", "pushed.json")); err != nil {
+		t.Fatal(err)
 	}
 }
 
