@@ -52,11 +52,19 @@ func TestExpand(t *testing.T) {
 	}
 }
 
+// places returns what e.Find(x) finds, checking each place's real path and
+// leaving it out, so tests can compare Abs and Rel alone.
 func places(t *testing.T, e Env, x Path) []Place {
 	t.Helper()
 	got, err := e.Find(x)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for i, pl := range got {
+		if real, err := filepath.EvalSymlinks(pl.Abs); err != nil || pl.Real != real {
+			t.Errorf("%s: real path %q, want %q (%v)", pl.Abs, pl.Real, real, err)
+		}
+		got[i].Real = ""
 	}
 	return got
 }
@@ -69,9 +77,19 @@ func TestFindFixedPath(t *testing.T) {
 	if !slices.Equal(got, []Place{{Abs: data, Rel: "tool/data"}}) {
 		t.Fatalf("Find = %v", got)
 	}
-	// A missing path, or one whose variable is unset, finds nothing.
+	// A missing path, or one whose variable is unset, finds nothing, and so
+	// does a symlink to a missing path. A symlink is found as itself, with
+	// where it leads as its real path.
 	if got := places(t, e, Path{From: "~/tool/missing", To: "m"}); got != nil {
 		t.Fatalf("missing: %v", got)
+	}
+	os.Symlink(filepath.Join(home, "nowhere"), filepath.Join(home, "dangling"))
+	if got := places(t, e, Path{From: "~/dangling", To: "d"}); got != nil {
+		t.Fatalf("dangling symlink: %v", got)
+	}
+	os.Symlink(data, filepath.Join(home, "link"))
+	if got := places(t, e, Path{From: "~/link", To: "l"}); !slices.Equal(got, []Place{{Abs: filepath.Join(home, "link"), Rel: "l"}}) {
+		t.Fatalf("symlink: %v", got)
 	}
 	if got := places(t, e, Path{From: "${UNSET}", To: "u"}); got != nil {
 		t.Fatalf("unset: %v", got)

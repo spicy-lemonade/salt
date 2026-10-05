@@ -59,7 +59,10 @@ func rels(f *Found) (files, dbs []string) {
 }
 
 func TestGather(t *testing.T) {
-	home := t.TempDir()
+	home, err := filepath.EvalSymlinks(t.TempDir()) // files are read from real paths
+	if err != nil {
+		t.Fatal(err)
+	}
 	tool := filepath.Join(home, "tool")
 	write(t, filepath.Join(tool, "notes.md"), "notes")
 	write(t, filepath.Join(tool, "sub", "deep.md"), "deep")
@@ -412,6 +415,35 @@ func TestDatabasesAreSQLite(t *testing.T) {
 	write(t, p, sqliteFile)
 	if ok, err := source.IsSQLite(p); !ok || err != nil {
 		t.Fatal(ok, err)
+	}
+}
+
+// Files are read from where a place really is, the path checked against the
+// repo, even when it is found through a symlink, so a symlink changed while
+// salt backs up cannot lead the reads elsewhere. Messages still show the
+// path the preset names.
+func TestGatherReadsRealPaths(t *testing.T) {
+	home := t.TempDir()
+	real, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(home, "real", "a.md"), "a")
+	write(t, filepath.Join(home, "real", "m.db"), sqliteFile)
+	write(t, filepath.Join(home, "real", "settings.yaml"), "token: abc")
+	os.Symlink(filepath.Join(home, "real"), filepath.Join(home, "tool"))
+	f, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Files) != 1 || f.Files[0].Path != filepath.Join(real, "real", "a.md") {
+		t.Errorf("files %+v", f.Files)
+	}
+	if len(f.Databases) != 1 || f.Databases[0].String() != filepath.Join(real, "real", "m.db") {
+		t.Errorf("databases %v", f.Databases)
+	}
+	if len(f.LeftOut) != 1 || f.LeftOut[0].Path != filepath.Join(home, "tool", "settings.yaml") {
+		t.Errorf("left out %+v", f.LeftOut)
 	}
 }
 

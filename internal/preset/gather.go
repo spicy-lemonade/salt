@@ -112,10 +112,7 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 			}
 			for _, pl := range places {
 				w.f.Places = append(w.f.Places, pl.Rel)
-				real, err := filepath.EvalSymlinks(pl.Abs)
-				if err != nil {
-					return nil, err
-				}
+				real := pl.Real
 				if s, ok := w.spots[real]; ok {
 					if !slices.Contains(s.users, p) {
 						s.users = append(s.users, p)
@@ -198,9 +195,10 @@ type walker struct {
 
 // walk adds the file or folder in the spot s, which the presets by back up.
 // A file or folder is backed up when any of by that reaches it does not
-// skip it. Paths are given as s's place names them, and a place in spots
-// inside it is left to its own walk, so it is backed up once, under its own
-// path.
+// skip it. Files are read from their real paths, under the one checked
+// against the repo, and messages give paths as s's place names them. A
+// place in spots inside it is left to its own walk, so it is backed up
+// once, under its own path.
 func (w *walker) walk(s *spot, by []*Preset) error {
 	pl, real := s.place, s.real
 	// reach holds, for each folder walked, the presets that reach it.
@@ -258,7 +256,7 @@ func (w *walker) walk(s *spot, by []*Preset) error {
 			if !slices.ContainsFunc(names, func(n string) bool { return matchAny(sec.Files, n) }) {
 				continue
 			}
-			why, secret, num := secretIn(at, sec.Keys)
+			why, secret, num := secretIn(walked, sec.Keys)
 			if why != "" {
 				w.f.LeftOut = append(w.f.LeftOut, LeftOut{Path: at, Why: why, Secret: secret})
 				return nil
@@ -273,12 +271,12 @@ func (w *walker) walk(s *spot, by []*Preset) error {
 				w.f.Numbers = append(w.f.Numbers, Setting{Path: at, Key: number})
 			}
 		}
-		isDB, err := source.IsSQLite(at)
+		isDB, err := source.IsSQLite(walked)
 		if err != nil {
 			return skipGone(err)
 		}
 		if isDB {
-			db, err := source.NewSQLite(at)
+			db, err := source.NewSQLite(walked)
 			if err == nil {
 				db, err = source.Named(db, to)
 			}
@@ -290,7 +288,7 @@ func (w *walker) walk(s *spot, by []*Preset) error {
 			return nil
 		}
 		// Seal reads its permissions and date as it reads it.
-		w.f.Files = append(w.f.Files, seal.Extra{Rel: to, Path: at, Live: true})
+		w.f.Files = append(w.f.Files, seal.Extra{Rel: to, Path: walked, Live: true})
 		added()
 		return nil
 	})

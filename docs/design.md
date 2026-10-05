@@ -698,7 +698,10 @@ unless it skips a folder on the way. Every preset's secrets rules apply to
 every file. So nothing is backed up twice, and the backup is the same
 whatever order the presets are given in. Two places backed up at the same path are refused
 before anything is copied. A place that contains the backup repo, or is
-inside it, is refused, comparing real paths with symlinks followed.
+inside it, is refused, comparing real paths with symlinks followed. Files
+are then read from those real paths, so a symlink changed while salt backs
+up cannot lead the reads anywhere else, and messages show the path the
+preset names.
 
 The `mnemosyne` preset covers Mnemosyne's data folder (its main database,
 memory banks and shared database), its `config.yaml`, and its attached files
