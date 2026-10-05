@@ -494,6 +494,17 @@ func (e *env) mustInput(dir, stdin, name string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// gitChecksCommits reports whether the git salt runs refuses to write raw as
+// a commit. Since git 2.40, hash-object checks a commit with fsck first;
+// older versions write any commit they can parse.
+func (e *env) gitChecksCommits(dir, raw string) bool {
+	e.t.Helper()
+	// sh finds git on the test's PATH, the one salt uses; exec would look on
+	// this process's PATH instead.
+	_, code := e.runInput(dir, raw, "sh", "-c", "git hash-object -t commit --stdin")
+	return code != 0
+}
+
 // plantCommit writes raw as a commit without git's checks and makes it the
 // branch's newest commit, as a damaged or crafted history would.
 func (b *backupRepo) plantCommit(t *testing.T, raw string) {
@@ -502,42 +513,84 @@ func (b *backupRepo) plantCommit(t *testing.T, raw string) {
 	b.e.must(b.dir, "git", "update-ref", "refs/heads/main", sha)
 }
 
-// A history salt cannot read, or a commit git refuses to copy, stops the
-// prune with git's reason, and the branch is left exactly as it was.
-func TestPruneStopsOnABrokenHistory(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		// commit builds the planted commit from the tree and parent of the
-		// newest backup.
-		commit func(tree, parent string) string
-		want   string
-	}{
-		{"an older commit is missing", func(tree, _ string) string {
-			return "tree " + tree + "\nparent 1111111111111111111111111111111111111111\n" +
-				"author t <t@t> 1788328800 +0000\ncommitter t <t@t> 1788328800 +0000\n\nmissing parent\n"
-		}, "Failed to traverse parents"},
-		{"a commit git will not copy", func(tree, parent string) string {
-			return "tree " + tree + "\nparent " + parent + "\n" +
-				"author nobody 1788328800 +0000\ncommitter t <t@t> 1788328800 +0000\n\nno email\n"
-		}, "missing email"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			e := newEnv(t)
-			b := newBackupRepo(t, e)
-			b.files["MEMORY.md"] = "x"
-			b.backup(t, "2026-09-01")
-			tree := strings.TrimSpace(e.must(b.dir, "git", "rev-parse", "HEAD^{tree}"))
-			parent := strings.TrimSpace(e.must(b.dir, "git", "rev-parse", "HEAD"))
-			b.plantCommit(t, tt.commit(tree, parent))
-			head := e.must(b.dir, "git", "rev-parse", "HEAD")
+// prunesAndFails runs a prune that must fail with want in its output and
+// leave the branch exactly as it was.
+func (b *backupRepo) prunesAndFails(t *testing.T, want string) {
+	t.Helper()
+	head := b.e.must(b.dir, "git", "rev-parse", "HEAD")
+	out, code := b.e.run(b.base, "salt", "prune", "--keep-days", "1", b.dir)
+	if code != 1 || !strings.Contains(out, want) {
+		t.Fatalf("prune: exit %d, want 1 with %q:\n%s", code, want, out)
+	}
+	if b.e.must(b.dir, "git", "rev-parse", "HEAD") != head {
+		t.Fatal("a failed prune moved the branch")
+	}
+}
 
-			out, code := e.run(b.base, "salt", "prune", "--keep-days", "1", b.dir)
-			if code != 1 || !strings.Contains(out, tt.want) {
-				t.Fatalf("prune: exit %d, want 1 with %q:\n%s", code, tt.want, out)
-			}
-			if e.must(b.dir, "git", "rev-parse", "HEAD") != head {
-				t.Fatal("a failed prune moved the branch")
-			}
-		})
+// A history salt cannot read stops the prune with git's reason, and the
+// branch is left exactly as it was.
+func TestPruneStopsOnABrokenHistory(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	b.files["MEMORY.md"] = "x"
+	b.backup(t, "2026-09-01")
+	tree := strings.TrimSpace(e.must(b.dir, "git", "rev-parse", "HEAD^{tree}"))
+	b.plantCommit(t, "tree "+tree+"\nparent 1111111111111111111111111111111111111111\n"+
+		"author t <t@t> 1788328800 +0000\ncommitter t <t@t> 1788328800 +0000\n\nmissing parent\n")
+	b.prunesAndFails(t, "Failed to traverse parents")
+}
+
+// Prune copies a kept commit exactly and leaves judging it to git. A commit
+// with no email is refused by git 2.40 and later, which stops the prune and
+// leaves the branch alone; older git copies it, so it is kept unchanged.
+func TestPruneLeavesAMalformedCommitToGit(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	b.files["MEMORY.md"] = "x"
+	b.backup(t, "2026-09-01")
+	tree := strings.TrimSpace(e.must(b.dir, "git", "rev-parse", "HEAD^{tree}"))
+	parent := strings.TrimSpace(e.must(b.dir, "git", "rev-parse", "HEAD"))
+	copied := "tree " + tree + "\n" +
+		"author nobody 1788328800 +0000\ncommitter t <t@t> 1788328800 +0000\n\nno email\n"
+	planted := strings.Replace(copied, "\n", "\nparent "+parent+"\n", 1)
+	b.plantCommit(t, planted)
+
+	if e.gitChecksCommits(b.dir, copied) {
+		b.prunesAndFails(t, "missing email")
+		return
+	}
+	e.must(b.base, "salt", "prune", "--keep-days", "1", b.dir)
+	if got := e.must(b.dir, "git", "cat-file", "commit", "HEAD"); got != copied {
+		t.Fatalf("kept commit is\n%s\nwant\n%s", got, copied)
+	}
+}
+
+// A git that cannot write the copied commits stops the prune with git's
+// reason, and the branch is left exactly as it was, on every git version.
+func TestPruneStopsWhenGitCannotWrite(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	b.files["MEMORY.md"] = "x"
+	b.backup(t, "2026-09-01")
+	b.files["MEMORY.md"] = "y"
+	b.backup(t, "2026-09-02")
+
+	objects := filepath.Join(b.dir, ".git", "objects")
+	setDirModes(t, objects, 0o555)
+	t.Cleanup(func() { setDirModes(t, objects, 0o755) })
+	b.prunesAndFails(t, "insufficient permission")
+}
+
+// setDirModes sets the permissions of root and every folder under it.
+func setDirModes(t *testing.T, root string, mode os.FileMode) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return err
+		}
+		return os.Chmod(path, mode)
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
