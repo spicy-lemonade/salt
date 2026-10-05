@@ -269,6 +269,19 @@ func TestSealLiveExtraNotAFile(t *testing.T) {
 	}
 }
 
+// A path missing in the repo while a live file is sealed is an error, never
+// taken for the file having been deleted, which would leave it out.
+func TestSealLiveExtraRepoPathMissing(t *testing.T) {
+	f := newFixture(t, true)
+	p := extraCopy(t, "kept")
+	hashedHook = func(string) { os.RemoveAll(f.root) }
+	t.Cleanup(func() { hashedHook = nil })
+	_, err := Seal("", f.repo, Options{CacheDir: f.cache, Signer: f.signer, Extra: []Extra{{Rel: "a/kept.md", Path: p, Live: true}}})
+	if err == nil || !strings.HasPrefix(err.Error(), "a/kept.md: ") {
+		t.Fatalf("seal: %v", err)
+	}
+}
+
 // A live extra file deleted before it is read, as a tool's files can be, is
 // left out of the backup and listed as gone, and the seal goes on. So is one
 // deleted after it was measured but before it was encrypted, and one sealed

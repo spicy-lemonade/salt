@@ -190,9 +190,14 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			entries[i] = e
 			return nil
 		}
-		// A live file deleted since it was listed is left out.
+		// A live file deleted since it was listed is left out. Only the file
+		// itself being gone counts, never a path missing in the repo.
 		vanished := func(err error) bool {
-			gone[i] = it.live && errors.Is(err, fs.ErrNotExist)
+			if !it.live || !errors.Is(err, fs.ErrNotExist) {
+				return false
+			}
+			_, statErr := os.Lstat(it.abs)
+			gone[i] = errors.Is(statErr, fs.ErrNotExist)
 			return gone[i]
 		}
 		// A live file's permissions and date are read now, just before its
