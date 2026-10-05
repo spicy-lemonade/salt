@@ -2,6 +2,7 @@ package gitx
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -81,17 +82,29 @@ func IsShallow(dir string) (bool, error) {
 	return out == "true", nil
 }
 
-// CurrentBranch returns the full name of the checked-out branch, such as
-// "refs/heads/main", or "" when HEAD is detached.
+// ErrDetached means no branch is checked out, so there is no branch to
+// commit a backup to, prune or push.
+var ErrDetached = errors.New("no branch is checked out (detached HEAD); check out the branch your backups go to")
+
+// CurrentBranch returns the full name of the branch checked out in the
+// repository at dir, such as "refs/heads/main", or ErrDetached when none
+// is. Any other failure, such as dir not being a git repo, is returned as
+// it is.
 func CurrentBranch(dir string) (string, error) {
-	if _, err := gitLine(dir, "rev-parse", "--git-dir"); err != nil {
-		return "", err
-	}
 	out, err := gitLine(dir, "symbolic-ref", "-q", "HEAD")
-	if err != nil {
-		return "", nil // exit 1: HEAD is detached
+	if exitCode(err) == 1 {
+		return "", ErrDetached
 	}
-	return out, nil
+	return out, err
+}
+
+// exitCode returns the code git exited with when err came from it, or -1.
+func exitCode(err error) int {
+	var exited interface{ ExitCode() int }
+	if errors.As(err, &exited) {
+		return exited.ExitCode()
+	}
+	return -1
 }
 
 // FirstParentLog lists the commits on HEAD's first-parent line, newest first.

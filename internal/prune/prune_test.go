@@ -370,7 +370,7 @@ func TestRunRefuses(t *testing.T) {
 			return sub
 		}, 5, "not at its top", ErrNotPrunable},
 		{"shallow clone", func(g *memGit, root string) string { g.shallow = true; return root }, 5, "fetch --unshallow", ErrNotPrunable},
-		{"detached HEAD", func(g *memGit, root string) string { g.branch = ""; return root }, 5, "detached HEAD", ErrNotPrunable},
+		{"detached HEAD", func(g *memGit, root string) string { g.fail["CurrentBranch"] = gitx.ErrDetached; return root }, 5, "detached HEAD", ErrNotPrunable},
 		{"toplevel fails", func(g *memGit, root string) string { g.fail["Toplevel"] = broken; return root }, 5, "git broke", broken},
 		{"toplevel missing", func(g *memGit, root string) string { g.top = filepath.Join(root, "gone"); return root }, 5, "no such file", nil},
 		{"root missing", func(g *memGit, root string) string { return filepath.Join(root, "gone") }, 5, "no such file", nil},

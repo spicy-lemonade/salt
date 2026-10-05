@@ -66,7 +66,8 @@ type GitOps interface {
 	// Clone downloads only the latest commit of url into the empty folder
 	// dir (see gitx.Clone).
 	Clone(ctx context.Context, url, dir string) error
-	// Branch returns the checked-out branch, or gitx.ErrDetached.
+	// Branch returns the full name of the checked-out branch, or
+	// gitx.ErrDetached.
 	Branch(repoRoot string) (string, error)
 	// Stage stages every change, removed files included.
 	Stage(repoRoot string) error
@@ -103,7 +104,7 @@ func (RealGit) Prune(root string, keepDays int) (*prune.Result, error) {
 func (RealGit) Clone(ctx context.Context, url, dir string) error {
 	return gitx.Clone(ctx, url, dir)
 }
-func (RealGit) Branch(root string) (string, error) { return gitx.Branch(root) }
+func (RealGit) Branch(root string) (string, error) { return gitx.CurrentBranch(root) }
 func (RealGit) Stage(root string) error            { return gitx.StageAll(root) }
 func (RealGit) Commit(ctx context.Context, root, msg string) error {
 	return gitx.CommitStaged(ctx, root, msg)

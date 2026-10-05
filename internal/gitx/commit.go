@@ -26,11 +26,10 @@ func StageAll(dir string) error {
 func CommitStaged(ctx context.Context, dir, msg string) error {
 	// --quiet exits 1 when something is staged, without listing it.
 	_, err := Run(dir, "diff", "--cached", "--quiet")
-	var exit *exec.ExitError
-	switch {
-	case err == nil:
+	if err == nil {
 		return nil
-	case !errors.As(err, &exit) || exit.ExitCode() != 1:
+	}
+	if exitCode(err) != 1 {
 		return err
 	}
 	err = proc.Run(ctx, exec.CommandContext(ctx, "git", commitArgs(dir, msg)...))
@@ -47,20 +46,6 @@ func CommitStaged(ctx context.Context, dir, msg string) error {
 // for a passphrase would stop a scheduled backup every time.
 func commitArgs(dir, msg string) []string {
 	return Args(dir, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", msg)
-}
-
-// ErrDetached means no branch is checked out, so there is no branch to
-// commit a backup to or push.
-var ErrDetached = errors.New("no branch is checked out (detached HEAD); check out the branch your backups go to")
-
-// Branch returns the branch checked out in the repository at dir.
-func Branch(dir string) (string, error) {
-	branch, err := Run(dir, "symbolic-ref", "--quiet", "--short", "HEAD")
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 1 {
-		return "", ErrDetached
-	}
-	return branch, err
 }
 
 // RemoteTimeout is the longest each git command that talks to origin may
@@ -92,11 +77,10 @@ func Head(dir string) (string, error) {
 // this machine last pushed, and any pushed by hand. Cancelling ctx stops
 // git, and so does RemoteTimeout.
 func Lease(ctx context.Context, dir string, known []string) (string, error) {
-	branch, err := Branch(dir)
+	ref, err := CurrentBranch(dir)
 	if err != nil {
 		return "", err
 	}
-	ref := "refs/heads/" + branch
 	out, err := remote(ctx, dir, "git ls-remote", "ls-remote", "origin", ref)
 	if err != nil {
 		return "", err
@@ -116,11 +100,10 @@ func Lease(ctx context.Context, dir string, known []string) (string, error) {
 // show the credentials origin's URL may hold. Cancelling ctx stops git, and
 // so does RemoteTimeout.
 func Push(ctx context.Context, dir, lease string) error {
-	branch, err := Branch(dir)
+	ref, err := CurrentBranch(dir)
 	if err != nil {
 		return err
 	}
-	ref := "refs/heads/" + branch
 	_, err = remote(ctx, dir, "git push", "push", "--quiet", "--force-with-lease="+ref+":"+lease, "origin", ref+":"+ref)
 	return err
 }
