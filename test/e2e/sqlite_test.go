@@ -79,13 +79,9 @@ func assertSealFails(t *testing.T, e *env, b *backupRepo, want string, args ...s
 // "$SALT_TEST_STARTED" once it has started copying.
 func assertInterruptStopsCopy(t *testing.T, e *env, b *backupRepo, program, script string, args ...string) {
 	t.Helper()
-	bin := t.TempDir()
 	started := filepath.Join(t.TempDir(), "started")
-	if err := os.WriteFile(filepath.Join(bin, program), []byte("#!/bin/sh\n"+script+"\nexec sleep 60\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	salt, tmp := withTemp(t, e)
-	salt = salt.with("PATH="+bin+":"+filepath.Dir(e.bin)+":/usr/bin:/bin", "SALT_TEST_STARTED="+started)
+	salt = salt.with(e.stubPath(t, program, script+"\nexec sleep 60"), "SALT_TEST_STARTED="+started)
 	cmd := exec.Command(e.bin, append(append([]string{"seal"}, args...), b.src, b.dir)...)
 	cmd.Env = salt.vars
 	var out strings.Builder
@@ -288,15 +284,9 @@ func TestSealSQLiteFailures(t *testing.T) {
 	e.must(dir, sqlite, db, "CREATE TABLE m(x);")
 	notes := filepath.Join(dir, "notes.db")
 	write(t, notes, "# not a database\n")
-	failing := t.TempDir()
-	if err := os.WriteFile(filepath.Join(failing, "sqlite3"), []byte("#!/bin/sh\necho \"Error: database is locked\" >&2\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	failing := e.stubPath(t, "sqlite3", "echo \"Error: database is locked\" >&2\nexit 1")
 	// sqlite3 3.53 once exited 0 without making a copy.
-	noCopy := t.TempDir()
-	if err := os.WriteFile(filepath.Join(noCopy, "sqlite3"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	noCopy := e.stubPath(t, "sqlite3", "exit 0")
 	saltOnly := "PATH=" + filepath.Dir(e.bin)
 	for name, tc := range map[string]struct {
 		db   string
@@ -306,8 +296,8 @@ func TestSealSQLiteFailures(t *testing.T) {
 		"missing database": {filepath.Join(dir, "gone.db"), nil, "gone.db does not exist; check the path given to --sqlite"},
 		"not a database":   {notes, nil, "not a SQLite database"},
 		"no sqlite3":       {db, []string{saltOnly}, "salt needs the sqlite3 program"},
-		"sqlite3 fails":    {db, []string{"PATH=" + failing + ":" + filepath.Dir(e.bin) + ":/usr/bin:/bin"}, "database is locked"},
-		"no copy made":     {db, []string{"PATH=" + noCopy + ":" + filepath.Dir(e.bin) + ":/usr/bin:/bin"}, "copying the database " + db + ": sqlite3 finished without making a copy"},
+		"sqlite3 fails":    {db, []string{failing}, "database is locked"},
+		"no copy made":     {db, []string{noCopy}, "copying the database " + db + ": sqlite3 finished without making a copy"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			assertSealFails(t, e.with(tc.vars...), b, tc.want, "--sqlite", tc.db)

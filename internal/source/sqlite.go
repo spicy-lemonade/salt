@@ -157,10 +157,19 @@ func CopySQLite(ctx context.Context, live, dst string) error {
 	if err := proc.Run(ctx, cmd); err != nil {
 		return err
 	}
-	if _, err := os.Lstat(dst); !errors.Is(err, fs.ErrNotExist) {
+	return checkCopied(dst)
+}
+
+// checkCopied returns errNoCopy if sqlite3 exited 0 without writing dst.
+func checkCopied(dst string) error {
+	switch _, err := os.Lstat(dst); {
+	case err == nil:
+		return nil
+	case errors.Is(err, fs.ErrNotExist):
+		return errNoCopy
+	default:
 		return err
 	}
-	return errNoCopy
 }
 
 // sqliteCommand builds the sqlite3 command that backs up live into dst. It

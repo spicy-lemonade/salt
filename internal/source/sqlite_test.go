@@ -121,6 +121,26 @@ func TestCopySQLiteWithoutSQLite3(t *testing.T) {
 	}
 }
 
+// A copy sqlite3 did not make is errNoCopy, never fs.ErrNotExist, which
+// would report the live database as missing. Any other error reading dst is
+// returned as it is.
+func TestCheckCopied(t *testing.T) {
+	dir := t.TempDir()
+	made := writeFile(t, filepath.Join(dir, "0"), sqliteHeader)
+	if err := checkCopied(made); err != nil {
+		t.Fatalf("a copy that exists: %v", err)
+	}
+	err := checkCopied(filepath.Join(dir, "1"))
+	if !errors.Is(err, errNoCopy) || errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a copy that is missing: %v", err)
+	}
+	// A path through a regular file fails with "not a directory".
+	err = checkCopied(filepath.Join(made, "2"))
+	if err == nil || errors.Is(err, errNoCopy) || errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a copy that cannot be read: %v", err)
+	}
+}
+
 // The database is opened as a URI with mode=rw, which sqlite3 never creates,
 // so a database deleted after salt checked it is not made again, empty, in
 // the tool's folder. Characters a URI gives a meaning to are escaped.

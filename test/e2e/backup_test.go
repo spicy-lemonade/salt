@@ -135,20 +135,18 @@ func TestBackupFailures(t *testing.T) {
 
 	// A copy sqlite3 did not make is not taken for a database that went away
 	// while salt backed it up, which salt backup leaves out.
-	noCopy := t.TempDir()
-	if err := os.WriteFile(filepath.Join(noCopy, "sqlite3"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	db := filepath.Join(e.home, ".hermes", "mnemosyne", "data", "mnemosyne.db")
 	write(t, db, "SQLite format 3\x00pages")
-	out, code = e.with("PATH="+noCopy+":"+filepath.Dir(e.bin)+":/usr/bin:/bin").run(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	out, code = e.with(e.stubPath(t, "sqlite3", "exit 0")).run(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
 	if code != 1 || !strings.Contains(out, "/.hermes/mnemosyne/data/mnemosyne.db: sqlite3 finished without making a copy") {
 		t.Fatalf("no copy made: exit %d:\n%s", code, out)
 	}
 	if got := commitCount(e, b.dir); got != before {
 		t.Fatal("a backup without the database was committed")
 	}
-	os.Remove(db)
+	if err := os.Remove(db); err != nil {
+		t.Fatal(err)
+	}
 
 	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "x"), "a file")
 	e.must(b.dir, "git", "remote", "set-url", "origin", "https://agent:hunter2@127.0.0.1:1/backup.git")
