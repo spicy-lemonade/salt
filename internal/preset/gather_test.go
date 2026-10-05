@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/spicy-lemonade/salt/internal/source"
 )
@@ -78,8 +77,6 @@ func TestGather(t *testing.T) {
 	write(t, filepath.Join(home, "profiles", "work", "tool", "bank", "memory.db"), sqliteFile)
 	write(t, filepath.Join(home, "single.txt"), "one file")
 	os.Symlink("notes.md", filepath.Join(tool, "link.md"))
-	when := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	os.Chtimes(filepath.Join(tool, "notes.md"), when, when)
 
 	f, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain)
 	if err != nil {
@@ -93,10 +90,10 @@ func TestGather(t *testing.T) {
 	if want := []string{"profiles/work/tool/bank/memory.db", "tool/memory.db"}; !slices.Equal(dbs, want) {
 		t.Errorf("databases = %v, want %v", dbs, want)
 	}
-	// Each file keeps its own permissions and last-modified date.
+	// Every file is live, so seal reads its permissions and date itself.
 	for _, x := range f.Files {
-		if x.Rel == "tool/notes.md" && (!x.ModTime.Equal(when) || x.Mode.Perm() != 0o640) {
-			t.Errorf("notes.md: %v %v", x.ModTime, x.Mode)
+		if !x.Live || x.Path != filepath.Join(home, filepath.FromSlash(x.Rel)) {
+			t.Errorf("%s: %+v", x.Rel, x)
 		}
 	}
 	// Databases are SQLite databases, shown by where they are.
@@ -490,24 +487,6 @@ func TestGatherSkipsWhatVanishes(t *testing.T) {
 	}
 	if !f.Files[0].Live {
 		t.Fatal("a gathered file is not marked live")
-	}
-
-	// A file deleted once it was checked, as its permissions and date are
-	// read, is skipped too.
-	write(t, filepath.Join(tool, "late.md"), "late")
-	vanish = nil
-	infoHook = func(p string) {
-		if filepath.Base(p) == "late.md" {
-			os.Remove(p)
-		}
-	}
-	t.Cleanup(func() { infoHook = nil })
-	f, err = envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if files, _ := rels(f); !slices.Equal(files, []string{"tool/kept.md"}) {
-		t.Fatalf("files %v", files)
 	}
 
 	vanish = []string{"."}

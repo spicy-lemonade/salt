@@ -676,11 +676,14 @@ same code reads them all, so adding a tool means adding one file:
 Inside a folder, a file that starts with SQLite's header is a database and
 gets a safe copy. Its `-wal`, `-shm` and `-journal` files are not backed up,
 since the copy already holds what is in them. Every other file is sealed as
-it is, with its permissions and last-modified date, read in place without a
-copy. A symlink inside a folder is not followed or backed up, and salt
-prints one line about it. A `from` that is itself a symlink is followed.
-A file or database the tool deletes while salt backs it up, as tools do
-with temporary files, is left out of that backup instead of stopping it. A
+it is, read in place without a copy, with its permissions and last-modified
+date read just before its contents, not when it was found, since the
+database copies made in between can take a while. A symlink inside a folder
+is not followed or backed up, and salt prints one line about it. A `from`
+that is itself a symlink is followed. A file or database the tool deletes
+while salt backs it up, as tools do with temporary files, or a file it
+replaces with something that is not a file, is left out of that backup
+instead of stopping it. A
 database named with `--sqlite`, or a file in `salt seal`'s source folder,
 still stops the seal when it is missing, since the person named it.
 

@@ -71,8 +71,10 @@ type Extra struct {
 	Path    string // the file to read
 	Mode    fs.FileMode
 	ModTime time.Time
-	// Live is true for a file another program may delete at any time, such
-	// as one a preset found. One deleted before it is read is left out of
+	// Live is true for a file another program may change or delete at any
+	// time, such as one a preset found. Its permissions and date are then
+	// read just before its contents, and Mode and ModTime are not used. One
+	// deleted, or that is no longer a file, before it is read is left out of
 	// the backup and listed in Result.Gone, instead of failing the seal.
 	Live bool
 }
@@ -100,7 +102,7 @@ type Result struct {
 	Reused    int      // unchanged files whose ciphertext was kept
 	Removed   []string // repo paths deleted as stale or unmanaged
 	Skipped   []string // source paths that are not files or symlinks
-	Gone      []string // backup paths of live extra files deleted before they were read
+	Gone      []string // backup paths of live extra files deleted, or no longer files, before they were read
 	IndexNew  bool     // whether index.age was rewritten
 }
 
@@ -192,6 +194,25 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		vanished := func(err error) bool {
 			gone[i] = it.live && errors.Is(err, fs.ErrNotExist)
 			return gone[i]
+		}
+		// A live file's permissions and date are read now, just before its
+		// contents, as the tool may have changed it since it was found. One
+		// that is no longer a file is left out, as a deleted one is, and
+		// never opened: opening a named pipe would wait for ever.
+		if it.live {
+			fi, err := os.Stat(it.abs)
+			if vanished(err) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if !fi.Mode().IsRegular() {
+				gone[i] = true
+				return nil
+			}
+			it.mode, it.modTime = fi.Mode(), fi.ModTime()
+			e.Mode = uint32(it.mode.Perm())
 		}
 		sha, size, err := hashFile(it.abs)
 		if vanished(err) {

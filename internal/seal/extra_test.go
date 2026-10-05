@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -221,6 +222,50 @@ func TestSealExtraMissingFile(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "gone.db")
 	if _, err := f.sealExtra(Extra{Rel: "state.db", Path: missing}); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing extra file: %v", err)
+	}
+}
+
+// A live extra file's permissions and date are read when it is sealed, not
+// taken from when it was found, since the tool may have changed it since.
+func TestSealLiveExtraReadsItsOwnDetails(t *testing.T) {
+	f := newFixture(t, true)
+	p := extraCopy(t, "changed since it was found")
+	os.Chmod(p, 0o640)
+	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	os.Chtimes(p, at, at)
+	stale := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := f.sealExtra(Extra{Rel: "a/notes.md", Path: p, Mode: 0o600, ModTime: stale, Live: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := modTime(t, f.restore(RestoreOptions{}), "a/notes.md"); !got.Equal(at) {
+		t.Fatalf("restored notes.md is dated %v, want %v", got, at)
+	}
+	ix, err := ReadIndex(f.root, f.ids(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ix.Entries {
+		if e.Path == "a/notes.md" && e.Mode != 0o640 {
+			t.Fatalf("index records mode %o, want 640", e.Mode)
+		}
+	}
+}
+
+// A live extra file that is no longer a file, such as one a tool replaced
+// with a named pipe, is left out as a deleted one is, and never opened:
+// opening a named pipe would wait for ever.
+func TestSealLiveExtraNotAFile(t *testing.T) {
+	f := newFixture(t, true)
+	pipe := filepath.Join(t.TempDir(), "pipe")
+	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
+		t.Skip("mkfifo:", err)
+	}
+	res, err := f.sealExtra(Extra{Rel: "a/pipe", Path: pipe, Live: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Gone, []string{"a/pipe"}) {
+		t.Fatalf("gone = %v", res.Gone)
 	}
 }
 

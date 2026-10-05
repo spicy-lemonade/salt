@@ -28,9 +28,8 @@ const maxSecretsFile = 1 << 20
 var sidecars = []string{"-wal", "-shm", "-journal"}
 
 // listedHook lets tests delete a file or folder once the walk has listed
-// it, and infoHook a file once it has been checked, just before its
-// permissions and date are read. Both are always nil outside tests.
-var listedHook, infoHook func(path string)
+// it. It is always nil outside tests.
+var listedHook func(path string)
 
 // ErrNothing means a preset found nothing to back up on this machine.
 var ErrNothing = errors.New("found nothing to back up")
@@ -290,14 +289,8 @@ func (w *walker) walk(s *spot, by []*Preset) error {
 			added()
 			return nil
 		}
-		if infoHook != nil {
-			infoHook(walked)
-		}
-		info, err := d.Info()
-		if err != nil {
-			return skipGone(err)
-		}
-		w.f.Files = append(w.f.Files, seal.Extra{Rel: to, Path: at, Mode: info.Mode(), ModTime: info.ModTime(), Live: true})
+		// Seal reads its permissions and date as it reads it.
+		w.f.Files = append(w.f.Files, seal.Extra{Rel: to, Path: at, Live: true})
 		added()
 		return nil
 	})
