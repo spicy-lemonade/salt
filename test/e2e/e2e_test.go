@@ -68,6 +68,12 @@ func newEnvAt(t *testing.T, home string) *env {
 // run runs a command and returns combined output and exit code.
 func (e *env) run(dir, name string, args ...string) (string, int) {
 	e.t.Helper()
+	return e.runInput(dir, "", name, args...)
+}
+
+// runInput is run with stdin, if not empty, as the command's input.
+func (e *env) runInput(dir, stdin, name string, args ...string) (string, int) {
+	e.t.Helper()
 	// exec resolves names on this process's PATH, not cmd.Env's.
 	if name == "salt" {
 		name = e.bin
@@ -75,6 +81,9 @@ func (e *env) run(dir, name string, args ...string) (string, int) {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = e.vars
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	out, err := cmd.CombinedOutput()
 	var exitErr *exec.ExitError
 	switch {
