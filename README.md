@@ -50,41 +50,20 @@ salt seal --prune ~/agent-files ~/my-backup-repo
 
 Commit and push as normal. The repo always matches your files, with their last-modified dates. Unchanged files stay the same, deleted files are removed, and a backup with no changes makes no commit. `--prune` clears out anything Salt didn't put there. Older versions stay in your git history, so you can check out an older commit and restore it, until `salt prune` drops them (see [Keeping only recent backups](#-keeping-only-recent-backups)).
 
-## ⚡ One-command backups
+## 🗄️ Databases
 
-If Salt has a preset for your agent's memory, one command does the whole daily backup. Salt finds the files and databases, makes a safe copy of each database, locks everything into your repo, commits, drops old backups and pushes. `salt help` lists the presets.
+Copying a database while the agent writes to it can give a broken copy, so Salt makes a safe copy itself, even while the agent is running.
 
 ```bash
-salt backup --preset NAME ~/my-backup-repo
+salt seal --sqlite ~/agent/memory.db ~/agent-files ~/my-backup-repo
+salt seal --postgres-env DB_CONNECTION_URI ~/agent-files ~/my-backup-repo
 ```
 
-Run `crontab -e` and add this line to run it every day at 6am. Use the path that `which salt` prints, since cron doesn't search Homebrew's folder.
-
-```
-0 6 * * * /opt/homebrew/bin/salt backup --preset NAME "$HOME/my-backup-repo" >> "$HOME/backup.log" 2>&1
-```
-
-- Your repo then holds only what the presets find, and anything else in it is removed, as `salt seal --prune` does. Give `salt backup` a repo of its own, and repeat `--preset` for each tool you use.
-- A settings file holding an API key or other secret is left out, with one line naming the file and setting. Keep secrets in environment variables so the file is backed up.
-- `--keep-days N` sets how many days with a change to keep. The default is 5, as with `salt prune`.
-- The repo needs a remote named `origin`, and `git push` must work without asking for a password. Running `gh auth setup-git` once is an easy way to do this. Salt never overwrites a backup this machine didn't push, even after a `git fetch`.
-- Salt prints nothing when the backup works, but names any folder from the last backup it can't find, such as on an unmounted drive.
-
-### Presets
-
-| Preset | What it backs up |
-|---|---|
-| `mnemosyne` | [Mnemosyne](https://github.com/mnemosyne-oss/mnemosyne) memory, on its own or inside Hermes and its profiles |
-
-A preset is a small JSON file in [`internal/preset/presets`](internal/preset/presets) that says where a tool keeps its memory. The [design doc](docs/design.md#presets) shows what each one backs up. If the tool's folders are set by environment variables, set them in the cron line too, since cron doesn't see your shell's variables.
-
-To get your memory back, restore into a new folder (see [Getting your files back](#-getting-your-files-back)), stop the agent, then copy each folder back to where it came from.
-
-To add a preset for another tool, copy an existing file, change the paths, and open a pull request. The [design doc](docs/design.md#one-command-backup) explains the format.
+`--postgres-env` reads the database address from an environment variable, so the password never appears on the command line. A SQLite database is backed up under its file name, and a Postgres database under its name plus `.sql`. If two share a name, put `--name` before one, such as `--name agent2/state.db --sqlite ~/agent2/state.db`. The [design doc](docs/design.md#databases) explains the options and [how to restore a Postgres database](docs/design.md#restoring-a-postgres-database).
 
 ## ⏰ Daily backups
 
-For files without a preset, run Salt from a small script once a day. Change the paths to match your setup.
+To back up every day, run Salt from a small script. Change the paths to match your setup. If Salt has a preset for your agent, [one command](#-one-command-backups) does all of this instead.
 
 ```bash
 #!/bin/bash
@@ -121,6 +100,36 @@ Save it as `~/backup.sh`, then run `crontab -e` and add this line to run it ever
 
 Make sure `git push` works without asking for a password. Running `gh auth setup-git` once does this. Salt only prints messages when something goes wrong.
 
+## ⚡ One-command backups
+
+If Salt has a preset for your agent's memory, one command does the whole daily backup. Salt finds the files and databases, makes a safe copy of each database, locks everything into your repo, commits, drops old backups and pushes. `salt help` lists the presets.
+
+```bash
+salt backup --preset NAME ~/my-backup-repo
+```
+
+Run `crontab -e` and add this line to run it every day at 6am. Use the path that `which salt` prints, since cron doesn't search Homebrew's folder.
+
+```
+0 6 * * * /opt/homebrew/bin/salt backup --preset NAME "$HOME/my-backup-repo" >> "$HOME/backup.log" 2>&1
+```
+
+- Your repo then holds only what the presets find, and anything else in it is removed, as `salt seal --prune` does. Give `salt backup` a repo of its own, and repeat `--preset` for each tool you use.
+- A settings file holding an API key or other secret is left out, with one line naming the file and setting. Keep secrets in environment variables so the file is backed up.
+- `--keep-days N` sets how many days with a change to keep. The default is 5, as with `salt prune`.
+- The repo needs a remote named `origin`, and `git push` must work without asking for a password. Running `gh auth setup-git` once is an easy way to do this. Salt never overwrites a backup this machine didn't push, even after a `git fetch`.
+- Salt prints nothing when the backup works, but names any folder from the last backup it can't find, such as on an unmounted drive.
+
+### Presets
+
+| Preset | What it backs up |
+|---|---|
+| `mnemosyne` | [Mnemosyne](https://github.com/mnemosyne-oss/mnemosyne) memory, on its own or inside Hermes and its profiles |
+
+Each preset is a small JSON file in [`internal/preset/presets`](internal/preset/presets), and the [design doc](docs/design.md#presets) explains the format and what each one backs up. To add one, copy an existing file, change the paths and open a pull request. If a tool's folders are set by environment variables, set them in the cron line too, since cron doesn't see your shell's variables.
+
+To get your memory back, [restore into a new folder](#-getting-your-files-back), stop the agent, then copy each folder back to where it came from.
+
 ## 🧹 Keeping only recent backups
 
 Every change adds the whole changed file to your repo again, since encrypted files can't be compressed against older versions. Over months a busy repo gets slow to clone and push. `salt prune` keeps only recent backups.
@@ -131,19 +140,6 @@ salt prune --keep-days 10 ~/my-backup-repo   # keep 10 instead
 ```
 
 **"5 days" means 5 days on which anything in the repo changed, not 5 calendar days.** Days are counted for the whole repo, never per file, and a day with no changes is skipped. The latest backup is always kept, so the current version of every file is too. Pruning rewrites your git history, so push with `git push --force-with-lease` afterwards. The [design doc](docs/design.md#keeping-only-recent-backups) has worked examples, and a way to keep a database for longer.
-
-## 🗄️ Databases
-
-A plain `cp` of a database while the agent is writing to it can give a broken copy. Salt makes a safe copy for you, even while the agent is running.
-
-```bash
-salt seal --sqlite ~/agent/memory.db "$STAGE" "$REPO"
-salt seal --postgres-env DB_CONNECTION_URI "$STAGE" "$REPO"
-```
-
-`--postgres-env` reads the database address from an environment variable, so the password never appears on the command line. The [design doc](docs/design.md#databases) explains the options and [how to restore a Postgres database](docs/design.md#restoring-a-postgres-database).
-
-A SQLite database is backed up under its file name, and a Postgres database under its name with `.sql`. If two have the same name, such as two agents that both keep a `state.db`, put `--name NAME` before one of them, such as `--name agent2/state.db --sqlite ~/agent2/state.db`.
 
 ## 🔑 Getting your files back
 
