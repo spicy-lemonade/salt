@@ -2,6 +2,7 @@ package gitx
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -37,5 +38,15 @@ func TestRemoteTip(t *testing.T) {
 	}
 	if got := remoteTip("", "refs/heads/main"); got != "" {
 		t.Errorf("remoteTip of nothing = %q", got)
+	}
+}
+
+// salt's commits are never signed, whatever commit.gpgsign says, and still
+// run with hooks off.
+func TestCommitArgs(t *testing.T) {
+	got := strings.Join(commitArgs("/repo", "salt backup"), " ")
+	want := "-c core.hooksPath=/dev/null -C /repo -c commit.gpgsign=false commit --quiet -m salt backup"
+	if got != want {
+		t.Fatalf("commitArgs = %q, want %q", got, want)
 	}
 }

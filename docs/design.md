@@ -586,7 +586,9 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
    pre-commit hook (`salt check`) inside salt, and commits as `salt backup`
    if anything changed. The commit runs with git hooks off, like every git
    command salt runs (see "Process and memory safety"), so salt checks it
-   itself instead;
+   itself instead. It is never signed, whatever `commit.gpgsign` says: it
+   holds only ciphertext, its index is signed with salt's own key, and a
+   signing key that asks for a passphrase would stop every scheduled backup;
 5. drops old backups as `salt prune` does, keeping `--keep-days N` days with
    a change (5 by default);
 6. pushes the branch to `origin`. It first reads where origin's branch is

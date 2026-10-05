@@ -22,8 +22,7 @@ func StageAll(dir string) error {
 
 // CommitStaged commits what is staged in the repository at dir with the
 // message msg. It commits nothing when nothing is staged. Cancelling ctx
-// stops git, which may be waiting on something the person set up, such as
-// a key to sign commits with.
+// stops git, which may be waiting on something the person set up.
 func CommitStaged(ctx context.Context, dir, msg string) error {
 	// --quiet exits 1 when something is staged, without listing it.
 	_, err := Run(dir, "diff", "--cached", "--quiet")
@@ -34,12 +33,20 @@ func CommitStaged(ctx context.Context, dir, msg string) error {
 	case !errors.As(err, &exit) || exit.ExitCode() != 1:
 		return err
 	}
-	err = proc.Run(ctx, exec.CommandContext(ctx, "git", Args(dir, "commit", "--quiet", "-m", msg)...))
+	err = proc.Run(ctx, exec.CommandContext(ctx, "git", commitArgs(dir, msg)...))
 	var failed *proc.Error
 	if errors.As(err, &failed) {
 		failed.Program = "git commit"
 	}
 	return err
+}
+
+// commitArgs returns the git arguments CommitStaged commits with. The commit
+// is never signed, whatever commit.gpgsign says: it holds only ciphertext,
+// the index in it is signed with salt's own key, and a signing key that asks
+// for a passphrase would stop a scheduled backup every time.
+func commitArgs(dir, msg string) []string {
+	return Args(dir, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", msg)
 }
 
 // ErrDetached means no branch is checked out, so there is no branch to

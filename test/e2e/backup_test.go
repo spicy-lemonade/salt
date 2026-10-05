@@ -200,10 +200,22 @@ func TestBackupGitStepFailures(t *testing.T) {
 
 	e.must(b.dir, "git", "checkout", "-q", "-")
 	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "y"), "another file")
+	// salt's own commits are never signed, so a signing key that cannot be
+	// used, as under cron, does not stop the backup.
 	e.must(b.dir, "git", "config", "commit.gpgsign", "true")
 	e.must(b.dir, "git", "config", "gpg.program", "false")
+	head := e.must(b.dir, "git", "rev-parse", "HEAD")
+	if out, code := e.run(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir); code != 0 || e.must(b.dir, "git", "rev-parse", "HEAD") == head {
+		t.Fatalf("signing on: exit %d:\n%s", code, out)
+	}
+	if sig := strings.TrimSpace(e.must(b.dir, "git", "log", "-1", "--format=%G?")); sig != "N" {
+		t.Fatalf("salt's commit has signature status %q, want none", sig)
+	}
+
+	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "z"), "a third file")
+	e.must(b.dir, "git", "config", "commit.cleanup", "bogus")
 	out, code = e.run(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
-	if code != 1 || !strings.Contains(out, "committing the backup: git commit:") || !strings.Contains(out, "gpg failed to sign") {
+	if code != 1 || !strings.Contains(out, "committing the backup: git commit:") || !strings.Contains(out, "bogus") {
 		t.Fatalf("commit: exit %d:\n%s", code, out)
 	}
 }
