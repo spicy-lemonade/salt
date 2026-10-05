@@ -2,10 +2,13 @@ package seal
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -222,13 +225,126 @@ func TestSealExtraMissingFile(t *testing.T) {
 	}
 }
 
+// A live extra file's permissions and date are read when it is sealed, not
+// taken from when it was found, since the tool may have changed it since.
+func TestSealLiveExtraReadsItsOwnDetails(t *testing.T) {
+	f := newFixture(t, true)
+	p := extraCopy(t, "changed since it was found")
+	os.Chmod(p, 0o640)
+	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	os.Chtimes(p, at, at)
+	stale := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := f.sealExtra(Extra{Rel: "a/notes.md", Path: p, Mode: 0o600, ModTime: stale, Live: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := modTime(t, f.restore(RestoreOptions{}), "a/notes.md"); !got.Equal(at) {
+		t.Fatalf("restored notes.md is dated %v, want %v", got, at)
+	}
+	ix, err := ReadIndex(f.root, f.ids(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ix.Entries {
+		if e.Path == "a/notes.md" && e.Mode != 0o640 {
+			t.Fatalf("index records mode %o, want 640", e.Mode)
+		}
+	}
+}
+
+// A live extra file that is no longer a file, such as one a tool replaced
+// with a named pipe, is left out as a deleted one is, and never opened:
+// opening a named pipe would wait for ever.
+func TestSealLiveExtraNotAFile(t *testing.T) {
+	f := newFixture(t, true)
+	pipe := filepath.Join(t.TempDir(), "pipe")
+	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
+		t.Skip("mkfifo:", err)
+	}
+	res, err := f.sealExtra(Extra{Rel: "a/pipe", Path: pipe, Live: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Gone, []string{"a/pipe"}) {
+		t.Fatalf("gone = %v", res.Gone)
+	}
+}
+
+// A path missing in the repo while a live file is sealed is an error, never
+// taken for the file having been deleted, which would leave it out.
+func TestSealLiveExtraRepoPathMissing(t *testing.T) {
+	f := newFixture(t, true)
+	p := extraCopy(t, "kept")
+	hashedHook = func(string) { os.RemoveAll(f.root) }
+	t.Cleanup(func() { hashedHook = nil })
+	_, err := Seal("", f.repo, Options{CacheDir: f.cache, Signer: f.signer, Extra: []Extra{{Rel: "a/kept.md", Path: p, Live: true}}})
+	if err == nil || !strings.HasPrefix(err.Error(), "a/kept.md: ") {
+		t.Fatalf("seal: %v", err)
+	}
+}
+
+// A live extra file deleted before it is read, as a tool's files can be, is
+// left out of the backup and listed as gone, and the seal goes on. So is one
+// deleted after it was measured but before it was encrypted, and one sealed
+// last time, whose ciphertext and cache entry are then dropped.
+func TestSealLiveExtraGone(t *testing.T) {
+	f := newFixture(t, true)
+	kept := extraCopy(t, "kept")
+	late := filepath.Join(t.TempDir(), "late.md")
+	os.WriteFile(late, []byte("deleted after it was measured"), 0o600)
+	hashedHook = func(p string) {
+		if p == late {
+			os.Remove(p)
+		}
+	}
+	t.Cleanup(func() { hashedHook = nil })
+	res, err := f.sealExtra(
+		Extra{Rel: "a/kept.md", Path: kept, Live: true},
+		Extra{Rel: "a/gone.md", Path: filepath.Join(t.TempDir(), "gone.md"), Live: true},
+		Extra{Rel: "a/late.md", Path: late, Live: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Gone, []string{"a/gone.md", "a/late.md"}) || res.Files != 6 {
+		t.Fatalf("seal: %+v", res)
+	}
+	dest := f.restore(RestoreOptions{})
+	if b, err := os.ReadFile(filepath.Join(dest, "a", "kept.md")); err != nil || string(b) != "kept" {
+		t.Fatalf("restored kept.md = %q, %v", b, err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(dest, "a")); len(entries) != 1 {
+		t.Fatalf("restored a/ holds %v", entries)
+	}
+
+	os.Remove(kept)
+	res, err = f.sealExtra(Extra{Rel: "a/kept.md", Path: kept, Live: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Gone, []string{"a/kept.md"}) || res.Files != 5 || len(res.Removed) != 1 {
+		t.Fatalf("seal: %+v", res)
+	}
+	if c, _ := f.loadCache(); len(c.Files) != 5 {
+		t.Fatalf("the cache still holds %d files", len(c.Files))
+	}
+	assertAllCiphertext(t, f.root, true)
+	ix, err := ReadIndex(f.root, f.ids(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ix.Entries {
+		if strings.HasPrefix(e.Path, "a/") {
+			t.Fatalf("the index still lists %s", e.Path)
+		}
+	}
+}
+
 // Two paths clash when they are the same or one is a folder above the
 // other. Clash, the rule with encrypted paths, compares them exactly, case
 // included. With plain paths, case is ignored, part by part, also for letters
 // whose length in bytes changes when folded. Paths that only share a folder,
 // or a beginning, never clash.
 func TestClash(t *testing.T) {
-	plain := ClashRule(false)
 	for _, tc := range []struct {
 		a, b         string
 		exact, folds bool
@@ -254,12 +370,83 @@ func TestClash(t *testing.T) {
 			if got := Clash(p[0], p[1]); got != tc.exact {
 				t.Errorf("Clash(%q, %q) = %v, want %v", p[0], p[1], got, tc.exact)
 			}
-			if got := ClashRule(true)(p[0], p[1]); got != tc.exact {
-				t.Errorf("ClashRule(true)(%q, %q) = %v, want %v", p[0], p[1], got, tc.exact)
-			}
-			if got := plain(p[0], p[1]); got != tc.folds {
-				t.Errorf("ClashRule(false)(%q, %q) = %v, want %v", p[0], p[1], got, tc.folds)
+			// Paths are looked up rather than compared, and the lookup must
+			// agree with Clash, and ignore case only when folding.
+			for fold, want := range map[bool]bool{false: tc.exact, true: tc.folds} {
+				tk := newTaken(fold)
+				tk.add(p[0])
+				if _, _, got := tk.clash(p[1]); got != want {
+					t.Errorf("taken(fold %v) of %q clashes with %q = %v, want %v", fold, p[0], p[1], got, want)
+				}
 			}
 		}
+	}
+}
+
+// Many extra files are added in time that grows with their number, not its
+// square. Comparing every pair of 50,000 paths took over a minute.
+func TestAddExtraScales(t *testing.T) {
+	extra := make([]Extra, 50_000)
+	for i := range extra {
+		extra[i] = Extra{Rel: fmt.Sprintf("blobs/%02x/%04x/%08x", i%256, i%65536, i)}
+	}
+	start := time.Now()
+	for _, fold := range []bool{false, true} {
+		items, err := addExtra(nil, extra, fold)
+		if err != nil || len(items) != len(extra) {
+			t.Fatalf("addExtra: %d items, %v", len(items), err)
+		}
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("adding 50,000 extra files twice took %v", d)
+	}
+}
+
+// With no source folder, only the extra files are sealed, and they restore
+// in their own folders.
+func TestSealOnlyExtra(t *testing.T) {
+	f := newFixture(t, true)
+	at := time.Date(2025, 4, 5, 6, 7, 8, 0, time.UTC)
+	res, err := Seal("", f.repo, Options{CacheDir: f.cache, Signer: f.signer, Extra: []Extra{
+		{Rel: "tool/notes.md", Path: extraCopy(t, "notes"), Mode: 0o644, ModTime: at},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Files != 1 || res.Encrypted != 1 {
+		t.Fatalf("seal: %+v", res)
+	}
+	dest := f.restore(RestoreOptions{})
+	b, err := os.ReadFile(filepath.Join(dest, "tool", "notes.md"))
+	if err != nil || string(b) != "notes" {
+		t.Fatalf("restored notes.md = %q, %v", b, err)
+	}
+	// The file limit names the backup when there is no source folder.
+	old := MaxIndexEntries
+	MaxIndexEntries = 0
+	t.Cleanup(func() { MaxIndexEntries = old })
+	if _, err := Seal("", f.repo, Options{CacheDir: f.cache, Signer: f.signer, Extra: []Extra{{Rel: "a", Path: extraCopy(t, "a")}}}); err == nil || !strings.HasPrefix(err.Error(), "the backup has 1 files") {
+		t.Fatalf("seal over the limit: %v", err)
+	}
+}
+
+// FirstClash finds the first path that clashes with one before it, and
+// which one, by the rule for the repo's paths.
+func TestFirstClash(t *testing.T) {
+	rels := []string{"a/b.md", "c.md", "A/B.md", "a"}
+	if i, j, ok := FirstClash(rels, false); !ok || i != 3 || j != 0 {
+		t.Errorf("exact: %d %d %v", i, j, ok)
+	}
+	if i, j, ok := FirstClash(rels, true); !ok || i != 2 || j != 0 {
+		t.Errorf("folded: %d %d %v", i, j, ok)
+	}
+	if _, _, ok := FirstClash([]string{"a/b", "a/c", "b"}, true); ok {
+		t.Error("paths sharing a folder clashed")
+	}
+	// A path clashing with the folder above a file names that folder.
+	tk := newTaken(true)
+	tk.add("Agent/x/state.db")
+	if j, other, ok := tk.clash("agent/X"); !ok || j != 0 || other != "Agent/x" {
+		t.Errorf("folder: %d %q %v", j, other, ok)
 	}
 }

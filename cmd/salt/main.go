@@ -12,12 +12,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spicy-lemonade/salt/internal/app"
 	"github.com/spicy-lemonade/salt/internal/guard"
 	"github.com/spicy-lemonade/salt/internal/keys"
+	"github.com/spicy-lemonade/salt/internal/preset"
 	"github.com/spicy-lemonade/salt/internal/prune"
 	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/source"
@@ -32,12 +34,25 @@ var gitOps app.GitOps = app.RealGit{}
 // replace them so they never start a database program.
 var databaseKinds = source.Kinds
 
-const usage = `salt encrypts your agent's memory backups before they are pushed.
+// usage is usageText with the presets' names filled in.
+var usage = strings.Replace(usageText, "{presets}", strings.Join(preset.Names(), ", "), 1)
+
+const usageText = `salt encrypts your agent's memory backups before they are pushed.
 
 Setup:
   salt init REPO [--plain-paths] [--recovery phrase|passphrase] [--passphrase-file F]
       Set up salt in a git backup repo: create your key, choose how to
       recover it, and install the pre-commit hook.
+
+Nightly (one command, for a cron line):
+  salt backup --preset NAME... [--keep-days N] REPO
+      Gather the files and databases a tool keeps its memory in, as the
+      preset knows them, and seal them into REPO, which then holds only
+      them. Databases are copied safely, even while in use. A file holding
+      a secret, such as an API key, is left out. Then commit if anything
+      changed, keep only the backups from the last N days with a change
+      (default 5), and push with git push --force-with-lease. Repeat
+      --preset for each tool. Presets: {presets}.
 
 Nightly (in your backup script):
   salt seal [--prune] [--sqlite DB]... [--postgres CONN]... [--postgres-env VAR]... SRC REPO
@@ -172,6 +187,7 @@ func newApp() (*app.App, error) {
 		SignDir:   filepath.Join(cfg, "salt", "signing"),
 		Git:       gitOps,
 		LookPath:  app.LookPath,
+		Getenv:    os.Getenv,
 		Now:       time.Now,
 		Version:   version,
 		Home:      home,
@@ -261,15 +277,40 @@ func run(cmd string, args []string) error {
 			o.Context = ctx
 		}
 		return a.Seal(o)
-	case "prune":
-		fs := newFlags("prune")
-		days := fs.Int("keep-days", prune.DefaultKeepDays, "days with a change to keep")
+	case "backup":
+		fs := newFlags("backup")
+		days := keepDays(fs)
+		var names []string
+		fs.Func("preset", "a tool whose memory to back up", func(arg string) error {
+			names = append(names, arg)
+			return nil
+		})
 		pos, err := parse(fs, args, 1, 1)
 		if err != nil {
 			return err
 		}
-		if *days < 1 {
-			return usageError{fmt.Sprintf("prune: --keep-days must be 1 or more, got %d", *days)}
+		if err := checkKeepDays(fs, *days); err != nil {
+			return err
+		}
+		if len(names) == 0 {
+			return usageError{"backup needs at least one --preset NAME. Presets: " + strings.Join(preset.Names(), ", ")}
+		}
+		presets, err := preset.GetAll(names)
+		if err != nil {
+			return usageError{"backup: " + err.Error()}
+		}
+		ctx, stop := interruptible()
+		defer stop()
+		return a.Backup(app.BackupOptions{Repo: pos[0], Presets: presets, KeepDays: *days, Context: ctx})
+	case "prune":
+		fs := newFlags("prune")
+		days := keepDays(fs)
+		pos, err := parse(fs, args, 1, 1)
+		if err != nil {
+			return err
+		}
+		if err := checkKeepDays(fs, *days); err != nil {
+			return err
 		}
 		return a.Prune(pos[0], *days)
 	case "check":
@@ -347,6 +388,19 @@ func run(cmd string, args []string) error {
 		return err
 	}
 	return usageError{fmt.Sprintf("unknown command %q", cmd)}
+}
+
+// keepDays adds --keep-days to fs.
+func keepDays(fs *flag.FlagSet) *int {
+	return fs.Int("keep-days", prune.DefaultKeepDays, "days with a change to keep")
+}
+
+// checkKeepDays refuses a --keep-days below 1.
+func checkKeepDays(fs *flag.FlagSet, days int) error {
+	if days < 1 {
+		return usageError{fmt.Sprintf("%s: --keep-days must be 1 or more, got %d", fs.Name(), days)}
+	}
+	return nil
 }
 
 // interruptible returns a context that Ctrl-C or SIGTERM cancels, so the

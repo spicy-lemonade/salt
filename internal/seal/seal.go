@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/spicy-lemonade/salt/internal/repo"
 )
@@ -70,6 +71,12 @@ type Extra struct {
 	Path    string // the file to read
 	Mode    fs.FileMode
 	ModTime time.Time
+	// Live is true for a file another program may change or delete at any
+	// time, such as one a preset found. Its permissions and date are then
+	// read just before its contents, and Mode and ModTime are not used. One
+	// deleted, or that is no longer a file, before it is read is left out of
+	// the backup and listed in Result.Gone, instead of failing the seal.
+	Live bool
 }
 
 // ErrDuplicatePath means two files would be backed up at the same path, or a
@@ -95,6 +102,7 @@ type Result struct {
 	Reused    int      // unchanged files whose ciphertext was kept
 	Removed   []string // repo paths deleted as stale or unmanaged
 	Skipped   []string // source paths that are not files or symlinks
+	Gone      []string // backup paths of live extra files deleted, or no longer files, before they were read
 	IndexNew  bool     // whether index.age was rewritten
 }
 
@@ -105,6 +113,7 @@ type item struct {
 	modTime time.Time
 	symlink string
 	isLink  bool
+	live    bool // see Extra.Live
 }
 
 // entriesHook lets tests change the entries before Seal checks them, and
@@ -115,7 +124,8 @@ var (
 	hashedHook  func(path string)
 )
 
-// Seal encrypts the tree at src into the repository r.
+// Seal encrypts the tree at src into the repository r. An empty src seals
+// only opt.Extra.
 func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	if opt.CacheDir == "" {
 		return nil, errors.New("seal: no cache directory")
@@ -123,8 +133,10 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	if len(opt.Signer) != ed25519.PrivateKeySize {
 		return nil, errors.New("seal: no signing key")
 	}
-	if err := checkDisjoint(src, r.Root, opt.Show); err != nil {
-		return nil, err
+	if src != "" {
+		if err := CheckDisjoint(src, r.Root, opt.Show); err != nil {
+			return nil, err
+		}
 	}
 	if err := CheckNoSymlinks(r.Root); err != nil {
 		return nil, err
@@ -134,15 +146,22 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		exclude = DefaultExclude
 	}
 	res := &Result{}
-	items, err := walkSource(src, exclude, res, opt.Show)
-	if err != nil {
-		return nil, err
+	var items []item
+	var err error
+	if src != "" {
+		if items, err = walkSource(src, exclude, res, opt.Show); err != nil {
+			return nil, err
+		}
 	}
-	if items, err = addExtra(items, opt.Extra, ClashRule(r.Format.EncryptPaths)); err != nil {
+	if items, err = addExtra(items, opt.Extra, !r.Format.EncryptPaths); err != nil {
 		return nil, err
 	}
 	if len(items) > MaxIndexEntries {
-		return nil, fmt.Errorf("%s has %d files; salt supports at most %d per backup", show(opt.Show, src), len(items), MaxIndexEntries)
+		what := "the backup"
+		if src != "" {
+			what = show(opt.Show, src)
+		}
+		return nil, fmt.Errorf("%s has %d files; salt supports at most %d per backup", what, len(items), MaxIndexEntries)
 	}
 
 	// All repo writes go through rt, which refuses paths that lead outside
@@ -161,6 +180,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 
 	entries := make([]Entry, len(items))
 	newCache := make([]cacheEntry, len(items))
+	gone := make([]bool, len(items))
 	var encrypted, reused atomic.Int64
 	err = forEach(len(items), workers(opt.Workers), func(i int) error {
 		it := items[i]
@@ -170,7 +190,39 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			entries[i] = e
 			return nil
 		}
+		// A live file deleted since it was listed is left out. Only the file
+		// itself being gone counts, never a path missing in the repo.
+		vanished := func(err error) bool {
+			if !it.live || !errors.Is(err, fs.ErrNotExist) {
+				return false
+			}
+			_, statErr := os.Lstat(it.abs)
+			gone[i] = errors.Is(statErr, fs.ErrNotExist)
+			return gone[i]
+		}
+		// A live file's permissions and date are read now, just before its
+		// contents, as the tool may have changed it since it was found. One
+		// that is no longer a file is left out, as a deleted one is, and
+		// never opened: opening a named pipe would wait for ever.
+		if it.live {
+			fi, err := os.Stat(it.abs)
+			if vanished(err) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if !fi.Mode().IsRegular() {
+				gone[i] = true
+				return nil
+			}
+			it.mode, it.modTime = fi.Mode(), fi.ModTime()
+			e.Mode = uint32(it.mode.Perm())
+		}
 		sha, size, err := hashFile(it.abs)
+		if vanished(err) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -190,7 +242,11 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			if size > splitAbove {
 				limit = partSize
 			}
-			if ce, size, err = encryptFile(rt, r, it.abs, obj, limit); err != nil {
+			ce, size, err = encryptFile(rt, r, it.abs, obj, limit)
+			if vanished(err) {
+				return nil
+			}
+			if err != nil {
 				return fmt.Errorf("%s: %w", it.rel, err)
 			}
 			encrypted.Add(1)
@@ -210,6 +266,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		return nil, err
 	}
 	res.Encrypted, res.Reused = int(encrypted.Load()), int(reused.Load())
+	items, entries, newCache, res.Gone = dropGone(items, entries, newCache, gone)
 
 	next := &cache{Key: c.Key, Files: map[string]cacheEntry{}}
 	keep := map[string]bool{}
@@ -262,6 +319,22 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		return res, err
 	}
 	return res, next.save(cPath)
+}
+
+// dropGone removes the items marked gone, with their entries and cache
+// entries, keeping the rest in order, and returns the paths it removed.
+func dropGone(items []item, entries []Entry, newCache []cacheEntry, gone []bool) ([]item, []Entry, []cacheEntry, []string) {
+	var paths []string
+	n := 0
+	for i := range items {
+		if gone[i] {
+			paths = append(paths, items[i].rel)
+			continue
+		}
+		items[n], entries[n], newCache[n] = items[i], entries[i], newCache[i]
+		n++
+	}
+	return items[:n], entries[:n], newCache[:n], paths
 }
 
 // encryptFile seals the file at abs into obj, in parts of limit compressed
@@ -383,34 +456,131 @@ func walkSource(src string, exclude []string, res *Result, fn func(string) strin
 }
 
 // addExtra adds the extra files to the source items, refusing a path that is
-// unsafe or clashes, by clashes, with a file or folder already there.
-func addExtra(items []item, extra []Extra, clashes func(a, b string) bool) ([]item, error) {
+// unsafe or clashes with a file or folder already there. With foldCase,
+// paths that differ only by case clash too, as they do with plain paths on
+// macOS and Windows. Each path is looked up, not compared with every other,
+// so the time grows with the number of files, not its square.
+func addExtra(items []item, extra []Extra, foldCase bool) ([]item, error) {
 	if len(extra) == 0 {
 		return items, nil
+	}
+	t := newTaken(foldCase)
+	for _, it := range items {
+		t.add(it.rel)
 	}
 	for _, x := range extra {
 		rel, err := repo.CleanPath(x.Rel)
 		if err != nil {
 			return nil, err
 		}
-		for _, it := range items {
-			if !clashes(it.rel, rel) {
-				continue
-			}
-			if !Clash(it.rel, rel) {
-				// When rel clashes with a folder above a source file, name the
-				// folder: as many of the file's parts as rel has.
-				depth := strings.Count(rel, "/") + 1
-				parts := strings.SplitN(it.rel, "/", depth+1)
-				other := strings.Join(parts[:min(len(parts), depth)], "/")
+		if _, other, ok := t.clash(rel); ok {
+			if !Clash(other, rel) {
 				return nil, fmt.Errorf("%w: %s and %s differ only by case, and with --plain-paths the repo would keep them as one file on macOS and Windows", ErrDuplicatePath, other, rel)
 			}
 			return nil, fmt.Errorf("%w: %s", ErrDuplicatePath, rel)
 		}
-		items = append(items, item{rel: rel, abs: x.Path, mode: x.Mode, modTime: x.ModTime})
+		t.add(rel)
+		items = append(items, item{rel: rel, abs: x.Path, mode: x.Mode, modTime: x.ModTime, live: x.Live})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].rel < items[j].rel })
 	return items, nil
+}
+
+// FirstClash returns the index i of the first cleaned slash path in rels
+// that cannot be in a backup with one before it, and the index j of that
+// one. With foldCase, paths that differ only by case clash too.
+func FirstClash(rels []string, foldCase bool) (i, j int, ok bool) {
+	t := newTaken(foldCase)
+	for i, rel := range rels {
+		if j, _, ok := t.clash(rel); ok {
+			return i, j, true
+		}
+		t.add(rel)
+	}
+	return 0, 0, false
+}
+
+// taken holds the paths in a backup, and every folder above them, by key, so
+// a clash is found by lookup. Each key maps to the index in paths of the
+// path that took it.
+type taken struct {
+	key     func(string) string
+	paths   []string
+	files   map[string]int
+	folders map[string]int
+}
+
+func newTaken(foldCase bool) *taken {
+	key := func(s string) string { return s }
+	if foldCase {
+		key = foldKey
+	}
+	return &taken{key: key, files: map[string]int{}, folders: map[string]int{}}
+}
+
+// add records the cleaned slash path rel and the folders above it.
+func (t *taken) add(rel string) {
+	n := len(t.paths)
+	t.paths = append(t.paths, rel)
+	t.files[t.key(rel)] = n
+	for i := range len(rel) {
+		if rel[i] != '/' {
+			continue
+		}
+		if k := t.key(rel[:i]); !hasKey(t.folders, k) {
+			t.folders[k] = n
+		}
+	}
+}
+
+// clash returns the index of the path already taken that rel clashes with,
+// and what in it rel clashes with: the path itself, the folder above it that
+// rel would be a file at, or the file above rel.
+func (t *taken) clash(rel string) (j int, other string, ok bool) {
+	k := t.key(rel)
+	if j, ok := t.files[k]; ok {
+		return j, t.paths[j], true
+	}
+	if j, ok := t.folders[k]; ok {
+		return j, firstParts(t.paths[j], strings.Count(rel, "/")+1), true
+	}
+	for i := range len(rel) {
+		if rel[i] != '/' {
+			continue
+		}
+		if j, ok := t.files[t.key(rel[:i])]; ok {
+			return j, t.paths[j], true
+		}
+	}
+	return 0, "", false
+}
+
+func hasKey(m map[string]int, k string) bool {
+	_, ok := m[k]
+	return ok
+}
+
+// firstParts returns the first n parts of the slash path p.
+func firstParts(p string, n int) string {
+	parts := strings.SplitN(p, "/", n+1)
+	return strings.Join(parts[:min(n, len(parts))], "/")
+}
+
+// foldKey returns s with each letter replaced by the smallest of the letters
+// it equals ignoring case, so two strings are strings.EqualFold exactly when
+// their keys are equal. "/" folds only to itself, so the key keeps a path's
+// parts where they were.
+func foldKey(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		low := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			low = min(low, f)
+		}
+		b.WriteRune(low)
+	}
+	return b.String()
 }
 
 // Clash reports whether the cleaned slash paths a and b cannot both be in a
@@ -418,35 +588,7 @@ func addExtra(items []item, extra []Extra, clashes func(a, b string) bool) ([]it
 // Paths are compared exactly, case included, as salt keeps every name as it
 // was given: state.db and State.db are two names.
 func Clash(a, b string) bool {
-	return clash(a, b, func(x, y string) bool { return x == y })
-}
-
-// ClashRule returns the rule for whether two paths clash in a repo. With
-// encrypted paths it is Clash. With plain paths each path is also a file name
-// in the repo, and macOS and Windows ignore case in file names, so two paths
-// that differ only by case would be one file there: case is ignored.
-func ClashRule(encryptPaths bool) func(a, b string) bool {
-	if encryptPaths {
-		return Clash
-	}
-	return func(a, b string) bool { return clash(a, b, strings.EqualFold) }
-}
-
-// clash is Clash with equal deciding whether two path parts are the same.
-// The paths are compared part by part, never by length in bytes, since case
-// folding can change a letter's length: the Kelvin sign folds to k.
-func clash(a, b string, equal func(x, y string) bool) bool {
-	for {
-		pa, restA, moreA := strings.Cut(a, "/")
-		pb, restB, moreB := strings.Cut(b, "/")
-		if !equal(pa, pb) {
-			return false
-		}
-		if !moreA || !moreB {
-			return true
-		}
-		a, b = restA, restB
-	}
+	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
 // removeStale deletes ciphertext no longer referenced by the index, leftover
@@ -501,9 +643,9 @@ func removeEmptyDirs(rt *os.Root, dir string) {
 	rt.Remove(filepath.FromSlash(dir)) // fails, harmlessly, unless empty
 }
 
-// checkDisjoint refuses a source inside the repo or a repo inside the source:
+// CheckDisjoint refuses a source inside the repo or a repo inside the source:
 // either would seal ciphertext into itself or leak plaintext into the repo.
-func checkDisjoint(src, root string, fn func(string) string) error {
+func CheckDisjoint(src, root string, fn func(string) string) error {
 	a, err := filepath.Abs(src)
 	if err != nil {
 		return err
@@ -512,13 +654,14 @@ func checkDisjoint(src, root string, fn func(string) string) error {
 	if err != nil {
 		return err
 	}
-	if within(a, b) || within(b, a) {
+	if Within(a, b) || Within(b, a) {
 		return fmt.Errorf("source %s and repository %s must not contain each other", show(fn, a), show(fn, b))
 	}
 	return nil
 }
 
-func within(p, dir string) bool {
+// Within reports whether the path p is dir or inside it.
+func Within(p, dir string) bool {
 	rel, err := filepath.Rel(dir, p)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

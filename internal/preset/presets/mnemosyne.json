@@ -1,0 +1,21 @@
+{
+  "name": "mnemosyne",
+  "about": "Mnemosyne memory, in Hermes and each Hermes profile, or on its own",
+  "paths": [
+    {"from": "${HERMES_HOME:-~/.hermes}/mnemosyne/data", "to": "hermes/mnemosyne/data"},
+    {"from": "${HERMES_HOME:-~/.hermes}/mnemosyne/config.yaml", "to": "hermes/mnemosyne/config.yaml"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/mnemosyne/data", "to": "hermes/profiles/*/mnemosyne/data"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/mnemosyne/config.yaml", "to": "hermes/profiles/*/mnemosyne/config.yaml"},
+    {"from": "${MNEMOSYNE_BLOB_DIR:-~/.hermes/mnemosyne/blobs}", "to": "mnemosyne-blobs"},
+    {"from": "${MNEMOSYNE_DATA_DIR}", "to": "mnemosyne-data"},
+    {"from": "${MNEMOSYNE_SHARED_DB_PATH}", "to": "mnemosyne-shared.db"},
+    {"from": "${MNEMOSYNE_HOME:-~/.mnemosyne}/data", "to": "mnemosyne-home/data"}
+  ],
+  "skip": [".env", "*.env", ".mnemosyne-repair-*", "*.pre_*_backup"],
+  "secrets": [
+    {
+      "files": ["config.yaml"],
+      "keys": ["*api_key", "*apikey", "*api-key", "*sync_key", "*secret", "*secret_key", "*access_key", "*private_key", "*password", "token", "*_token"]
+    }
+  ]
+}

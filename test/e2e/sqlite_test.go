@@ -250,14 +250,16 @@ func TestSealSQLiteAfterACrash(t *testing.T) {
 
 // Two agents that both keep a state.db are both backed up and restored when
 // one is given another name with --name. Two with the same name are
-// refused before sqlite3 runs.
+// refused before sqlite3 runs. The second is in a folder whose name holds
+// characters sqlite3 reads as part of a URI unless salt escapes them.
 func TestSealSQLiteNamed(t *testing.T) {
 	sqlite := realSQLite(t)
 	e := newEnv(t)
 	b := newBackupRepo(t, e)
 	write(t, filepath.Join(b.src, "agent2", "SOUL.md"), "be brave\n")
 	first := filepath.Join(t.TempDir(), "state.db")
-	second := filepath.Join(t.TempDir(), "state.db")
+	second := filepath.Join(t.TempDir(), "a b%20?#", "state.db")
+	os.MkdirAll(filepath.Dir(second), 0o755)
 	startAgent(t, e, sqlite, first, 100)
 	startAgent(t, e, sqlite, second, 200)
 

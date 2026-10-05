@@ -234,6 +234,11 @@ the repo changes less often.
 `--keep-days 1` keeps only the backups from the latest day with a change.
 The latest backup is never dropped.
 
+To keep a database for longer than prune does, give a full copy a dated name,
+such as `memory-2026-09-30.db` or a Postgres dump `memory-2026-09-30.sql`,
+and keep it in the folder that is backed up. Salt encrypts whatever files are
+there, so this works for any database.
+
 ### How it works
 
 Each kept backup's commit is copied exactly, with the same files, author,
@@ -271,7 +276,8 @@ git push --force-with-lease
 
 `--force-with-lease` only overwrites the remote if it still holds what this
 machine last saw there, so a backup pushed from another machine in the
-meantime is not lost. Salt never pushes by itself.
+meantime is not lost. `salt prune` never pushes by itself. `salt backup`
+pushes this way after it prunes (see "One-command backup").
 
 - **Other clones.** Any other clone of the backup repo, such as on another
   laptop, still has the old history. Before backing up from it, run
@@ -405,13 +411,22 @@ start another until the machine runs out of memory. These rules prevent that:
 3. Every git command salt runs has git hooks switched off (`internal/gitx`).
 4. Only `internal/gitx`, `internal/source` and `internal/proc` may start other
    programs. `internal/proc` runs the ones salt may stop part way (`git clone`,
-   `sqlite3` and `pg_dump`). It keeps at most 4 KiB of their error output and
+   `git ls-remote`, `git push`, `git commit`, `sqlite3` and `pg_dump`). It keeps at most 4 KiB of their error output and
    waits at most 5 seconds for the output of one that was stopped, since a
    program it started can hold that output open. Unit tests never start any.
    `internal/rules` enforces rules 1 and 4.
 5. End-to-end tests run only through `make e2e`. It builds salt once, caps
    the number of processes, and keeps the tests away from the real keychain.
 6. At most 4 files are worked on at once, with a 512 MB soft memory limit.
+7. Only one salt seals, backs up or prunes a repo at a time. Each takes a
+   lock (`flock`) on `.git/salt/lock` in the repo, and a second one stops at
+   once instead of waiting. The lock is never committed, and is the same
+   file whatever the environment, so a cron job and a shell, which can have
+   different cache folders, still share it. A repo with no `.git` folder,
+   which `salt seal` accepts, is locked through a file in salt's cache
+   folder named after the repo instead. The system drops the lock
+   when salt ends, however it ends. Without it, a backup still pushing when
+   the next one starts would delete the objects the other had just written.
 
 ## Databases
 
@@ -425,7 +440,7 @@ it is, so you would only find out when you restore it.
 
 For SQLite, `salt seal --sqlite DB SRC REPO` makes the copy itself
 (`internal/source`). It runs
-`sqlite3 -init /dev/null -bail -cmd ".timeout 30000" DB ".backup N"`
+`sqlite3 -init /dev/null -bail -cmd ".timeout 30000" "file:DB?mode=rw" ".backup N"`
 inside a new private temporary folder, seals the copy at the top of the
 backup under DB's file name, and always removes the folder, also when the
 copy or the seal fails or salt is stopped with Ctrl-C or SIGTERM. SQLite's
@@ -441,7 +456,10 @@ save until the backup ends, so salt leaves it out: the agent never waits for
 salt, and a save during the copy only makes the copy start again. Two copies of an unchanged database
 are identical, so an unchanged database makes no commit. Before starting
 `sqlite3`, salt refuses a path that is missing or is not a SQLite database,
-because `sqlite3` would create an empty database at a missing path.
+because `sqlite3` would create an empty database at a missing path. It also
+opens DB as a URI with `mode=rw`, escaping characters such as `?` and `%`,
+so a database deleted after that check, as a tool may do while salt backs
+it up, is an error and never made again, empty, in the tool's folder.
 
 For Postgres, `salt seal --postgres CONN SRC REPO` dumps the database with
 `pg_dump --no-password --format=plain --lock-wait-timeout=30000
@@ -526,7 +544,7 @@ databases whose names clash are refused before any copy is made, since a dump
 can take a long time, and the message names both and points to `--name`. A
 name that clashes with a file or folder in SRC is only known once salt reads
 SRC, so that clash is refused after the copies are made, which are then
-removed, with the same advice. `seal.ClashRule` gives the rule for both checks.
+removed, with the same advice. `seal.FirstClash` finds the clash for both checks, by looking each name up rather than comparing every pair.
 
 The backup gets the live database file's permissions and last-modified date.
 They are read before the copy, because the copy can change them: after a
@@ -558,6 +576,164 @@ dump names must exist there first too. With `ON_ERROR_STOP` and
 `--single-transaction`, a failed restore stops at the first error and leaves
 the new database empty.
 
+## One-command backup
+
+`salt backup --preset NAME REPO` does a whole nightly backup with no script.
+It is meant for a cron line, so it prints nothing when it works. In order, it:
+
+1. opens REPO and refuses, as `salt seal` does, if this machine has not
+   approved its keys or has no signing key. It also refuses if REPO is not a
+   git repo or has no remote named `origin`, before any work is done;
+2. gathers what each preset names (see "Presets"), and refuses if a preset
+   finds nothing, naming where it looked. A place the last backup held that
+   is not found this time, such as a folder on a drive that is not mounted,
+   or one a variable set in the person's shell but not in cron points to,
+   is named in one line each. The backup goes on without it, and its
+   earlier copies stay in history until prune drops them. The last
+   backup's paths come from salt's change cache;
+3. makes a safe copy of each SQLite database found, as `--sqlite` does, and
+   seals the copies and every other file found into REPO, which then holds
+   only them. Anything else in REPO is removed, as with `salt seal --prune`;
+4. stages everything with `git add --all`, runs the same check as the
+   pre-commit hook (`salt check`) inside salt, and commits as `salt backup`
+   if anything changed. The commit runs with git hooks off, like every git
+   command salt runs (see "Process and memory safety"), so salt checks it
+   itself instead. It is never signed, whatever `commit.gpgsign` says: it
+   holds only ciphertext, its index is signed with salt's own key, and a
+   signing key that asks for a passphrase would stop every scheduled backup;
+5. reads where origin's branch is (`git ls-remote`), and goes on only if
+   that is a commit this machine pushed or tried to push (kept in
+   `.git/salt/pushed.json`, never committed), a commit the local branch
+   holds, or nothing. This is checked before prune rewrites the branch,
+   while the branch still holds the commit this machine last pushed and any
+   commit pushed by hand. The remote-tracking branch never counts, since a
+   fetch moves it to whatever another machine pushed;
+6. drops old backups as `salt prune` does, keeping `--keep-days N` days with
+   a change (5 by default);
+7. pushes the branch to `origin`, leased to the commit step 5 found there
+   (`--force-with-lease=ref:commit`), so a backup pushed from another
+   machine is never overwritten, even if something has fetched into the repo
+   since. A push whose answer was lost when the connection dropped still
+   counts as this machine's on the next run. git is not asked to prompt for
+   a password (`GIT_TERMINAL_PROMPT=0`; ssh can still ask on a terminal, but
+   cron has none), errors never show credentials from origin's URL, an HTTP
+   transfer slower than 1 KiB/s for a minute is stopped, and `git ls-remote`
+   and `git push` are each stopped after 2 hours.
+
+A failure stops the steps that follow. A backup committed but not pushed is
+pushed by the next run. Ctrl-C or SIGTERM stops a database copy, the commit
+or the push, and the backup stops before its next step, so old backups are
+never dropped after one.
+
+### Presets
+
+A preset says where one tool keeps the files needed to restore its memory.
+Each is a JSON file in `internal/preset/presets`, built into salt, and the
+same code reads them all, so adding a tool means adding one file:
+
+```json
+{
+  "name": "example",
+  "about": "one line shown to people",
+  "paths": [
+    {"from": "${TOOL_HOME:-~/.tool}/data", "to": "tool/data"},
+    {"from": "${TOOL_HOME:-~/.tool}/profiles/*/data", "to": "tool/profiles/*/data"}
+  ],
+  "skip": ["*.log", "cache"],
+  "secrets": [{"files": ["config.yaml"], "keys": ["*api_key", "*token"]}]
+}
+```
+
+- `name` is the file's name without `.json`. A field salt does not know is
+  refused, so a misspelt one, such as `secret`, never drops a rule.
+- `from` is where a file or folder is. `${VAR}` is an environment variable,
+  and the path is skipped when it is unset or empty. `${VAR:-DEFAULT}` uses
+  DEFAULT then. A leading `~` is the home folder. A part that is only `*`
+  matches every folder there, such as each profile, leaving out hidden ones.
+  A `*` held by a variable is part of a name, never matched.
+- `to` is where it goes in the backup. It has a `*` for each `*` in `from`,
+  which takes the name that `*` matched. Paths that do not exist are skipped.
+- `skip` lists name patterns of files and folders never backed up, such as
+  caches, logs and downloaded models. `.DS_Store` and `.git` are always
+  skipped, as in `salt seal`.
+- `secrets` lists files that may hold secrets, and the settings in them that
+  do. Such a file is read as YAML (which includes JSON), every document in
+  it, and every setting at any depth is checked, its name in lower case, so
+  `keys` are written in lower case too. If
+  one named in `keys` holds text (a string that is not empty, at any depth
+  below the setting, or a YAML alias, which salt does not follow), the file
+  is left out and salt prints one line naming the file and the setting,
+  never its value. Numbers, true or false, and null never count, so
+  `max_token: 512` is not taken for a secret. Secrets almost always mix
+  letters and digits, so one that is only a number is unusual. When a
+  setting named in `keys` holds a number and no text, the file is backed up,
+  and salt prints a warning naming the file and the setting, never its
+  value, saying to keep it in an environment variable if it is a secret.
+  A file that
+  cannot be read, cannot be read as YAML, or is over 1 MiB is left out too.
+  Salt never changes the file to remove the secret.
+
+Inside a folder, a file that starts with SQLite's header is a database and
+gets a safe copy. Its `-wal`, `-shm` and `-journal` files are not backed up,
+since the copy already holds what is in them. Every other file is sealed as
+it is, read in place without a copy, with its permissions and last-modified
+date read just before its contents, not when it was found, since the
+database copies made in between can take a while. A symlink inside a folder
+is not followed or backed up, and salt prints one line about it. A `from`
+that is itself a symlink is followed. A file or database the tool deletes
+while salt backs it up, as tools do with temporary files, or a file it
+replaces with something that is not a file, is left out of that backup
+instead of stopping it. A
+database named with `--sqlite`, or a file in `salt seal`'s source folder,
+still stops the seal when it is missing, since the person named it.
+
+A place found twice, such as a folder named both by a variable and by its
+default, or by two presets, is backed up once, under the first path, taking
+presets in name order. A place inside another, such as one preset's data
+folder inside another preset's folder, is backed up under its own path, and
+the folder around it leaves it out. Where presets overlap, a file is backed
+up if any preset that reaches it would back it up, so adding a preset never
+drops a file another one backs up. A preset reaches a place inside its own
+unless it skips a folder on the way. Every preset's secrets rules apply to
+every file. So nothing is backed up twice, and the backup is the same
+whatever order the presets are given in. Two places backed up at the same path are refused
+before anything is copied. A place that contains the backup repo, or is
+inside it, is refused, comparing real paths with symlinks followed. Files
+are then read from those real paths, so a symlink changed while salt backs
+up cannot lead the reads anywhere else, and messages show the path the
+preset names.
+
+The `mnemosyne` preset covers Mnemosyne's data folder (its main database,
+memory banks and shared database), its `config.yaml`, and its attached files
+(`blobs`), in the Hermes folder (`$HERMES_HOME` or `~/.hermes`), in each
+Hermes profile, and where `MNEMOSYNE_DATA_DIR`, `MNEMOSYNE_BLOB_DIR`,
+`MNEMOSYNE_SHARED_DB_PATH` and `MNEMOSYNE_HOME` point. Mnemosyne keeps its
+downloaded models, logs and `backups` folder beside these folders, not in
+them, so they are not backed up. Inside them, the preset leaves out `.env`
+files, the copies Mnemosyne makes of a database before migrating it
+(`*.pre_*_backup`) and its unfinished repairs (`.mnemosyne-repair-*`).
+A folder that `MNEMOSYNE_MODEL_CACHE_DIR` or `MNEMOSYNE_BACKUP_DIR` points to
+inside one of them is backed up with it. Mnemosyne's default blob folder,
+`~/.hermes/mnemosyne/blobs`, does not follow `HERMES_HOME`, so the preset's
+does not either. Its `config.yaml` can hold API
+keys (`mnemosyne config set`, or `mnemosyne config migrate`, which copies
+every `MNEMOSYNE_*` variable into it), so it is checked for them.
+
+| On the machine | In the backup |
+|---|---|
+| `~/.hermes/mnemosyne/data` and `config.yaml` (or under `$HERMES_HOME`) | `hermes/mnemosyne/` |
+| `~/.hermes/profiles/<name>/mnemosyne/data` and `config.yaml` | `hermes/profiles/<name>/mnemosyne/` |
+| `~/.hermes/mnemosyne/blobs` (or `$MNEMOSYNE_BLOB_DIR`) | `mnemosyne-blobs/` |
+| `$MNEMOSYNE_DATA_DIR` | `mnemosyne-data/` |
+| `$MNEMOSYNE_SHARED_DB_PATH` | `mnemosyne-shared.db` |
+| `~/.mnemosyne/data` (or `$MNEMOSYNE_HOME/data`) | `mnemosyne-home/data/` |
+
+Cron does not see variables set in the person's shell, so any of these the
+agent uses must be set in the cron line too, such as
+`HERMES_HOME=/srv/hermes /opt/homebrew/bin/salt backup --preset mnemosyne REPO`.
+To get the memory back, restore into a new folder, stop the agent, and copy
+each folder back to where it came from, such as `hermes/` to `~/.hermes/`.
+
 ## Out of scope
 
 Touch ID, and switching recovery method.
@@ -565,4 +741,4 @@ Touch ID, and switching recovery method.
 ## Still to build
 
 - OpenViking support. Its data format has not been checked yet.
-- a one-command `salt backup`, which will also run `salt prune`
+- Presets for more tools, such as Hermes, OpenClaw, Honcho and Hindsight.

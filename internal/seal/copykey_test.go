@@ -29,7 +29,7 @@ func TestCopyKey(t *testing.T) {
 	if kb, err := CopyKey(dir, b); err != nil || kb == ka {
 		t.Fatalf("another repo's key = %q, %v", kb, err)
 	}
-	p, _ := repoFile(dir, a, "copykey-", "")
+	p, _ := RepoFile(dir, a, "copykey-", "")
 	if fi, err := os.Stat(p); err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("key file: %v, %v", fi, err)
 	}

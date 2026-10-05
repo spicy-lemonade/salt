@@ -28,7 +28,7 @@ const DefaultKeepDays = 5
 type Git interface {
 	Toplevel(dir string) (string, error)
 	IsShallow(dir string) (bool, error)
-	// CurrentBranch returns "" when HEAD is detached.
+	// CurrentBranch returns gitx.ErrDetached when HEAD is detached.
 	CurrentBranch(dir string) (string, error)
 	// FirstParentLog lists HEAD's first-parent line, newest first.
 	FirstParentLog(dir string) ([]gitx.Commit, error)
@@ -110,11 +110,11 @@ func Run(g Git, root string, keepDays int) (*Result, error) {
 			ErrNotPrunable, root, root)
 	}
 	branch, err := g.CurrentBranch(root)
+	if errors.Is(err, gitx.ErrDetached) {
+		return nil, fmt.Errorf("%w: %s: %w", ErrNotPrunable, root, err)
+	}
 	if err != nil {
 		return nil, err
-	}
-	if branch == "" {
-		return nil, fmt.Errorf("%w: %s has no branch checked out (detached HEAD); check out the branch your backups go to", ErrNotPrunable, root)
 	}
 	commits, err := g.FirstParentLog(root)
 	if err != nil {

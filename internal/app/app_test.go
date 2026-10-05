@@ -78,6 +78,25 @@ type fakeGit struct {
 	clone      func(ctx context.Context, dir string) error
 	cloned     []string
 	clonedInto string
+	// calls records Stage, Commit, Lease, Prune and Push in order; each
+	// fails with its error.
+	calls     []string
+	stageErr  error
+	commitErr error
+	push      func(ctx context.Context) error
+	branchErr error
+	// lease stands in for Lease, which finds "tip" when it is nil; known
+	// records what each Lease was given, and leased what each Push was.
+	lease  func(ctx context.Context) (string, error)
+	known  [][]string
+	leased []string
+	// head is what Head returns, h1 when empty.
+	head    string
+	headErr error
+	// onStage and onCommit run during Stage and Commit; onCommit's error
+	// is Commit's.
+	onStage  func()
+	onCommit func() error
 }
 
 func (f *fakeGit) HookPath(string) (string, error) { return f.hook, nil }
@@ -98,6 +117,7 @@ func (f *fakeGit) Storage(root string) ([]check.StorageProblem, int, error) {
 }
 
 func (f *fakeGit) Prune(_ string, keepDays int) (*prune.Result, error) {
+	f.calls = append(f.calls, "prune")
 	f.pruneDays = append(f.pruneDays, keepDays)
 	return f.prune, f.pruneErr
 }
@@ -109,6 +129,49 @@ func (f *fakeGit) Clone(ctx context.Context, url, dir string) error {
 		return errors.New("no clone in this test")
 	}
 	return f.clone(ctx, dir)
+}
+
+func (f *fakeGit) Branch(string) (string, error) { return "main", f.branchErr }
+
+func (f *fakeGit) Stage(string) error {
+	f.calls = append(f.calls, "stage")
+	if f.onStage != nil {
+		f.onStage()
+	}
+	return f.stageErr
+}
+
+func (f *fakeGit) Commit(_ context.Context, _, msg string) error {
+	f.calls = append(f.calls, "commit "+msg)
+	if f.onCommit != nil {
+		return f.onCommit()
+	}
+	return f.commitErr
+}
+
+func (f *fakeGit) Head(string) (string, error) {
+	if f.head == "" {
+		return "h1", f.headErr
+	}
+	return f.head, f.headErr
+}
+
+func (f *fakeGit) Lease(ctx context.Context, _ string, known []string) (string, error) {
+	f.calls = append(f.calls, "lease")
+	f.known = append(f.known, known)
+	if f.lease == nil {
+		return "tip", nil
+	}
+	return f.lease(ctx)
+}
+
+func (f *fakeGit) Push(ctx context.Context, _, lease string) error {
+	f.calls = append(f.calls, "push")
+	f.leased = append(f.leased, lease)
+	if f.push == nil {
+		return nil
+	}
+	return f.push(ctx)
 }
 
 func newEnv(t *testing.T) *testEnv {

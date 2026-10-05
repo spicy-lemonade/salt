@@ -14,6 +14,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/app"
 	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/keys"
+	"github.com/spicy-lemonade/salt/internal/preset"
 	"github.com/spicy-lemonade/salt/internal/prune"
 	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/spicy-lemonade/salt/internal/source"
@@ -85,6 +86,13 @@ func (g *noGit) Clone(context.Context, string, string) error {
 	return errors.New("no git in unit tests")
 }
 
+func (*noGit) Branch(string) (string, error)                           { return "main", nil }
+func (*noGit) Stage(string) error                                      { return nil }
+func (*noGit) Commit(context.Context, string, string) error            { return nil }
+func (*noGit) Head(string) (string, error)                             { return "h", nil }
+func (*noGit) Lease(context.Context, string, []string) (string, error) { return "", nil }
+func (*noGit) Push(context.Context, string, string) error              { return nil }
+
 func (g *noGit) Prune(_ string, keepDays int) (*prune.Result, error) {
 	g.pruneDays = append(g.pruneDays, keepDays)
 	return &prune.Result{Kept: 1, Days: 1}, nil
@@ -130,6 +138,7 @@ func TestOrDotAndStoreName(t *testing.T) {
 
 func TestRunUsageErrors(t *testing.T) {
 	isolate(t)
+	aPreset := preset.Names()[0]
 	for _, args := range [][]string{
 		{"nope"},
 		{"init"},
@@ -150,6 +159,12 @@ func TestRunUsageErrors(t *testing.T) {
 		{"prune", "--keep-days", "0", "a"},
 		{"prune", "--keep-days", "-3", "a"},
 		{"prune", "--keep-days", "five", "a"},
+		{"backup", "repo"},
+		{"backup", "--preset", "nope", "repo"},
+		{"backup", "--preset", aPreset, "--preset", aPreset, "repo"},
+		{"backup", "--preset", aPreset, "--keep-days", "0", "repo"},
+		{"backup", "--preset", aPreset},
+		{"backup", "--preset", aPreset, "a", "b"},
 	} {
 		var ue usageError
 		if err := run(args[0], args[1:]); !errors.As(err, &ue) {
@@ -160,6 +175,30 @@ func TestRunUsageErrors(t *testing.T) {
 		if err := run(c, nil); err != nil {
 			t.Errorf("run %s: %v", c, err)
 		}
+	}
+}
+
+// salt backup lists the presets, and reaches the backup itself once its
+// options are right.
+func TestRunBackup(t *testing.T) {
+	isolate(t)
+	names := strings.Join(preset.Names(), ", ")
+	if !strings.Contains(usage, "Presets: "+names+".") || strings.Contains(usage, "{presets}") {
+		t.Fatal("usage does not list the presets")
+	}
+	err := run("backup", []string{"--preset", "nope", "repo"})
+	if !strings.Contains(err.Error(), `unknown preset "nope"; the presets are `+names) {
+		t.Fatalf("unknown preset: %v", err)
+	}
+	var ue usageError
+	first := preset.Names()[0]
+	err = run("backup", []string{"--preset", first, "--preset", first, "repo"})
+	if !errors.As(err, &ue) || !strings.Contains(err.Error(), "backup: the preset "+first+" is given twice") {
+		t.Fatalf("a preset given twice: %v", err)
+	}
+	err = run("backup", []string{"--preset", first, "--keep-days", "2", t.TempDir()})
+	if err == nil || errors.As(err, &ue) || !strings.Contains(err.Error(), "not a salt repository") {
+		t.Fatalf("backup: %v", err)
 	}
 }
 
@@ -224,6 +263,11 @@ func TestRunSealVerifyRestore(t *testing.T) {
 	calls := testGit.storageCalls
 	if err := run("seal", []string{"--prune", "--sqlite", filepath.Join(dbs, "state.db"), src, root, "--sqlite", filepath.Join(dbs, "memory.db")}); err != nil {
 		t.Fatalf("seal: %v", err)
+	}
+	// A database the person names must exist; only a preset's may vanish.
+	missing := filepath.Join(dbs, "missing.db")
+	if err := run("seal", []string{"--sqlite", missing, src, root}); err == nil || !strings.Contains(err.Error(), "missing.db does not exist; check the path given to") {
+		t.Fatalf("seal --sqlite missing.db: %v", err)
 	}
 	if testGit.storageCalls != calls+1 {
 		t.Fatalf("seal asked git about storage %d time(s), want once", testGit.storageCalls-calls)

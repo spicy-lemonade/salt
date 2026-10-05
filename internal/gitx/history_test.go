@@ -2,6 +2,7 @@ package gitx
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -9,14 +10,22 @@ import (
 
 var errGit = errors.New("git broke")
 
+// exitError is a git that ran and exited with its code, as *exec.ExitError
+// reports it.
+type exitError int
+
+func (e exitError) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
+func (e exitError) ExitCode() int { return int(e) }
+
 // fakeGit stands in for runGit. It answers each command from replies, keyed by
 // the command's arguments joined with spaces, and fails the command named by
-// fail. Every call is recorded.
+// fail with failWith, or errGit. Every call is recorded.
 type fakeGit struct {
-	replies map[string]string
-	fail    string
-	calls   []string
-	stdin   [][]byte
+	replies  map[string]string
+	fail     string
+	failWith error
+	calls    []string
+	stdin    [][]byte
 }
 
 func (f *fakeGit) run(_ string, stdin []byte, _ int, args ...string) ([]byte, error) {
@@ -24,6 +33,9 @@ func (f *fakeGit) run(_ string, stdin []byte, _ int, args ...string) ([]byte, er
 	f.calls = append(f.calls, cmd)
 	f.stdin = append(f.stdin, stdin)
 	if f.fail != "" && strings.HasPrefix(cmd, f.fail) {
+		if f.failWith != nil {
+			return nil, fmt.Errorf("git %s: %w", cmd, f.failWith)
+		}
 		return nil, errGit
 	}
 	return []byte(f.replies[cmd]), nil
@@ -41,7 +53,6 @@ func TestHistoryAnswers(t *testing.T) {
 	f := &fakeGit{replies: map[string]string{
 		"rev-parse --show-toplevel":           "/repo\n",
 		"rev-parse --is-shallow-repository":   "true\n",
-		"rev-parse --git-dir":                 ".git\n",
 		"symbolic-ref -q HEAD":                "refs/heads/main\n",
 		"rev-parse --verify -q HEAD^{commit}": "aaaa\n",
 		"log --first-parent --format=%H%x00%P%x00%cI HEAD": "aaaa\x00bbbb\x002026-09-02T06:00:00Z\n" +
@@ -104,11 +115,16 @@ func TestHistoryEdgeAnswers(t *testing.T) {
 	if shallow, err := IsShallow("/repo"); err != nil || shallow {
 		t.Errorf("IsShallow of a full clone = %v, %v", shallow, err)
 	}
-	// symbolic-ref exits 1 when HEAD is detached: no branch, and no error.
-	f.fail = "symbolic-ref"
-	if branch, err := CurrentBranch("/repo"); err != nil || branch != "" {
+	// symbolic-ref exits 1 when HEAD is detached, and only then.
+	f.fail, f.failWith = "symbolic-ref", exitError(1)
+	if branch, err := CurrentBranch("/repo"); !errors.Is(err, ErrDetached) || branch != "" {
 		t.Errorf("CurrentBranch with a detached HEAD = %q, %v", branch, err)
 	}
+	f.failWith = exitError(128)
+	if _, err := CurrentBranch("/repo"); errors.Is(err, ErrDetached) || err == nil {
+		t.Errorf("CurrentBranch when git fails = %v", err)
+	}
+	f.failWith = nil
 	// No commits yet: nothing to list, and no error.
 	f.fail = "rev-parse --verify"
 	if log, err := FirstParentLog("/repo"); err != nil || log != nil {
@@ -126,7 +142,7 @@ func TestHistoryGitFailures(t *testing.T) {
 	}{
 		{"rev-parse --show-toplevel", func() error { _, err := Toplevel("/repo"); return err }, 1},
 		{"rev-parse --is-shallow-repository", func() error { _, err := IsShallow("/repo"); return err }, 1},
-		{"rev-parse --git-dir", func() error { _, err := CurrentBranch("/repo"); return err }, 1},
+		{"symbolic-ref", func() error { _, err := CurrentBranch("/repo"); return err }, 1},
 		{"log", func() error { _, err := FirstParentLog("/repo"); return err }, 2},
 		{"cat-file", func() error { _, err := CatCommit("/repo", "aaaa"); return err }, 1},
 		{"hash-object", func() error { _, err := HashCommit("/repo", []byte("x")); return err }, 1},

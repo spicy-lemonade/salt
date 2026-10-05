@@ -5,16 +5,19 @@ package app
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"time"
 
 	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/gitx"
+	"github.com/spicy-lemonade/salt/internal/guard"
 	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/prune"
@@ -39,6 +42,9 @@ type App struct {
 	LookPath func(name string) (string, bool)
 	Now      func() time.Time
 	Version  string
+	// Getenv reads an environment variable. Nil reads none, as if every
+	// variable were unset.
+	Getenv func(string) string
 	// Home is the user's home folder. Messages show paths inside it as "~/…";
 	// empty means paths are shown in full.
 	Home string
@@ -60,6 +66,21 @@ type GitOps interface {
 	// Clone downloads only the latest commit of url into the empty folder
 	// dir (see gitx.Clone).
 	Clone(ctx context.Context, url, dir string) error
+	// Branch returns the full name of the checked-out branch, or
+	// gitx.ErrDetached.
+	Branch(repoRoot string) (string, error)
+	// Stage stages every change, removed files included.
+	Stage(repoRoot string) error
+	// Commit commits what is staged, and nothing when nothing is.
+	Commit(ctx context.Context, repoRoot, msg string) error
+	// Head returns the commit checked out.
+	Head(repoRoot string) (string, error)
+	// Lease reads where origin's branch is and returns it for Push, if it is
+	// one of known or nothing there is lost (see gitx.Lease).
+	Lease(ctx context.Context, repoRoot string, known []string) (string, error)
+	// Push pushes the checked-out branch to origin if origin's branch is
+	// still at lease (see gitx.Push).
+	Push(ctx context.Context, repoRoot, lease string) error
 }
 
 // RealGit runs git through gitx (hooks disabled).
@@ -82,6 +103,18 @@ func (RealGit) Prune(root string, keepDays int) (*prune.Result, error) {
 }
 func (RealGit) Clone(ctx context.Context, url, dir string) error {
 	return gitx.Clone(ctx, url, dir)
+}
+func (RealGit) Branch(root string) (string, error) { return gitx.CurrentBranch(root) }
+func (RealGit) Stage(root string) error            { return gitx.StageAll(root) }
+func (RealGit) Commit(ctx context.Context, root, msg string) error {
+	return gitx.CommitStaged(ctx, root, msg)
+}
+func (RealGit) Head(root string) (string, error) { return gitx.Head(root) }
+func (RealGit) Lease(ctx context.Context, root string, known []string) (string, error) {
+	return gitx.Lease(ctx, root, known)
+}
+func (RealGit) Push(ctx context.Context, root, lease string) error {
+	return gitx.Push(ctx, root, lease)
 }
 
 // HookSearchPath is where the pre-commit hook looks for salt: the caller's
@@ -111,44 +144,35 @@ type SealOptions struct {
 	// Databases lists live databases to copy safely and seal, each under its
 	// own name.
 	Databases []source.Database
+	// Files lists files to seal as they are, each under its own name.
+	Files []seal.Extra
 	// Context stops the database copies early. Nil means never.
 	Context context.Context
+	// Live is true when Databases were found on this machine, as a preset
+	// finds them, rather than given by the person. A database deleted
+	// before it is copied is then left out instead of failing the seal.
+	Live bool
 }
 
 // Seal encrypts o.Src, and safe copies of o.Databases, into the salt repository
-// at o.Repo.
+// at o.Repo. An empty o.Src is refused: sealing nothing would remove every
+// file sealed before, as when a backup script's variable is unset.
 func (a *App) Seal(o SealOptions) error {
-	r, err := repo.Open(o.Repo)
+	if o.Src == "" {
+		return errors.New("seal: SRC is empty. Give the folder to seal")
+	}
+	r, signer, err := a.openToSeal(o.Repo)
 	if err != nil {
 		return err
 	}
-	if err := a.checkTrusted(r); err != nil {
-		return err
-	}
-	signer, err := a.signingKey(r)
-	if errors.Is(err, errNoSigningKey) {
-		return fmt.Errorf("this machine has no key to sign backups to %s. salt now signs every backup, so restore can tell if someone planted files in it. Run `salt trust %q` once to set it up",
-			a.short(r.Root), r.Root)
-	}
-	if err != nil {
-		return fmt.Errorf("reading the signing key: %w", err)
-	}
-	extra, cleanup, err := a.copyDatabases(o.Context, r, o.Databases)
+	unlock, err := a.lockRepo(r.Root)
 	if err != nil {
 		return err
 	}
-	defer cleanup()
-	res, err := seal.Seal(o.Src, r, seal.Options{CacheDir: a.CacheDir, Signer: signer, Prune: o.Prune, Show: a.short, Extra: extra})
-	if errors.Is(err, seal.ErrDuplicatePath) && len(extra) > 0 {
-		return fmt.Errorf("%w; each database salt copies is backed up under its own name, which must not be used by another database or by a file or folder in %s. Give the database another name with --name NAME before its option", err, a.short(o.Src))
-	}
+	defer unlock()
+	res, err := a.seal(r, signer, o)
 	if err != nil {
 		return err
-	}
-	// A signal during sealing lets it finish, so the copies are removed, but
-	// still stops the backup script before it commits.
-	if o.Context != nil && o.Context.Err() != nil {
-		return fmt.Errorf("seal %w: the backup was sealed and the database copies were removed, but do not commit it without checking", ErrInterrupted)
 	}
 	a.UI.Printf("salt: sealed %d files and %d symlinks: %d encrypted, %d unchanged, %d removed\n",
 		res.Files, res.Symlinks, res.Encrypted, res.Reused, len(res.Removed))
@@ -164,36 +188,114 @@ func (a *App) Seal(o SealOptions) error {
 	return a.checkStorage(r.Root, "salt: the backup was sealed, but")
 }
 
+// lockRepo stops two salts changing the repo at root at once, such as a
+// backup still running, on a slow push, when the next one starts: each
+// would delete the objects the other had just written. The lock is the
+// state file lock (see stateFile).
+func (a *App) lockRepo(root string) (unlock func(), err error) {
+	p, err := a.stateFile(root, "lock", "")
+	if err != nil {
+		return nil, err
+	}
+	unlock, err = guard.Lock(p)
+	if errors.Is(err, guard.ErrLocked) {
+		return nil, fmt.Errorf("%s: %w", a.short(root), err)
+	}
+	return unlock, err
+}
+
+// stateFile returns where salt keeps what it must remember about the repo
+// at root on this machine, such as its lock: name+ext in a salt folder in
+// the repo's .git folder. That is never committed, and is the same whatever
+// the environment, so a cron job and a shell agree on it. A repo with no
+// .git folder, which salt seal accepts, or whose .git is a file, as in a
+// git worktree, keeps it in the cache folder instead, named by the repo's
+// real path.
+func (a *App) stateFile(root, name, ext string) (string, error) {
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	if fi, err := os.Stat(filepath.Join(real, ".git")); err == nil && fi.IsDir() {
+		return filepath.Join(real, ".git", "salt", name+ext), nil
+	}
+	return seal.RepoFile(a.CacheDir, real, name+"-", ext)
+}
+
+// openToSeal opens the salt repository at path for sealing. It refuses one
+// whose keys or settings this machine has not approved, or with no key on
+// this machine to sign its backups.
+func (a *App) openToSeal(path string) (*repo.Repo, ed25519.PrivateKey, error) {
+	r, err := repo.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := a.checkTrusted(r); err != nil {
+		return nil, nil, err
+	}
+	signer, err := a.signingKey(r)
+	if errors.Is(err, errNoSigningKey) {
+		return nil, nil, fmt.Errorf("this machine has no key to sign backups to %s. salt now signs every backup, so restore can tell if someone planted files in it. Run `salt trust %q` once to set it up",
+			a.short(r.Root), r.Root)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading the signing key: %w", err)
+	}
+	return r, signer, nil
+}
+
+// seal copies o.Databases safely, then seals them, o.Src and o.Files into r.
+// The caller has already opened the repo as r, so o.Repo is ignored.
+func (a *App) seal(r *repo.Repo, signer ed25519.PrivateKey, o SealOptions) (*seal.Result, error) {
+	extra, cleanup, err := a.copyDatabases(o.Context, r, o.Databases, o.Live)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	res, err := seal.Seal(o.Src, r, seal.Options{CacheDir: a.CacheDir, Signer: signer, Prune: o.Prune, Show: a.short, Extra: slices.Concat(o.Files, extra)})
+	if errors.Is(err, seal.ErrDuplicatePath) && len(extra) > 0 && o.Src != "" {
+		return nil, fmt.Errorf("%w; each database salt copies is backed up under its own name, which must not be used by another database or by a file or folder in %s. Give the database another name with --name NAME before its option", err, a.short(o.Src))
+	}
+	if err != nil {
+		return nil, err
+	}
+	// A signal during sealing lets it finish, so the copies are removed, but
+	// still stops the backup script before it commits.
+	if o.Context != nil && o.Context.Err() != nil {
+		return nil, fmt.Errorf("seal %w: the backup was sealed and the database copies were removed, but do not commit it without checking", ErrInterrupted)
+	}
+	return res, nil
+}
+
 // copyDatabases makes a safe copy of each live database in a new private
 // temporary folder, and returns them as files to seal. cleanup removes the
-// folder.
-func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Database) (extra []seal.Extra, cleanup func(), err error) {
+// folder. With skipGone, a database that no longer exists is left out.
+func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Database, skipGone bool) (extra []seal.Extra, cleanup func(), err error) {
 	if len(dbs) == 0 {
 		return nil, func() {}, nil
 	}
 	// Two databases whose names clash are refused before any copy is made,
 	// since a copy can take a long time. A clash with a source file is only
 	// known once seal reads the source.
-	clashes := seal.ClashRule(r.Format.EncryptPaths)
+	names := make([]string, len(dbs))
 	for i, db := range dbs {
-		for _, prev := range dbs[:i] {
-			if !clashes(prev.Name(), db.Name()) {
-				continue
-			}
-			if prev.String() == db.String() && prev.Name() == db.Name() {
-				return nil, nil, fmt.Errorf("the database %s is given twice. Give it once", a.short(db.String()))
-			}
-			if prev.Name() == db.Name() {
-				return nil, nil, fmt.Errorf("the databases %s and %s would both be backed up as %s. Give one of them another name with --name NAME before its %s",
-					a.short(prev.String()), a.short(db.String()), db.Name(), db.Flag())
-			}
-			why := "a file cannot also be a folder"
-			if !seal.Clash(prev.Name(), db.Name()) {
-				why = "they differ only by case, and with --plain-paths the repo would keep them as one file on macOS and Windows"
-			}
-			return nil, nil, fmt.Errorf("the databases %s and %s would be backed up as %s and %s, which clash because %s. Give one of them another name with --name NAME before its %s",
-				a.short(prev.String()), a.short(db.String()), prev.Name(), db.Name(), why, db.Flag())
+		names[i] = db.Name()
+	}
+	if i, j, ok := seal.FirstClash(names, !r.Format.EncryptPaths); ok {
+		prev, db := dbs[j], dbs[i]
+		if prev.String() == db.String() && prev.Name() == db.Name() {
+			return nil, nil, fmt.Errorf("the database %s is given twice. Give it once", a.short(db.String()))
 		}
+		if prev.Name() == db.Name() {
+			return nil, nil, fmt.Errorf("the databases %s and %s would both be backed up as %s. Give one of them another name with --name NAME before its %s",
+				a.short(prev.String()), a.short(db.String()), db.Name(), db.Flag())
+		}
+		why := "a file cannot also be a folder"
+		if !seal.Clash(prev.Name(), db.Name()) {
+			why = "they differ only by case, and with --plain-paths the repo would keep them as one file on macOS and Windows"
+		}
+		return nil, nil, fmt.Errorf("the databases %s and %s would be backed up as %s and %s, which clash because %s. Give one of them another name with --name NAME before its %s",
+			a.short(prev.String()), a.short(db.String()), prev.Name(), db.Name(), why, db.Flag())
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -207,10 +309,12 @@ func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Data
 		return nil, nil, err
 	}
 	cleanup = func() { os.RemoveAll(tmp) }
-	extra = make([]seal.Extra, len(dbs))
 	for i, db := range dbs {
 		dst := filepath.Join(tmp, strconv.Itoa(i))
 		meta, err := db.Copy(ctx, source.CopyOptions{Dst: dst, Key: key})
+		if skipGone && errors.Is(err, fs.ErrNotExist) && ctx.Err() == nil {
+			continue // cleanup removes any part of a copy it made
+		}
 		if err != nil {
 			cleanup()
 			switch {
@@ -221,7 +325,7 @@ func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Data
 			}
 			return nil, nil, fmt.Errorf("copying the database %s: %w", a.short(db.String()), err)
 		}
-		extra[i] = seal.Extra{Rel: db.Name(), Path: dst, Mode: meta.Mode, ModTime: meta.ModTime}
+		extra = append(extra, seal.Extra{Rel: db.Name(), Path: dst, Mode: meta.Mode, ModTime: meta.ModTime})
 	}
 	return extra, cleanup, nil
 }

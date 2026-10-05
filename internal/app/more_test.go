@@ -463,6 +463,25 @@ func TestSealCommandReportsSkipped(t *testing.T) {
 	}
 }
 
+// An empty SRC, as from an unset variable in a backup script, is refused
+// before the repo changes, instead of sealing an empty backup that removes
+// every file sealed before.
+func TestSealRefusesEmptySource(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	index, _ := os.ReadFile(filepath.Join(e.root, repo.IndexFile))
+	objects, _ := filepath.Glob(filepath.Join(e.root, repo.ObjectsDir, "*", "*"))
+	err := e.app.Seal(SealOptions{Src: "", Repo: e.root, Prune: true})
+	if err == nil || !strings.Contains(err.Error(), "SRC is empty") {
+		t.Fatalf("Seal: %v", err)
+	}
+	after, _ := os.ReadFile(filepath.Join(e.root, repo.IndexFile))
+	left, _ := filepath.Glob(filepath.Join(e.root, repo.ObjectsDir, "*", "*"))
+	if len(objects) == 0 || !bytes.Equal(index, after) || len(left) != len(objects) {
+		t.Fatalf("the repo changed: %d objects before, %d after", len(objects), len(left))
+	}
+}
+
 type failingGit struct{ fakeGit }
 
 func (failingGit) HookPath(string) (string, error)             { return "", errors.New("no git") }

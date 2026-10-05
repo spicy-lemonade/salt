@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/spicy-lemonade/salt/internal/proc"
 )
@@ -67,31 +69,68 @@ func (s *SQLite) Copy(ctx context.Context, o CopyOptions) (Meta, error) {
 // sqlite3 would create a new, empty database at a missing path and back that
 // up.
 func checkSQLite(path string) (wal bool, err error) {
-	// The type is checked before opening: opening a named pipe would wait
-	// forever for a writer.
-	fi, err := os.Stat(path)
+	head, size, err := readHead(path)
 	if err != nil {
 		return false, err
 	}
-	if !fi.Mode().IsRegular() {
+	if size == 0 {
+		return false, nil
+	}
+	if !hasHeader(head) {
 		return false, ErrNotSQLite
 	}
-	if fi.Size() == 0 {
+	return len(head) == headLen && head[18] == walVersion && head[19] == walVersion, nil
+}
+
+// IsSQLite reports whether path is a regular file that starts with SQLite's
+// header. Unlike checkSQLite, an empty file does not count, so only files
+// that are already databases are found. Anything but a regular file is not
+// a database.
+func IsSQLite(path string) (bool, error) {
+	head, _, err := readHead(path)
+	if errors.Is(err, ErrNotSQLite) {
 		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return hasHeader(head), nil
+}
+
+// headLen is how much of a database file readHead reads: the header string
+// and the bytes up to the WAL mode marks.
+const headLen = 20
+
+// readHead returns as much of the first headLen bytes of the regular file at
+// path as could be read, and its size. Anything but a regular file is
+// ErrNotSQLite. The type is checked before opening: opening a named pipe
+// would wait forever for a writer. A short file or a read error leaves fewer
+// bytes than the header, and the file is not taken for a database. sqlite3
+// would fail on the same read error.
+func readHead(path string) (head []byte, size int64, err error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, 0, ErrNotSQLite
+	}
+	if fi.Size() == 0 {
+		return nil, 0, nil
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return false, err
+		return nil, 0, err
 	}
 	defer f.Close()
-	// A short file or a read error leaves fewer bytes than the header, and the
-	// file is refused. sqlite3 would fail on the same read error.
-	head := make([]byte, 20)
+	head = make([]byte, headLen)
 	n, _ := io.ReadFull(f, head)
-	if n < len(sqliteHeader) || string(head[:len(sqliteHeader)]) != sqliteHeader {
-		return false, ErrNotSQLite
-	}
-	return n == len(head) && head[18] == walVersion && head[19] == walVersion, nil
+	return head[:n], fi.Size(), nil
+}
+
+// hasHeader reports whether head starts with SQLite's header.
+func hasHeader(head []byte) bool {
+	return len(head) >= len(sqliteHeader) && string(head[:len(sqliteHeader)]) == sqliteHeader
 }
 
 // CopySQLite writes a consistent copy of the SQLite database at live to dst
@@ -114,8 +153,9 @@ func CopySQLite(ctx context.Context, live, dst string) error {
 
 // sqliteCommand builds the sqlite3 command that backs up live into dst. It
 // runs in dst's folder, so the copy is named without a path. live must be an
-// absolute path, so it is never mistaken for an option and does not depend on
-// the folder sqlite3 runs in. -init skips the person's ~/.sqliterc.
+// absolute path, so it does not depend on the folder sqlite3 runs in. It is
+// opened as a URI (see sqliteURI), never mistaken for an option. -init skips
+// the person's ~/.sqliterc.
 //
 // The backup copies a few pages at a time and starts again whenever another
 // program saves to the database, so a large, busy database might never finish.
@@ -137,7 +177,20 @@ func sqliteCommand(ctx context.Context, live, dst string, wal bool) (*exec.Cmd, 
 		// A read starts the transaction; its output goes nowhere.
 		args = append(args, "-cmd", "BEGIN", "-cmd", "SELECT count(*) FROM sqlite_master")
 	}
-	cmd := exec.CommandContext(ctx, "sqlite3", append(args, live, ".backup "+name)...)
+	cmd := exec.CommandContext(ctx, "sqlite3", append(args, sqliteURI(live), ".backup "+name)...)
 	cmd.Dir = filepath.Dir(dst)
 	return cmd, nil
+}
+
+// sqliteURI returns the URI that opens the database at the absolute path
+// live with mode=rw. sqlite3 otherwise creates a database that is missing,
+// so one the tool deletes after salt checks it would be made again, empty,
+// in the tool's folder. Characters a URI gives a meaning to, such as ? and
+// %, are escaped.
+func sqliteURI(live string) string {
+	p := filepath.ToSlash(live)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p // a Windows path such as C:/x, which SQLite takes as /C:/x
+	}
+	return "file:" + (&url.URL{Path: p}).EscapedPath() + "?mode=rw"
 }
