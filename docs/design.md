@@ -788,8 +788,8 @@ It looks in the Hermes folder (`$HERMES_HOME` or `~/.hermes`) and in each
 Hermes profile. It names each file and folder it backs up, so nothing else
 in the Hermes folder is backed up. That leaves out its credential files
 (`.env`, `auth.json` and the credential vault, `vault.key` and
-`vault.json.enc`), the channel list (`channel_directory.json`), a cache
-Hermes builds again when it starts, logs, the `sessions` folder of JSON transcripts, caches, browser profiles, downloaded models, the
+`vault.json.enc`), the channel list (`channel_directory.json`, a cache
+Hermes builds again when it starts), logs, the `sessions` folder of JSON transcripts, caches, browser profiles, downloaded models, the
 `hermes-agent` source folder, Hermes's own backups and snapshots, and each
 board's workspaces and attachments. Inside the folders it backs up, the
 preset leaves out `.env` files, `auth.json`, the vault files, and the
