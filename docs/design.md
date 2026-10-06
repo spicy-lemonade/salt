@@ -821,6 +821,12 @@ permissions they had.
 whenever Hermes is used. See "Large files" for what that costs the backup
 repo, and back up once a day.
 
+Hermes keeps the newest 50 outputs of each scheduled job
+(`cron.output_retention`) and deletes older ones, so `cron/output` stays
+small. A deleted output drops out of the next backup and stays in history
+until prune removes it. With `cron.output_retention` set to 0 or less,
+Hermes keeps every output and so does the backup.
+
 Hermes sets `HERMES_HOME` to a profile's folder while it runs that profile.
 A `salt backup` started from inside Hermes, such as from one of its
 scheduled jobs, then sees only that profile, backs it up as the Hermes
