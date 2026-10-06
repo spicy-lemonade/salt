@@ -15,7 +15,7 @@
   "secrets": [
     {
       "files": ["config.yaml"],
-      "keys": ["*api_key", "*apikey", "*api-key", "*sync_key", "*secret", "*secret_key", "*access_key", "*private_key", "*password", "token", "*_token"]
+      "keys": ["*sync_key"]
     }
   ]
 }
