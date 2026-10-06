@@ -172,6 +172,18 @@ and anything past that goes into a second part.
 `salt doctor` warns about any file over 100 MiB in the repo, which only an
 older salt or a person could have put there.
 
+Every git command salt runs turns off git's compression and its search for
+similar objects to store as differences (`core.looseCompression=0`,
+`pack.compression=0` and `pack.window=0`). Encrypted data never shrinks, and
+age encrypts each file with a new random key, so two versions of a file share
+nothing. Both would only cost time, most of all when a large changed file is
+committed and pushed. The settings are passed on the command line, so they
+also reach the programs git starts during a push. Each kind of compression
+is set by name, because a person's own setting for one would otherwise
+override `core.compression`. Nothing in the repo changes, so existing repos
+get this at once, and git reads objects stored either way. git commands run
+by hand in the repo keep git's defaults.
+
 ## Keeping only recent backups
 
 Encrypted files can't be compressed against their earlier versions, so every
@@ -409,6 +421,7 @@ start another until the machine runs out of memory. These rules prevent that:
    banned.
 2. Salt refuses to start inside another salt (`SALT_ACTIVE`).
 3. Every git command salt runs has git hooks switched off (`internal/gitx`).
+   Compression and the delta search are off too (see "Large files").
 4. Only `internal/gitx`, `internal/source` and `internal/proc` may start other
    programs. `internal/proc` runs the ones salt may stop part way (`git clone`,
    `git ls-remote`, `git push`, `git commit`, `sqlite3` and `pg_dump`). It keeps at most 4 KiB of their error output and

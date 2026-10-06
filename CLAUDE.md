@@ -42,7 +42,7 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - `internal/repo`: backup repo layout, format file, recipients, public-file allowlist
 - `internal/check`: pre-commit plaintext detection
 - `internal/hook`: pre-commit hook script and installation
-- `internal/gitx`: the only way salt runs git (hooks always disabled)
+- `internal/gitx`: the only way salt runs git (hooks, compression and delta search always off)
 - `internal/source`: safe copies of live databases (runs `sqlite3` and `pg_dump`); each kind is a `Database` listed in `Kinds`; with `gitx` and `proc`, the only packages that start programs
 - `internal/proc`: runs the programs `gitx` and `source` may stop part way (`git clone`, `git ls-remote`, `git push`, `git commit`, `sqlite3`, `pg_dump`); caps their error output and how long a stopped one is waited for
 - `internal/preset`: presets for `salt backup`, one embedded JSON file per tool in `presets/`, read by the same tool-agnostic code; finds each preset's files and SQLite databases and leaves out files holding secrets

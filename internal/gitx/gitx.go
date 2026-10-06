@@ -3,7 +3,7 @@
 // salt must never trigger a hook: hooks run salt check, and a hook fired from
 // inside salt is exactly the recursion that crashed the first attempt. Every
 // git invocation goes through Args, which pins core.hooksPath to an empty
-// location.
+// location and turns off compression and the delta search.
 package gitx
 
 import (
@@ -18,13 +18,23 @@ import (
 	"time"
 )
 
-// noHooks is prepended to every git command salt runs.
-var noHooks = []string{"-c", "core.hooksPath=/dev/null"}
+// baseArgs is prepended to every git command salt runs. Hooks are off.
+// Compression and the delta search are off too: salt's files are
+// ciphertext, which never shrinks, so they would only cost time. Loose and
+// pack compression are set by name, since either one in the person's own
+// git config would override core.compression. git passes these on to the
+// programs it starts, such as pack-objects during a push.
+var baseArgs = []string{
+	"-c", "core.hooksPath=/dev/null",
+	"-c", "core.looseCompression=0",
+	"-c", "pack.compression=0",
+	"-c", "pack.window=0",
+}
 
 // Args returns the full git argument list for a command run in dir.
 func Args(dir string, args ...string) []string {
-	out := make([]string, 0, len(noHooks)+2+len(args))
-	out = append(out, noHooks...)
+	out := make([]string, 0, len(baseArgs)+2+len(args))
+	out = append(out, baseArgs...)
 	out = append(out, "-C", dir)
 	return append(out, args...)
 }
