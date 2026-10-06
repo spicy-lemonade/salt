@@ -55,10 +55,10 @@ func TestBuiltinPresetsCombine(t *testing.T) {
 	}
 }
 
-// DefaultSecretKeys holds patterns that path.Match can use, in lower case,
+// defaultSecretKeys holds patterns that path.Match can use, in lower case,
 // as settings are matched in lower case.
 func TestDefaultSecretKeysAreValid(t *testing.T) {
-	for _, k := range DefaultSecretKeys {
+	for _, k := range defaultSecretKeys {
 		if _, err := path.Match(k, ""); err != nil || k != strings.ToLower(k) {
 			t.Errorf("%q: %v", k, err)
 		}

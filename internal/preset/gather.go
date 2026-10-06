@@ -102,7 +102,7 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 	lookedIn := map[*Preset][]string{}
 	for _, p := range presets {
 		for _, s := range p.Secrets {
-			w.secrets = append(w.secrets, Secret{Files: s.Files, Keys: slices.Concat(DefaultSecretKeys, s.Keys)})
+			w.secrets = append(w.secrets, Secret{Files: s.Files, Keys: slices.Concat(defaultSecretKeys, s.Keys)})
 		}
 		var looked []string
 		for _, x := range p.Paths {
@@ -190,7 +190,7 @@ type walker struct {
 	// places inside it that are walked on their own.
 	spots map[string]*spot
 	// secrets holds every preset's secrets rules, each with
-	// DefaultSecretKeys added to its keys.
+	// defaultSecretKeys added to its keys.
 	secrets []Secret
 	// found records each preset that backs up something found.
 	found map[*Preset]bool

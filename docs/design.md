@@ -184,6 +184,26 @@ override `core.compression`. Nothing in the repo changes, so existing repos
 get this at once, and git reads objects stored either way. git commands run
 by hand in the repo keep git's defaults.
 
+Salt reuses a file's encrypted copy only when the whole file is unchanged.
+Any change to a large database, even to one page, encrypts all of it again,
+so every backup that changes it uploads its full compressed size again.
+Splitting it into parts does not help, since every part is new.
+
+`salt backup` and `salt prune` keep every backup made on the last
+`--keep-days` days with a change, so the number of copies a repo holds is
+the number of backups in that window, not the number of days. Hourly
+backups with the default 5 days can keep up to 120 copies of a database
+that changes every hour. A 2 GB database that compresses to about 700 MB
+and changes every day keeps about 3.5 GB in history with one backup a day.
+When a database is large, schedule one backup a day.
+
+GitHub refuses a push over 2 GB, recommends keeping a repo under 1 GB, and
+strongly recommends keeping it under 5 GB (its figures as of October 2026).
+A first backup holding several large databases can go over the push limit,
+and a few days of a large database that changes can go past the
+recommended size. Splitting files into parts helps with neither. This
+applies to any large database that changes often, whatever tool made it.
+
 ## Keeping only recent backups
 
 Encrypted files can't be compressed against their earlier versions, so every
@@ -756,8 +776,9 @@ every `MNEMOSYNE_*` variable into it), so it is checked for them.
 | `~/.mnemosyne/data` (or `$MNEMOSYNE_HOME/data`) | `mnemosyne-home/data/` |
 
 The `hermes` preset covers Hermes's own memory (`memories/MEMORY.md` and
-`memories/USER.md`), its persona (`SOUL.md`), its settings (`config.yaml`,
-`profile.yaml` and `channel_directory.json`), the chat users it has approved
+`memories/USER.md`), its persona (`SOUL.md`), its settings (`config.yaml`
+and `profile.yaml`), the names chosen for its chat channels
+(`channel_aliases.json`), the chat users it has approved
 (`pairing` and `platforms/pairing`), its scheduled jobs (`cron/jobs.json`,
 `cron/notepad.db` and `cron/output`), its databases (`state.db`, which holds
 its sessions and their messages, `kanban.db`, each board's
@@ -767,7 +788,8 @@ It looks in the Hermes folder (`$HERMES_HOME` or `~/.hermes`) and in each
 Hermes profile. It names each file and folder it backs up, so nothing else
 in the Hermes folder is backed up. That leaves out its credential files
 (`.env`, `auth.json` and the credential vault, `vault.key` and
-`vault.json.enc`), logs, the `sessions` folder of JSON transcripts, caches, browser profiles, downloaded models, the
+`vault.json.enc`), the channel list (`channel_directory.json`), a cache
+Hermes builds again when it starts, logs, the `sessions` folder of JSON transcripts, caches, browser profiles, downloaded models, the
 `hermes-agent` source folder, Hermes's own backups and snapshots, and each
 board's workspaces and attachments. Inside the folders it backs up, the
 preset leaves out `.env` files, `auth.json`, the vault files, and the
@@ -790,7 +812,14 @@ everything else.
 | `~/.hermes/profiles/<name>/<file or folder>` | `hermes/profiles/<name>/<file or folder>` |
 
 Hermes's credential files are not backed up, so after restoring Hermes, set
-up its API keys and logins again, as on a new machine.
+up its API keys and logins again, as on a new machine. The pairing folders
+can also hold pairing codes not yet used, which expire after an hour. They
+are encrypted like every other file and restored with the owner-only
+permissions they had.
+
+`state.db` holds every session, so it can grow to several GB and changes
+whenever Hermes is used. See "Large files" for what that costs the backup
+repo, and back up once a day.
 
 Hermes sets `HERMES_HOME` to a profile's folder while it runs that profile.
 A `salt backup` started from inside Hermes, such as from one of its
@@ -814,3 +843,6 @@ Touch ID, and switching recovery method.
 - OpenViking support. Its data format has not been checked yet.
 - Presets for more tools, such as OpenClaw, Honcho, Hindsight and Hermes's
   Holographic memory provider.
+- Reusing the unchanged chunks of a large file that changes often, so a
+  backup uploads only what changed
+  ([#44](https://github.com/spicy-lemonade/salt/issues/44)).

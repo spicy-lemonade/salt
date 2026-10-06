@@ -59,14 +59,14 @@ type Secret struct {
 	Files []string `json:"files"`
 	// Keys lists name patterns (path.Match) of settings that hold secrets,
 	// compared in lower case at any depth in the file, beyond those in
-	// DefaultSecretKeys, which are always checked.
+	// defaultSecretKeys, which are always checked.
 	Keys []string `json:"keys"`
 }
 
-// DefaultSecretKeys lists name patterns (path.Match) of settings that hold
+// defaultSecretKeys lists name patterns (path.Match) of settings that hold
 // secrets in most tools' settings files. They are checked in every file a
 // secrets rule names, with that rule's own keys.
-var DefaultSecretKeys = []string{
+var defaultSecretKeys = []string{
 	"*api_key", "*apikey", "*api-key", "*secret", "*secret_key", "*access_key", "*private_key",
 	"*password", "*passphrase", "token", "*_token", "*-token", "authorization",
 }

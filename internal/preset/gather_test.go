@@ -121,7 +121,7 @@ func TestGather(t *testing.T) {
 	}
 }
 
-// Every file a secrets rule names is checked for DefaultSecretKeys as well
+// Every file a secrets rule names is checked for defaultSecretKeys as well
 // as the rule's own keys, and a rule may name no keys of its own. A file no
 // rule names is never checked, and the preset itself is left as it was.
 func TestGatherDefaultSecretKeys(t *testing.T) {
