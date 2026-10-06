@@ -683,7 +683,10 @@ same code reads them all, so adding a tool means adding one file:
   below the setting, or a YAML alias, which salt does not follow), the file
   is left out and salt prints one line naming the file and the setting,
   never its value. Numbers, true or false, and null never count, so
-  `max_token: 512` is not taken for a secret. Secrets almost always mix
+  `max_token: 512` is not taken for a secret. Nor is a string that is only
+  `${NAME}`, which names the environment variable a secret is kept in, as
+  in `api_key: ${MODEL_API_KEY}`. A string with anything more, such as
+  `sk-${NAME}` or a default in `${NAME:-x}`, still counts. Secrets almost always mix
   letters and digits, so one that is only a number is unusual. When a
   setting named in `keys` holds a number and no text, the file is backed up,
   and salt prints a warning naming the file and the setting, never its
@@ -747,6 +750,38 @@ every `MNEMOSYNE_*` variable into it), so it is checked for them.
 | `$MNEMOSYNE_SHARED_DB_PATH` | `mnemosyne-shared.db` |
 | `~/.mnemosyne/data` (or `$MNEMOSYNE_HOME/data`) | `mnemosyne-home/data/` |
 
+The `hermes` preset covers Hermes's own memory (`memories/MEMORY.md` and
+`memories/USER.md`), its persona (`SOUL.md`), its settings (`config.yaml`,
+`profile.yaml` and `channel_directory.json`), its scheduled jobs
+(`cron/jobs.json`, `cron/notepad.db` and `cron/output`), its databases
+(`state.db`, `kanban.db`, each board's `kanban/boards/<board>/kanban.db` and
+`projects.db`), and its `skills`, `reference`, `skins` and `plans` folders.
+It looks in the Hermes folder (`$HERMES_HOME` or `~/.hermes`) and in each
+Hermes profile. It names each file and folder it backs up, so nothing else
+in the Hermes folder is backed up. That leaves out credentials (`.env`,
+`auth.json` and the credential vault, `vault.key` and `vault.json.enc`),
+logs, session transcripts, caches, browser profiles, downloaded models, the
+`hermes-agent` source folder, Hermes's own backups and snapshots, and each
+board's workspaces and attachments. Inside the folders it backs up, the
+preset leaves out `.env` files, `auth.json`, the vault files, and the
+Python and Node caches and packages a skill can hold (`__pycache__`,
+`node_modules`, `.venv` and the like), which are installed again when
+needed. Memory providers that keep their own database, such as Mnemosyne or
+Hermes's Holographic provider (`memory_store.db`), are not part of this
+preset. Mnemosyne has its own, and the two can be given together. Hermes's
+`config.yaml` can hold API keys and tokens, such as `model.api_key`, a
+`sudo_password` or a token in an MCP server's `env`, so it is checked for
+them. The usual `api_key: ${MODEL_API_KEY}` names a variable, not a key, so
+a file that holds only that is backed up.
+
+| On the machine | In the backup |
+|---|---|
+| `~/.hermes/<file or folder>` (or under `$HERMES_HOME`) | `hermes/<file or folder>` |
+| `~/.hermes/profiles/<name>/<file or folder>` | `hermes/profiles/<name>/<file or folder>` |
+
+Credentials are never backed up, so after restoring Hermes, set up its API
+keys and logins again, as on a new machine.
+
 Cron does not see variables set in the person's shell, so any of these the
 agent uses must be set in the cron line too, such as
 `HERMES_HOME=/srv/hermes /opt/homebrew/bin/salt backup --preset mnemosyne REPO`.
@@ -760,4 +795,5 @@ Touch ID, and switching recovery method.
 ## Still to build
 
 - OpenViking support. Its data format has not been checked yet.
-- Presets for more tools, such as Hermes, OpenClaw, Honcho and Hindsight.
+- Presets for more tools, such as OpenClaw, Honcho, Hindsight and Hermes's
+  Holographic memory provider.

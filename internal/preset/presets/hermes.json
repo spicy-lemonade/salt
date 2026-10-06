@@ -1,0 +1,51 @@
+{
+  "name": "hermes",
+  "about": "Hermes memory, persona, settings, skills and databases, in Hermes and each Hermes profile",
+  "paths": [
+    {"from": "${HERMES_HOME:-~/.hermes}/config.yaml", "to": "hermes/config.yaml"},
+    {"from": "${HERMES_HOME:-~/.hermes}/SOUL.md", "to": "hermes/SOUL.md"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profile.yaml", "to": "hermes/profile.yaml"},
+    {"from": "${HERMES_HOME:-~/.hermes}/channel_directory.json", "to": "hermes/channel_directory.json"},
+    {"from": "${HERMES_HOME:-~/.hermes}/memories/MEMORY.md", "to": "hermes/memories/MEMORY.md"},
+    {"from": "${HERMES_HOME:-~/.hermes}/memories/USER.md", "to": "hermes/memories/USER.md"},
+    {"from": "${HERMES_HOME:-~/.hermes}/cron/jobs.json", "to": "hermes/cron/jobs.json"},
+    {"from": "${HERMES_HOME:-~/.hermes}/cron/notepad.db", "to": "hermes/cron/notepad.db"},
+    {"from": "${HERMES_HOME:-~/.hermes}/cron/output", "to": "hermes/cron/output"},
+    {"from": "${HERMES_HOME:-~/.hermes}/state.db", "to": "hermes/state.db"},
+    {"from": "${HERMES_HOME:-~/.hermes}/kanban.db", "to": "hermes/kanban.db"},
+    {"from": "${HERMES_HOME:-~/.hermes}/kanban/boards/*/kanban.db", "to": "hermes/kanban/boards/*/kanban.db"},
+    {"from": "${HERMES_HOME:-~/.hermes}/projects.db", "to": "hermes/projects.db"},
+    {"from": "${HERMES_HOME:-~/.hermes}/skills", "to": "hermes/skills"},
+    {"from": "${HERMES_HOME:-~/.hermes}/reference", "to": "hermes/reference"},
+    {"from": "${HERMES_HOME:-~/.hermes}/skins", "to": "hermes/skins"},
+    {"from": "${HERMES_HOME:-~/.hermes}/plans", "to": "hermes/plans"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/config.yaml", "to": "hermes/profiles/*/config.yaml"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/SOUL.md", "to": "hermes/profiles/*/SOUL.md"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/profile.yaml", "to": "hermes/profiles/*/profile.yaml"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/channel_directory.json", "to": "hermes/profiles/*/channel_directory.json"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/memories/MEMORY.md", "to": "hermes/profiles/*/memories/MEMORY.md"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/memories/USER.md", "to": "hermes/profiles/*/memories/USER.md"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/cron/jobs.json", "to": "hermes/profiles/*/cron/jobs.json"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/cron/notepad.db", "to": "hermes/profiles/*/cron/notepad.db"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/cron/output", "to": "hermes/profiles/*/cron/output"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/state.db", "to": "hermes/profiles/*/state.db"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/kanban.db", "to": "hermes/profiles/*/kanban.db"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/kanban/boards/*/kanban.db", "to": "hermes/profiles/*/kanban/boards/*/kanban.db"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/projects.db", "to": "hermes/profiles/*/projects.db"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/skills", "to": "hermes/profiles/*/skills"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/reference", "to": "hermes/profiles/*/reference"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/skins", "to": "hermes/profiles/*/skins"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/plans", "to": "hermes/profiles/*/plans"}
+  ],
+  "skip": [
+    ".env", "*.env", "auth.json", "vault.key", "vault.json.enc",
+    "__pycache__", "*.pyc", "*.pyo", "node_modules", ".venv", "venv", "site-packages",
+    ".cache", ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache"
+  ],
+  "secrets": [
+    {
+      "files": ["config.yaml"],
+      "keys": ["*api_key", "*apikey", "*api-key", "key", "*secret", "*secret_key", "*access_key", "*private_key", "*password", "*passphrase", "token", "*_token", "*-token", "authorization"]
+    }
+  ]
+}

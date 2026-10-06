@@ -34,6 +34,24 @@ func TestBuiltinPresetsAreValid(t *testing.T) {
 	}
 }
 
+// Every built-in preset can be given with every other, so no two presets'
+// paths clash in the backup.
+func TestBuiltinPresetsCombine(t *testing.T) {
+	presets, err := GetAll(Names())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tos []string
+	for _, p := range presets {
+		for _, x := range p.Paths {
+			tos = append(tos, x.To)
+		}
+	}
+	if i, j, ok := seal.FirstClash(tos, true); ok {
+		t.Errorf("%s and %s clash", tos[j], tos[i])
+	}
+}
+
 func TestGetUnknownPreset(t *testing.T) {
 	_, err := Get("nope")
 	if !errors.Is(err, ErrUnknown) || !strings.Contains(err.Error(), `"nope"`) || !strings.Contains(err.Error(), Names()[0]) {

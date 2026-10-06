@@ -370,6 +370,21 @@ func TestSecretIn(t *testing.T) {
 		"api_key: [unclosed\n":                    "it could not be read as YAML to check it for secrets",
 		strings.Repeat("x", maxSecretsFile+1):     "it is too large to check for secrets",
 		strings.Repeat("a: 1\n", 10) + "\t- bad:": "it could not be read as YAML to check it for secrets",
+		// Only ${NAME} names where the secret is kept. Anything more may
+		// hold one, as a default after :- can.
+		"api_key: ${MODEL_API_KEY}\n":  "",
+		"api_key: \"${_K2}\"\n":        "",
+		"token:\n  - ${A}\n  - ${B}\n": "",
+		"api_key: sk-${X}\n":           "its setting api_key holds a secret",
+		"api_key: ${X}-sk\n":           "its setting api_key holds a secret",
+		"api_key: ${X:-sk-1}\n":        "its setting api_key holds a secret",
+		"api_key: ${X}${Y}\n":          "its setting api_key holds a secret",
+		"api_key: $X\n":                "its setting api_key holds a secret",
+		"api_key: ${1X}\n":             "its setting api_key holds a secret",
+		"api_key: \" ${X}\"\n":         "its setting api_key holds a secret",
+		"api_key: |\n  ${X}\n":         "its setting api_key holds a secret",
+		"api_key: !!binary JHtYfQ==\n": "its setting api_key holds a secret",
+		"token:\n  - ${A}\n  - sk-1\n": "its setting token holds a secret",
 	} {
 		p := filepath.Join(dir, "f.yaml")
 		write(t, p, content)

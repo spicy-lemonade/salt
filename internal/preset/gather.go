@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -417,14 +418,19 @@ func hasNumber(n *yaml.Node) bool {
 	return slices.ContainsFunc(n.Content, hasNumber)
 }
 
+// envRef matches a string that is only ${NAME}, which names the environment
+// variable a secret is kept in, not the secret.
+var envRef = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
+
 // hasValue reports whether n holds text that could be a secret: a string
 // that is not empty, at any depth. A number, true or false, or null is a
-// setting, never a secret, so max_token: 512 is not taken for one. An alias
-// counts, since what it points to is not followed.
+// setting, never a secret, so max_token: 512 is not taken for one. Nor is a
+// string that is only ${NAME}, though one with anything more, such as a
+// default, is. An alias counts, since what it points to is not followed.
 func hasValue(n *yaml.Node) bool {
 	switch n.Kind {
 	case yaml.ScalarNode:
-		return n.Value != "" && (n.Tag == "!!str" || n.Tag == "!!binary")
+		return n.Value != "" && (n.Tag == "!!binary" || n.Tag == "!!str" && !envRef.MatchString(n.Value))
 	case yaml.AliasNode:
 		return true
 	case yaml.MappingNode:

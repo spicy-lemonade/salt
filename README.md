@@ -123,6 +123,7 @@ Run `crontab -e` and add this line to run it every day at 6am. Use the path that
 
 | Preset | What it backs up |
 |---|---|
+| `hermes` | [Hermes](https://github.com/NousResearch/hermes-agent) memory (`MEMORY.md` and `USER.md`), persona, settings, skills and databases, in Hermes and each of its profiles. API keys and logins are left out |
 | `mnemosyne` | [Mnemosyne](https://github.com/mnemosyne-oss/mnemosyne) memory, on its own or inside Hermes and its profiles |
 
 Each preset is a small JSON file in [`internal/preset/presets`](internal/preset/presets), and the [design doc](docs/design.md#presets) explains the format and what each one backs up. To add one, copy an existing file, change the paths and open a pull request. If a tool's folders are set by environment variables, set them in the cron line too, since cron doesn't see your shell's variables.
