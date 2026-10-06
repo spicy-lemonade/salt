@@ -127,7 +127,8 @@ func TestBackupMnemosyne(t *testing.T) {
 // with its newest rows only in the -wal file. It leaves out credentials,
 // logs, sessions, caches, downloaded models, the source checkout, what is
 // not on the preset's list, and a profile's settings file holding an API
-// key, but backs up one that only names the variable its key is kept in.
+// key, but backs up those that only name the variable a key is kept in,
+// as ${NAME} or ${env:NAME}.
 // The restored files are the same and the restored databases open and hold
 // every row. A second run with nothing changed makes no commit. With
 // --preset mnemosyne too, both are backed up together, and HERMES_HOME
@@ -154,27 +155,30 @@ func TestBackupHermes(t *testing.T) {
 	// Each file backed up, by its path in the backup, which is its path
 	// under the home folder without the leading dot.
 	kept := map[string]string{
-		"hermes/config.yaml":                        "model:\n  default: hermes-4\n  api_key: ${MODEL_API_KEY}\n",
-		"hermes/SOUL.md":                            "You are Hermes.",
-		"hermes/profile.yaml":                       "description: the main agent\n",
-		"hermes/channel_directory.json":             `{"general": "123"}`,
-		"hermes/memories/MEMORY.md":                 "The user deploys on Fridays.",
-		"hermes/memories/USER.md":                   "Prefers short answers.",
-		"hermes/cron/jobs.json":                     `{"jobs": []}`,
-		"hermes/cron/output/daily/run.md":           "a job's output",
-		"hermes/skills/notes/SKILL.md":              "a skill",
-		"hermes/skills/.archive/old/SKILL.md":       "an archived skill",
-		"hermes/reference/api.md":                   "a reference",
-		"hermes/skins/dark.yaml":                    "colour: black\n",
-		"hermes/plans/launch.md":                    "a plan",
-		"hermes/profiles/coder/SOUL.md":             "You write code.",
-		"hermes/profiles/coder/profile.yaml":        "description: writes code\n",
-		"hermes/profiles/coder/memories/MEMORY.md":  "The repo uses Go.",
-		"hermes/profiles/coder/skills/go/SKILL.md":  "a Go skill",
-		"hermes/profiles/writer/config.yaml":        "display:\n  skin: dark\n",
-		"hermes/profiles/writer/memories/USER.md":   "Writes in British English.",
-		"hermes/profiles/writer/cron/output/r.md":   "a profile job's output",
-		"hermes/profiles/writer/plans/novel/ch1.md": "a profile's plan",
+		"hermes/config.yaml":  "model:\n  default: hermes-4\n  api_key: ${MODEL_API_KEY}\n",
+		"hermes/SOUL.md":      "You are Hermes.",
+		"hermes/profile.yaml": "description: the main agent\n",
+		"hermes/platforms/pairing/telegram-approved.json":             `{"1": {}}`,
+		"hermes/pairing/discord-approved.json":                        `{"2": {}}`,
+		"hermes/profiles/coder/platforms/pairing/slack-approved.json": `{"3": {}}`,
+		"hermes/channel_directory.json":                               `{"general": "123"}`,
+		"hermes/memories/MEMORY.md":                                   "The user deploys on Fridays.",
+		"hermes/memories/USER.md":                                     "Prefers short answers.",
+		"hermes/cron/jobs.json":                                       `{"jobs": []}`,
+		"hermes/cron/output/daily/run.md":                             "a job's output",
+		"hermes/skills/notes/SKILL.md":                                "a skill",
+		"hermes/skills/.archive/old/SKILL.md":                         "an archived skill",
+		"hermes/reference/api.md":                                     "a reference",
+		"hermes/skins/dark.yaml":                                      "colour: black\n",
+		"hermes/plans/launch.md":                                      "a plan",
+		"hermes/profiles/coder/SOUL.md":                               "You write code.",
+		"hermes/profiles/coder/profile.yaml":                          "description: writes code\n",
+		"hermes/profiles/coder/memories/MEMORY.md":                    "The repo uses Go.",
+		"hermes/profiles/coder/skills/go/SKILL.md":                    "a Go skill",
+		"hermes/profiles/writer/config.yaml":                          "display:\n  skin: dark\nmodel:\n  api_key: ${env:WRITER_KEY}\n",
+		"hermes/profiles/writer/memories/USER.md":                     "Writes in British English.",
+		"hermes/profiles/writer/cron/output/r.md":                     "a profile job's output",
+		"hermes/profiles/writer/plans/novel/ch1.md":                   "a profile's plan",
 	}
 	for rel, content := range kept {
 		write(t, filepath.Join(e.home, "."+rel), content)
@@ -184,7 +188,8 @@ func TestBackupHermes(t *testing.T) {
 		"logs/agent.log", "sessions/s1.json", "cache/images/x.png", "browser-profile/Cookies",
 		"hermes-agent/README.md", "models/model.gguf", "state-snapshots/s/state.db", "backups/b.zip",
 		"kanban/boards/website/workspaces/t1/notes.md", "kanban/boards/website/logs/w.log",
-		"skills/notes/.env", "skills/notes/prod.env", "skills/notes/__pycache__/x.pyc",
+		"channel_aliases.json", "cron/executions.db", "response_store.db", "verification_evidence.db",
+		"skills/notes/.env", "skills/notes/prod.env", "skills/notes/auth.json", "skills/notes/vault.key", "skills/notes/vault.json.enc", "skills/notes/__pycache__/x.pyc",
 		"skills/notes/node_modules/x/index.js", "skills/notes/.venv/lib/x.py", "skills/notes/.cache/x",
 		"profiles/coder/.env", "profiles/coder/auth.json", "profiles/coder/logs/x.log",
 		"profiles/.deleted/old/SOUL.md",

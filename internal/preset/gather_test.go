@@ -3,6 +3,7 @@ package preset
 import (
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -117,6 +118,48 @@ func TestGather(t *testing.T) {
 	}
 	if want := []string{"tool", "profiles/work/tool", "single.txt"}; !slices.Equal(f.Places, want) {
 		t.Errorf("places = %v, want %v", f.Places, want)
+	}
+}
+
+// Every file a secrets rule names is checked for DefaultSecretKeys as well
+// as the rule's own keys, and a rule may name no keys of its own. A file no
+// rule names is never checked, and the preset itself is left as it was.
+func TestGatherDefaultSecretKeys(t *testing.T) {
+	home := t.TempDir()
+	p, err := Parse("t", []byte(`{"name": "t", "paths": [{"from": "~/tool", "to": "tool"}],
+		"secrets": [{"files": ["a.yaml"], "keys": ["custom"]}, {"files": ["b.yaml"]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := filepath.Join(home, "tool")
+	write(t, filepath.Join(tool, "a.yaml"), "password: hunter2\n")
+	write(t, filepath.Join(tool, "sub", "a.yaml"), "custom: x\n")
+	write(t, filepath.Join(tool, "b.yaml"), "client_secret: x\n")
+	write(t, filepath.Join(tool, "sub", "b.yaml"), "model: x\napi_key: ${env:K}\n")
+	write(t, filepath.Join(tool, "c.yaml"), "password: hunter2\n")
+
+	f, err := envOf(home, nil).Gather([]*Preset{p}, t.TempDir(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files, _ := rels(f); !slices.Equal(files, []string{"tool/c.yaml", "tool/sub/b.yaml"}) {
+		t.Errorf("files = %v", files)
+	}
+	why := map[string]string{}
+	for _, l := range f.LeftOut {
+		rel, _ := filepath.Rel(tool, l.Path)
+		why[filepath.ToSlash(rel)] = l.Why
+	}
+	want := map[string]string{
+		"a.yaml":     "its setting password holds a secret",
+		"sub/a.yaml": "its setting custom holds a secret",
+		"b.yaml":     "its setting client_secret holds a secret",
+	}
+	if !maps.Equal(why, want) {
+		t.Errorf("left out = %v, want %v", why, want)
+	}
+	if !slices.Equal(p.Secrets[0].Keys, []string{"custom"}) || p.Secrets[1].Keys != nil {
+		t.Errorf("the preset's keys became %v and %v", p.Secrets[0].Keys, p.Secrets[1].Keys)
 	}
 }
 
@@ -385,6 +428,16 @@ func TestSecretIn(t *testing.T) {
 		"api_key: |\n  ${X}\n":         "its setting api_key holds a secret",
 		"api_key: !!binary JHtYfQ==\n": "its setting api_key holds a secret",
 		"token:\n  - ${A}\n  - sk-1\n": "its setting token holds a secret",
+		"api_key: ${env:MODEL_KEY}\n":  "",
+		"api_key: \"${env:_K2}\"\n":    "",
+		"api_key: ${env:}\n":           "its setting api_key holds a secret",
+		"api_key: \"${env: K}\"\n":     "its setting api_key holds a secret",
+		"api_key: ${ K }\n":            "its setting api_key holds a secret",
+		"api_key: ${ENV:K}\n":          "its setting api_key holds a secret",
+		"api_key: ${env:K:-sk-1}\n":    "its setting api_key holds a secret",
+		"api_key: ${env:env:K}\n":      "its setting api_key holds a secret",
+		"api_key: ${bitwarden:K}\n":    "its setting api_key holds a secret",
+		"api_key: ${vault:a/b}\n":      "its setting api_key holds a secret",
 	} {
 		p := filepath.Join(dir, "f.yaml")
 		write(t, p, content)

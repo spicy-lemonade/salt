@@ -6,6 +6,8 @@
     {"from": "${HERMES_HOME:-~/.hermes}/SOUL.md", "to": "hermes/SOUL.md"},
     {"from": "${HERMES_HOME:-~/.hermes}/profile.yaml", "to": "hermes/profile.yaml"},
     {"from": "${HERMES_HOME:-~/.hermes}/channel_directory.json", "to": "hermes/channel_directory.json"},
+    {"from": "${HERMES_HOME:-~/.hermes}/pairing", "to": "hermes/pairing"},
+    {"from": "${HERMES_HOME:-~/.hermes}/platforms/pairing", "to": "hermes/platforms/pairing"},
     {"from": "${HERMES_HOME:-~/.hermes}/memories/MEMORY.md", "to": "hermes/memories/MEMORY.md"},
     {"from": "${HERMES_HOME:-~/.hermes}/memories/USER.md", "to": "hermes/memories/USER.md"},
     {"from": "${HERMES_HOME:-~/.hermes}/cron/jobs.json", "to": "hermes/cron/jobs.json"},
@@ -23,6 +25,8 @@
     {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/SOUL.md", "to": "hermes/profiles/*/SOUL.md"},
     {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/profile.yaml", "to": "hermes/profiles/*/profile.yaml"},
     {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/channel_directory.json", "to": "hermes/profiles/*/channel_directory.json"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/pairing", "to": "hermes/profiles/*/pairing"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/platforms/pairing", "to": "hermes/profiles/*/platforms/pairing"},
     {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/memories/MEMORY.md", "to": "hermes/profiles/*/memories/MEMORY.md"},
     {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/memories/USER.md", "to": "hermes/profiles/*/memories/USER.md"},
     {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/cron/jobs.json", "to": "hermes/profiles/*/cron/jobs.json"},
@@ -45,7 +49,7 @@
   "secrets": [
     {
       "files": ["config.yaml"],
-      "keys": ["*api_key", "*apikey", "*api-key", "key", "*secret", "*secret_key", "*access_key", "*private_key", "*password", "*passphrase", "token", "*_token", "*-token", "authorization"]
+      "keys": ["key"]
     }
   ]
 }

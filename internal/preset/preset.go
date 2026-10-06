@@ -58,8 +58,17 @@ type Secret struct {
 	// read as YAML, which includes JSON.
 	Files []string `json:"files"`
 	// Keys lists name patterns (path.Match) of settings that hold secrets,
-	// compared in lower case at any depth in the file.
+	// compared in lower case at any depth in the file, beyond those in
+	// DefaultSecretKeys, which are always checked.
 	Keys []string `json:"keys"`
+}
+
+// DefaultSecretKeys lists name patterns (path.Match) of settings that hold
+// secrets in most tools' settings files. They are checked in every file a
+// secrets rule names, with that rule's own keys.
+var DefaultSecretKeys = []string{
+	"*api_key", "*apikey", "*api-key", "*secret", "*secret_key", "*access_key", "*private_key",
+	"*password", "*passphrase", "token", "*_token", "*-token", "authorization",
 }
 
 // ErrUnknown means no preset has the name asked for.
@@ -145,8 +154,8 @@ func (p *Preset) check(name string) error {
 		}
 	}
 	for _, s := range p.Secrets {
-		if len(s.Files) == 0 || len(s.Keys) == 0 {
-			return errors.New("a secrets rule needs files and keys")
+		if len(s.Files) == 0 {
+			return errors.New("a secrets rule needs files")
 		}
 		for _, k := range s.Keys {
 			if k != strings.ToLower(k) {
