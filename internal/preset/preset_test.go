@@ -2,6 +2,7 @@ package preset
 
 import (
 	"errors"
+	"path"
 	"slices"
 	"strings"
 	"testing"
@@ -30,6 +31,36 @@ func TestBuiltinPresetsAreValid(t *testing.T) {
 		}
 		if i, j, ok := seal.FirstClash(tos, true); ok {
 			t.Errorf("%s: %s and %s clash", n, tos[j], tos[i])
+		}
+	}
+}
+
+// Every built-in preset can be given with every other, so no two presets'
+// paths clash in the backup. This is a smoke test: a * is compared as it is,
+// not as each name it can match, and it refuses one path inside another,
+// which Gather allows.
+func TestBuiltinPresetsCombine(t *testing.T) {
+	presets, err := GetAll(Names())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tos []string
+	for _, p := range presets {
+		for _, x := range p.Paths {
+			tos = append(tos, x.To)
+		}
+	}
+	if i, j, ok := seal.FirstClash(tos, true); ok {
+		t.Errorf("%s and %s clash", tos[j], tos[i])
+	}
+}
+
+// defaultSecretKeys holds patterns that path.Match can use, in lower case,
+// as settings are matched in lower case.
+func TestDefaultSecretKeysAreValid(t *testing.T) {
+	for _, k := range defaultSecretKeys {
+		if _, err := path.Match(k, ""); err != nil || k != strings.ToLower(k) {
+			t.Errorf("%q: %v", k, err)
 		}
 	}
 }
@@ -65,7 +96,7 @@ func TestParseRefusesBadPresets(t *testing.T) {
 		"${A:-$B}/a: a variable":   `{"name": "t", "paths": [{"from": "${A:-$B}/a", "to": "a"}]}`,
 		"${A:-/x/*/y}: a variable": `{"name": "t", "paths": [{"from": "${A:-/x/*/y}", "to": "a/*"}]}`,
 		"/a/${B: a variable":       `{"name": "t", "paths": [{"from": "/a/${B", "to": "a"}]}`,
-		"needs files and keys":     `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"]}]}`,
+		"rule needs files":         `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"keys": ["k"]}]}`,
 		`bad pattern "["`:          `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "skip": ["["]}`,
 		`bad pattern "[k"`:         `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["[k"]}]}`,
 		// A misspelt field would otherwise be dropped, and with it a rule.

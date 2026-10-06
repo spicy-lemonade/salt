@@ -28,8 +28,11 @@ type Place struct {
 	Real string // Abs with its symlinks followed
 }
 
+// varName matches an environment variable's name.
+const varName = `[A-Za-z_][A-Za-z0-9_]*`
+
 // variable matches ${VAR} and ${VAR:-DEFAULT}.
-var variable = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}`)
+var variable = regexp.MustCompile(`\$\{(` + varName + `)(:-([^}]*))?\}`)
 
 // expand returns template with its variables and leading ~ filled in. ok is
 // false when a variable without a default is unset or empty, or ~ is used

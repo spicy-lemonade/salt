@@ -184,6 +184,26 @@ override `core.compression`. Nothing in the repo changes, so existing repos
 get this at once, and git reads objects stored either way. git commands run
 by hand in the repo keep git's defaults.
 
+Salt reuses a file's encrypted copy only when the whole file is unchanged.
+Any change to a large database, even to one page, encrypts all of it again,
+so every backup that changes it uploads its full compressed size again.
+Splitting it into parts does not help, since every part is new.
+
+`salt backup` and `salt prune` keep every backup made on the last
+`--keep-days` days with a change, so the number of copies a repo holds is
+the number of backups in that window, not the number of days. Hourly
+backups with the default 5 days can keep up to 120 copies of a database
+that changes every hour. A 2 GB database that compresses to about 700 MB
+and changes every day keeps about 3.5 GB in history with one backup a day.
+When a database is large, schedule one backup a day.
+
+GitHub refuses a push over 2 GB, recommends keeping a repo under 1 GB, and
+strongly recommends keeping it under 5 GB (its figures as of October 2026).
+A first backup holding several large databases can go over the push limit,
+and a few days of a large database that changes can go past the
+recommended size. Splitting files into parts helps with neither. This
+applies to any large database that changes often, whatever tool made it.
+
 ## Keeping only recent backups
 
 Encrypted files can't be compressed against their earlier versions, so every
@@ -659,7 +679,7 @@ same code reads them all, so adding a tool means adding one file:
     {"from": "${TOOL_HOME:-~/.tool}/profiles/*/data", "to": "tool/profiles/*/data"}
   ],
   "skip": ["*.log", "cache"],
-  "secrets": [{"files": ["config.yaml"], "keys": ["*api_key", "*token"]}]
+  "secrets": [{"files": ["config.yaml"], "keys": ["*sync_key"]}]
 }
 ```
 
@@ -678,14 +698,22 @@ same code reads them all, so adding a tool means adding one file:
 - `secrets` lists files that may hold secrets, and the settings in them that
   do. Such a file is read as YAML (which includes JSON), every document in
   it, and every setting at any depth is checked, its name in lower case, so
-  `keys` are written in lower case too. If
-  one named in `keys` holds text (a string that is not empty, at any depth
+  `keys` are written in lower case too. Salt always checks the settings most
+  tools keep secrets in (`*api_key`, `*apikey`, `*api-key`, `*secret`,
+  `*secret_key`, `*access_key`, `*private_key`, `*password`, `*passphrase`,
+  `token`, `*_token`, `*-token` and `authorization`), and `keys` adds the
+  tool's own, so it can be left out. If
+  one of these holds text (a string that is not empty, at any depth
   below the setting, or a YAML alias, which salt does not follow), the file
   is left out and salt prints one line naming the file and the setting,
   never its value. Numbers, true or false, and null never count, so
-  `max_token: 512` is not taken for a secret. Secrets almost always mix
+  `max_token: 512` is not taken for a secret. Nor is a string that is only
+  `${NAME}` or `${env:NAME}`, which names the environment variable a secret
+  is kept in, as in `api_key: ${MODEL_API_KEY}`. A string with anything
+  more, such as `sk-${NAME}`, a default in `${NAME:-x}` or another source in
+  `${vault:x}`, still counts. Secrets almost always mix
   letters and digits, so one that is only a number is unusual. When a
-  setting named in `keys` holds a number and no text, the file is backed up,
+  setting checked holds a number and no text, the file is backed up,
   and salt prints a warning naming the file and the setting, never its
   value, saying to keep it in an environment variable if it is a secret.
   A file that
@@ -747,6 +775,65 @@ every `MNEMOSYNE_*` variable into it), so it is checked for them.
 | `$MNEMOSYNE_SHARED_DB_PATH` | `mnemosyne-shared.db` |
 | `~/.mnemosyne/data` (or `$MNEMOSYNE_HOME/data`) | `mnemosyne-home/data/` |
 
+The `hermes` preset covers Hermes's own memory (`memories/MEMORY.md` and
+`memories/USER.md`), its persona (`SOUL.md`), its settings (`config.yaml`
+and `profile.yaml`), the names chosen for its chat channels
+(`channel_aliases.json`), the chat users it has approved
+(`pairing` and `platforms/pairing`), its scheduled jobs (`cron/jobs.json`,
+`cron/notepad.db` and `cron/output`), its databases (`state.db`, which holds
+its sessions and their messages, `kanban.db`, each board's
+`kanban/boards/<board>/kanban.db` and `projects.db`), and its `skills`,
+`reference`, `skins` and `plans` folders.
+It looks in the Hermes folder (`$HERMES_HOME` or `~/.hermes`) and in each
+Hermes profile. It names each file and folder it backs up, so nothing else
+in the Hermes folder is backed up. That leaves out its credential files
+(`.env`, `auth.json` and the credential vault, `vault.key` and
+`vault.json.enc`), the channel list (`channel_directory.json`, a cache
+Hermes builds again when it starts), logs, the `sessions` folder of JSON transcripts, caches, browser profiles, downloaded models, the
+`hermes-agent` source folder, Hermes's own backups and snapshots, and each
+board's workspaces and attachments. Inside the folders it backs up, the
+preset leaves out `.env` files, `auth.json`, the vault files, and the
+Python and Node caches and packages a skill can hold (`__pycache__`,
+`node_modules`, `.venv` and the like), which are installed again when
+needed. Memory providers that keep their own database, such as Mnemosyne or
+Hermes's Holographic provider (`memory_store.db`), are not part of this
+preset. Mnemosyne has its own, and the two can be given together. Hermes's
+`config.yaml` can hold API keys and tokens, such as `model.api_key`, a
+`sudo_password` or a token in an MCP server's `env`, so it is checked for
+them, with `key` checked as well as salt's usual settings. The usual
+`api_key: ${MODEL_API_KEY}` or `${env:MODEL_API_KEY}` names a variable, not
+a key, so a file that holds only that is backed up. Other files are not
+checked, so a key a skill keeps in its own file is backed up, encrypted like
+everything else.
+
+| On the machine | In the backup |
+|---|---|
+| `~/.hermes/<file or folder>` (or under `$HERMES_HOME`) | `hermes/<file or folder>` |
+| `~/.hermes/profiles/<name>/<file or folder>` | `hermes/profiles/<name>/<file or folder>` |
+
+Hermes's credential files are not backed up, so after restoring Hermes, set
+up its API keys and logins again, as on a new machine. The pairing folders
+can also hold pairing codes not yet used, which expire after an hour. They
+are encrypted like every other file and restored with the owner-only
+permissions they had.
+
+`state.db` holds every session, so it can grow to several GB and changes
+whenever Hermes is used. See "Large files" for what that costs the backup
+repo, and back up once a day.
+
+Hermes keeps the newest 50 outputs of each scheduled job
+(`cron.output_retention`) and deletes older ones, so `cron/output` stays
+small. A deleted output drops out of the next backup and stays in history
+until prune removes it. With `cron.output_retention` set to 0 or less,
+Hermes keeps every output and so does the backup.
+
+Hermes sets `HERMES_HOME` to a profile's folder while it runs that profile.
+A `salt backup` started from inside Hermes, such as from one of its
+scheduled jobs, then sees only that profile, backs it up as the Hermes
+folder, and drops the rest from the backup, naming each place that went
+missing. Run `salt backup` from cron or another scheduler outside Hermes,
+with `HERMES_HOME` unset or set to the main Hermes folder.
+
 Cron does not see variables set in the person's shell, so any of these the
 agent uses must be set in the cron line too, such as
 `HERMES_HOME=/srv/hermes /opt/homebrew/bin/salt backup --preset mnemosyne REPO`.
@@ -760,4 +847,8 @@ Touch ID, and switching recovery method.
 ## Still to build
 
 - OpenViking support. Its data format has not been checked yet.
-- Presets for more tools, such as Hermes, OpenClaw, Honcho and Hindsight.
+- Presets for more tools, such as OpenClaw, Honcho, Hindsight and Hermes's
+  Holographic memory provider.
+- Reusing the unchanged chunks of a large file that changes often, so a
+  backup uploads only what changed
+  ([#44](https://github.com/spicy-lemonade/salt/issues/44)).

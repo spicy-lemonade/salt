@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -100,7 +101,9 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 	var spots []*spot
 	lookedIn := map[*Preset][]string{}
 	for _, p := range presets {
-		w.secrets = append(w.secrets, p.Secrets...)
+		for _, s := range p.Secrets {
+			w.secrets = append(w.secrets, Secret{Files: s.Files, Keys: slices.Concat(defaultSecretKeys, s.Keys)})
+		}
 		var looked []string
 		for _, x := range p.Paths {
 			if where, ok := e.expand(x.From); ok {
@@ -186,7 +189,8 @@ type walker struct {
 	// spots holds every spot by its real path, so a walk leaves out the
 	// places inside it that are walked on their own.
 	spots map[string]*spot
-	// secrets holds every preset's secrets rules.
+	// secrets holds every preset's secrets rules, each with
+	// defaultSecretKeys added to its keys.
 	secrets []Secret
 	// found records each preset that backs up something found.
 	found map[*Preset]bool
@@ -417,14 +421,26 @@ func hasNumber(n *yaml.Node) bool {
 	return slices.ContainsFunc(n.Content, hasNumber)
 }
 
+// envRef matches a string that is only ${NAME} or ${env:NAME}, which names
+// the environment variable a secret is kept in, not the secret.
+var envRef = regexp.MustCompile(`^\$\{(env:)?` + varName + `\}$`)
+
 // hasValue reports whether n holds text that could be a secret: a string
 // that is not empty, at any depth. A number, true or false, or null is a
-// setting, never a secret, so max_token: 512 is not taken for one. An alias
-// counts, since what it points to is not followed.
+// setting, never a secret, so max_token: 512 is not taken for one. Nor is a
+// string that is only ${NAME} or ${env:NAME}, though one with anything more,
+// such as a default, is. An alias counts, since what it points to is not
+// followed.
 func hasValue(n *yaml.Node) bool {
 	switch n.Kind {
 	case yaml.ScalarNode:
-		return n.Value != "" && (n.Tag == "!!str" || n.Tag == "!!binary")
+		switch n.Tag {
+		case "!!binary":
+			return n.Value != ""
+		case "!!str":
+			return n.Value != "" && !envRef.MatchString(n.Value)
+		}
+		return false
 	case yaml.AliasNode:
 		return true
 	case yaml.MappingNode:

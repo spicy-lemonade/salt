@@ -109,7 +109,7 @@ go test ./internal/seal -run TestRoundTrip
 - Decided out of scope is Touch ID gating, and switching recovery method from the 12 word passphrase to the user chosen passphrase or vice versa.
 - `salt seal --sqlite DB` makes a safe copy of a live SQLite database itself (`internal/source` runs `sqlite3 .backup`). `salt seal --postgres CONN` (or `--postgres-env VAR`) dumps a Postgres database as plain SQL with `pg_dump`, with the password passed in `PGPASSWORD` and never shown. See `docs/design.md`, "Databases".
 - `salt backup --preset NAME REPO` gathers what the presets name, seals it (the repo then holds only that), commits with hooks off after running the `salt check` logic in-process, prunes and pushes with `--force-with-lease`. It prints nothing on success. See `docs/design.md`, "One-command backup".
-- Not yet built: OpenViking support, and presets other than `mnemosyne` (Hermes, OpenClaw, Honcho, Hindsight).
+- Not yet built: OpenViking support, and presets other than `mnemosyne` and `hermes` (OpenClaw, Honcho, Hindsight, Hermes's Holographic memory provider).
 
 ### Agent contributing rules
 
