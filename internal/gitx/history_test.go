@@ -102,7 +102,7 @@ func TestHistoryAnswers(t *testing.T) {
 	wantCalls := []string{
 		"for-each-ref --format=%(refname)",
 		"reflog expire --expire=now --expire-unreachable=now HEAD refs/heads/main refs/remotes/origin/main",
-		"-c pack.window=0 -c pack.depth=0 -c gc.auto=0 gc --prune=now --quiet",
+		"-c gc.auto=0 gc --prune=now --quiet",
 	}
 	if !slices.Equal(f.calls, wantCalls) {
 		t.Errorf("ReclaimSpace ran\n%q\nwant\n%q", f.calls, wantCalls)
@@ -149,7 +149,7 @@ func TestHistoryGitFailures(t *testing.T) {
 		{"update-ref", func() error { return UpdateRef("/repo", "refs/heads/main", "b", "a", "why") }, 1},
 		{"for-each-ref", func() error { return ReclaimSpace("/repo") }, 1},
 		{"reflog expire", func() error { return ReclaimSpace("/repo") }, 2},
-		{"-c pack.window=0", func() error { return ReclaimSpace("/repo") }, 3},
+		{"-c gc.auto=0", func() error { return ReclaimSpace("/repo") }, 3},
 	} {
 		t.Run(tt.fail, func(t *testing.T) {
 			f := &fakeGit{fail: tt.fail}

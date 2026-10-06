@@ -167,8 +167,8 @@ func UpdateRef(dir, ref, newSHA, oldSHA, reason string) error {
 // ReclaimSpace deletes objects no longer reachable from any ref. It first
 // empties the reflogs, which would otherwise keep dropped commits for 30 to
 // 90 days, except the stash's, which holds the stash entries themselves.
-// Delta search is off: ciphertext never compresses against itself, and the
-// search is what makes repacking use memory.
+// Args turns the delta search off, which also keeps repacking from using
+// much memory.
 func ReclaimSpace(dir string) error {
 	refs, err := reflogRefs(dir)
 	if err != nil {
@@ -178,8 +178,7 @@ func ReclaimSpace(dir string) error {
 	if _, err := gitLine(dir, args...); err != nil {
 		return err
 	}
-	_, err = gitLine(dir, "-c", "pack.window=0", "-c", "pack.depth=0", "-c", "gc.auto=0",
-		"gc", "--prune=now", "--quiet")
+	_, err = gitLine(dir, "-c", "gc.auto=0", "gc", "--prune=now", "--quiet")
 	return err
 }
 

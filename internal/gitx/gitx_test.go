@@ -7,9 +7,16 @@ import (
 	"testing"
 )
 
-func TestArgsDisablesHooks(t *testing.T) {
+// Hooks, compression and the delta search are off for every git command.
+func TestArgsDisablesHooksAndCompression(t *testing.T) {
 	got := Args("/repo", "commit", "-m", "x")
-	want := []string{"-c", "core.hooksPath=/dev/null", "-C", "/repo", "commit", "-m", "x"}
+	want := []string{
+		"-c", "core.hooksPath=/dev/null",
+		"-c", "core.looseCompression=0",
+		"-c", "pack.compression=0",
+		"-c", "pack.window=0",
+		"-C", "/repo", "commit", "-m", "x",
+	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("Args() = %q, want %q", got, want)
 	}

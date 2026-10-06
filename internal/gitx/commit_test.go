@@ -42,10 +42,10 @@ func TestRemoteTip(t *testing.T) {
 }
 
 // salt's commits are never signed, whatever commit.gpgsign says, and still
-// run with hooks off.
+// run with hooks, compression and the delta search off.
 func TestCommitArgs(t *testing.T) {
 	got := strings.Join(commitArgs("/repo", "salt backup"), " ")
-	want := "-c core.hooksPath=/dev/null -C /repo -c commit.gpgsign=false commit --quiet -m salt backup"
+	want := "-c core.hooksPath=/dev/null -c core.looseCompression=0 -c pack.compression=0 -c pack.window=0 -C /repo -c commit.gpgsign=false commit --quiet -m salt backup"
 	if got != want {
 		t.Fatalf("commitArgs = %q, want %q", got, want)
 	}
