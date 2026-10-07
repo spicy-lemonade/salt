@@ -92,6 +92,7 @@ func (*noGit) Commit(context.Context, string, string) error            { return 
 func (*noGit) Head(string) (string, error)                             { return "h", nil }
 func (*noGit) Lease(context.Context, string, []string) (string, error) { return "", nil }
 func (*noGit) Push(context.Context, string, string) error              { return nil }
+func (*noGit) PushSize(string, string) (int64, error)                  { return 0, nil }
 
 func (g *noGit) Prune(_ string, keepDays int) (*prune.Result, error) {
 	g.pruneDays = append(g.pruneDays, keepDays)

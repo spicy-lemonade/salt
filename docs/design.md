@@ -214,7 +214,11 @@ Each backup that changes a large file still adds its changed chunks to
 history. `salt backup` and `salt prune` keep every backup made on the latest
 day with a change, and only the last backup of each earlier day (see
 "Keeping only recent backups"), so backups made many times a day do not
-multiply what history holds.
+multiply what history holds. Before pushing, `salt backup` warns when the
+push would send more than 1 GiB, or when a file added more than 500 MiB of
+new encrypted data, naming the file and never showing what it holds. The
+push still goes ahead. Measuring the push needs git 2.31 or later. With an
+older git only the files are named.
 
 GitHub refuses a push over 2 GB, recommends keeping a repo under 1 GB, and
 strongly recommends keeping it under 5 GB (its figures as of October 2026).
@@ -674,9 +678,12 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
    branch still holds the commit this machine last pushed and any commit
    pushed by hand. The remote-tracking branch never counts, since a fetch
    moves it to whatever another machine pushed;
-6. drops old backups as `salt prune` does, keeping `--keep-days N` days with
+6. warns when the push would send more than 1 GiB, or when a file added
+   more than 500 MiB of new encrypted data, naming the file (see "Large
+   files"). The push still goes ahead;
+7. drops old backups as `salt prune` does, keeping `--keep-days N` days with
    a change (5 by default), one a day before the latest;
-7. pushes the branch to `origin`, leased to the commit step 5 found there
+8. pushes the branch to `origin`, leased to the commit step 5 found there
    (`--force-with-lease=ref:commit`), so a backup pushed from another
    machine is never overwritten, even if something has fetched into the repo
    since. A push whose answer was lost when the connection dropped still

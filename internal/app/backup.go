@@ -91,7 +91,8 @@ func (a *App) Backup(o BackupOptions) error {
 		return err
 	}
 	so := SealOptions{Prune: true, Databases: found.Databases, Files: found.Files, Context: ctx, Live: true}
-	if _, err := a.seal(r, signer, so); err != nil {
+	sealed, err := a.seal(r, signer, so)
+	if err != nil {
 		return err
 	}
 	if err := a.Git.Stage(r.Root); err != nil {
@@ -126,6 +127,7 @@ func (a *App) Backup(o BackupOptions) error {
 		}
 		return fmt.Errorf("the backup was committed, but salt could not check origin, so old backups were not dropped and it was not pushed: %w", err)
 	}
+	a.warnPush(r.Root, lease, sealed.Written)
 	_, err = a.Git.Prune(r.Root, o.KeepDays)
 	if err := a.pruneCleanup(err); err != nil {
 		return fmt.Errorf("the backup was committed, but dropping old backups failed, so it was not pushed: %w", err)
@@ -164,6 +166,37 @@ func (a *App) warnMissing(root string, presets []*preset.Preset, places []string
 	for _, place := range slices.Sorted(maps.Keys(missing)) {
 		a.UI.Printf("salt: %s was in the last backup but was not found this time, so it is no longer backed up. Its earlier copies stay in history until prune drops them\n", place)
 	}
+}
+
+// Sizes above which salt backup warns before it pushes. GitHub refuses a
+// push over 2 GB.
+const (
+	warnPushBytes int64 = 1 << 30
+	warnFileBytes int64 = 500 << 20
+)
+
+// warnPush warns about each file that added more than warnFileBytes of new
+// ciphertext to this backup, naming it, and about a push of more than
+// warnPushBytes, which counts earlier backups not yet pushed too. The push
+// still goes ahead. Measuring the push is best effort: with a git too old to
+// measure it, only the files are named.
+func (a *App) warnPush(root, lease string, written []seal.Written) {
+	for _, w := range written {
+		if w.Bytes > warnFileBytes {
+			a.UI.Printf("salt: warning: %s added %s of encrypted data to this backup. A large file that changes often makes the backup repo grow quickly, so back it up once a day at most\n", w.Path, sizeText(w.Bytes))
+		}
+	}
+	if n, err := a.Git.PushSize(root, lease); err == nil && n > warnPushBytes {
+		a.UI.Printf("salt: warning: this push sends about %s. GitHub refuses a push over 2 GB\n", sizeText(n))
+	}
+}
+
+// sizeText writes n bytes as MiB, or GiB from 1 GiB.
+func sizeText(n int64) string {
+	if n >= 1<<30 {
+		return fmt.Sprintf("%.1f GiB", float64(n)/(1<<30))
+	}
+	return fmt.Sprintf("%d MiB", (n+1<<19)>>20)
 }
 
 // maxKnownPushes caps how many commits salt remembers trying to push.
