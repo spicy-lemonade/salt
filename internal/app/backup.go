@@ -127,9 +127,10 @@ func (a *App) Backup(o BackupOptions) error {
 		}
 		return fmt.Errorf("the backup was committed, but salt could not check origin, so old backups were not dropped and it was not pushed: %w", err)
 	}
-	a.warnPush(ctx, r.Root, lease, sealed.Written)
-	if err := stopped("the backup was committed, but old backups were not dropped and it was not pushed"); err != nil {
-		return err
+	// Ctrl-C can reach git before salt cancels ctx, so an error from git
+	// that says it was stopped counts too. Prune must not start after one.
+	if err := a.warnPush(ctx, r.Root, lease, sealed.Written); interrupted(ctx, err) {
+		return fmt.Errorf("backup %w: the backup was committed, but old backups were not dropped and it was not pushed", ErrInterrupted)
 	}
 	_, err = a.Git.Prune(r.Root, o.KeepDays)
 	if err := a.pruneCleanup(err); err != nil {
@@ -185,16 +186,19 @@ const (
 // the local repo, so after failed pushes it can also count backups prune is
 // about to drop. The push still goes ahead. Measuring the push is best
 // effort: when git cannot measure it, as one older than 2.31 cannot, only
-// the files are named.
-func (a *App) warnPush(ctx context.Context, root, lease string, written []seal.Written) {
+// the files are named. It returns the error from measuring, which the
+// caller checks only for an interruption.
+func (a *App) warnPush(ctx context.Context, root, lease string, written []seal.Written) error {
 	for _, w := range written {
 		if w.Bytes > warnFileBytes {
 			a.UI.Printf("salt: warning: %s added %s of encrypted data to this backup. A large file that changes often makes the backup repo grow quickly, so back it up once a day at most\n", w.Path, sizeText(w.Bytes))
 		}
 	}
-	if n, err := a.Git.PushSize(ctx, root, lease); err == nil && n > warnPushBytes {
+	n, err := a.Git.PushSize(ctx, root, lease)
+	if err == nil && n > warnPushBytes {
 		a.UI.Printf("salt: warning: this push sends up to about %s. GitHub refuses a push over 2 GB\n", sizeText(n))
 	}
+	return err
 }
 
 // sizeText writes n bytes as MiB, or GiB from 1 GiB.

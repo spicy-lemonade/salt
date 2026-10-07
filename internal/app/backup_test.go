@@ -570,17 +570,27 @@ func TestWarnPushNamesLargeFiles(t *testing.T) {
 	}
 }
 
-// Ctrl-C while the push is measured stops the backup before prune.
+// Ctrl-C while the push is measured stops the backup before prune, whether
+// salt sees the signal first or git, which then dies before ctx is
+// cancelled.
 func TestBackupInterruptedWhileMeasuringThePush(t *testing.T) {
-	e, _, presets := backupEnv(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	e.git.onPushSize = cancel
-	err := e.app.Backup(BackupOptions{Repo: e.root, Presets: presets, KeepDays: 3, Context: ctx})
-	if !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "old backups were not dropped and it was not pushed") {
-		t.Fatalf("Backup = %v", err)
-	}
-	if slices.Contains(e.git.calls, "prune") || slices.Contains(e.git.calls, "push") {
-		t.Fatalf("calls = %v", e.git.calls)
+	for name, gitFirst := range map[string]bool{"salt first": false, "git first": true} {
+		t.Run(name, func(t *testing.T) {
+			e, _, presets := backupEnv(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if gitFirst {
+				e.git.pushSizeErr = context.Canceled
+			} else {
+				e.git.onPushSize = cancel
+			}
+			err := e.app.Backup(BackupOptions{Repo: e.root, Presets: presets, KeepDays: 3, Context: ctx})
+			if !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "old backups were not dropped and it was not pushed") {
+				t.Fatalf("Backup = %v", err)
+			}
+			if slices.Contains(e.git.calls, "prune") || slices.Contains(e.git.calls, "push") {
+				t.Fatalf("calls = %v", e.git.calls)
+			}
+		})
 	}
 }
