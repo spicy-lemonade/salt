@@ -903,10 +903,10 @@ the backup, as for every preset.
 The preset covers the default path, `$HERMES_HOME/memory_store.db`, which
 is where Hermes keeps the database unless
 `plugins.hermes-memory-store.db_path` in its `config.yaml` names somewhere
-else. A `db_path` naming the default
-file, such as the `~/.hermes/memory_store.db` that older versions of
-`hermes memory setup` write, is covered too. A database kept anywhere else
-is not. Back it up with `salt seal --sqlite PATH` into a repo of its own.
+else. A `db_path` naming the default file, such as the
+`~/.hermes/memory_store.db` that older versions of `hermes memory setup`
+write, is covered too. A database kept anywhere else is not. Back it up
+with `salt seal --sqlite PATH` into a repo of its own.
 
 | On the machine | In the backup |
 |---|---|
