@@ -235,40 +235,36 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		// chunked again at once: one read both hashes it and finds which
 		// chunks changed. Any other file is hashed first, so an unchanged one
 		// keeps its objects, and one that shrank is one object again.
+		// Every error below falls through to one check, so a live file
+		// deleted at any step is left out, and any other error names it.
 		chunk := cached && prev.chunked()
 		if chunk {
-			fi, err := os.Stat(it.abs)
-			if vanished(err) {
-				return nil
-			} else if err != nil {
-				return err
+			var fi os.FileInfo
+			if fi, err = os.Stat(it.abs); err == nil {
+				chunk = fi.Size() > int64(maxChunk)
 			}
-			chunk = fi.Size() > int64(maxChunk)
 		}
-		if !chunk {
+		if err == nil && !chunk {
 			var sha string
-			if sha, size, err = hashFile(it.abs); vanished(err) {
-				return nil
-			} else if err != nil {
-				return err
+			if sha, size, err = hashFile(it.abs); err == nil {
+				if hashedHook != nil {
+					hashedHook(it.abs)
+				}
+				ok = cached && prev.SHA256 == sha && objectIntact(rt, prev)
+				chunk = !ok && size > int64(maxChunk)
 			}
-			if hashedHook != nil {
-				hashedHook(it.abs)
-			}
-			ok = cached && prev.SHA256 == sha && objectIntact(rt, prev)
-			chunk = !ok && size > int64(maxChunk)
 		}
 		var newBytes int64
 		switch {
+		case err != nil:
 		case chunk:
 			ce, size, newBytes, err = encryptChunks(rt, r, it.abs, gear, prev, known)
 		case !ok:
 			var obj string
-			if obj, err = objectName(r.Format.EncryptPaths, it.rel); err != nil {
-				return err
+			if obj, err = objectName(r.Format.EncryptPaths, it.rel); err == nil {
+				ce, size, err = encryptFile(rt, r, it.abs, obj, oneObjectLimit)
+				newBytes = ce.cipherSize()
 			}
-			ce, size, err = encryptFile(rt, r, it.abs, obj, oneObjectLimit)
-			newBytes = ce.cipherSize()
 		}
 		if vanished(err) {
 			return nil

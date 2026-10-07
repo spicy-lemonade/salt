@@ -126,9 +126,14 @@ func PushSize(ctx context.Context, dir, lease string) (int64, error) {
 	if err := proc.Run(ctx, cmd); err != nil {
 		return 0, err
 	}
-	out := strings.TrimSpace(stdout.String())
+	return diskUsage(stdout.String())
+}
+
+// diskUsage reads the byte count `git rev-list --disk-usage` prints.
+func diskUsage(out string) (int64, error) {
+	out = strings.TrimSpace(out)
 	n, err := strconv.ParseInt(out, 10, 64)
-	if err != nil {
+	if err != nil || n < 0 {
 		return 0, fmt.Errorf("git rev-list --disk-usage: unexpected %q", out)
 	}
 	return n, nil

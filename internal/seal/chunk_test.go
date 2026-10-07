@@ -484,6 +484,20 @@ func TestChunkedFailures(t *testing.T) {
 			t.Fatalf("seal = %v", err)
 		}
 	})
+	t.Run("unreadable", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("root can read any file")
+		}
+		f := newFixture(t, true)
+		f.writeNoise("big.db", 256<<10)
+		f.seal(false)
+		p := filepath.Join(f.src, "big.db")
+		os.Chmod(p, 0)
+		t.Cleanup(func() { os.Chmod(p, 0o600) })
+		if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), "big.db") {
+			t.Fatalf("seal of an unreadable chunked file = %v", err)
+		}
+	})
 	t.Run("removed", func(t *testing.T) {
 		f := newFixture(t, true)
 		x := Extra{Rel: "x.db", Path: filepath.Join(t.TempDir(), "x.db"), Mode: 0o600}
