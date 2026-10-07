@@ -51,8 +51,9 @@ Nightly (one command, for a cron line):
       them. Databases are copied safely, even while in use. A file holding
       a secret, such as an API key, is left out. Then commit if anything
       changed, keep only the backups from the last N days with a change
-      (default 5), and push with git push --force-with-lease. Repeat
-      --preset for each tool. Presets: {presets}.
+      (default 5), one a day before the latest, as salt prune does, and
+      push with git push --force-with-lease. Repeat --preset for each tool.
+      Presets: {presets}.
 
 Nightly (in your backup script):
   salt seal [--prune] [--sqlite DB]... [--postgres CONN]... [--postgres-env VAR]... SRC REPO
@@ -77,9 +78,11 @@ Nightly (in your backup script):
       databases have the same name.
   salt prune [--keep-days N] REPO
       Keep only the backups from the last N days on which anything in REPO
-      changed (default 5), counted over the whole repo, and drop older ones
-      from the branch's history. The latest backup is always kept. Rewrites
-      history, so push with git push --force-with-lease.
+      changed (default 5), counted over the whole repo, and drop the rest
+      from the branch's history. Every backup from the latest of those days
+      is kept, and only the last backup of each earlier day. The latest
+      backup is always kept. Rewrites history, so push with git push
+      --force-with-lease.
   salt check [REPO]
       Pre-commit hook: refuse the commit if any staged file is not encrypted,
       or if git would ignore or change any file salt wrote.

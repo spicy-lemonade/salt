@@ -8,8 +8,8 @@ import (
 )
 
 // Prune keeps only the backups from the keepDays most recent days on which
-// anything in the repo changed, and drops older ones from the checked-out
-// branch. It refuses a repo this machine has not approved: if someone else
+// anything in the repo changed, one a day before the latest of them (see
+// prune.Select), and drops the rest from the checked-out branch. It refuses a repo this machine has not approved: if someone else
 // changed its keys, the history that shows it must not be rewritten away.
 func (a *App) Prune(repoRoot string, keepDays int) error {
 	r, err := repo.Open(repoRoot)
@@ -34,7 +34,7 @@ func (a *App) Prune(repoRoot string, keepDays int) error {
 	if res.Dropped == 0 {
 		a.UI.Printf("salt: nothing to prune: all %d backup(s) are from the last %d day(s) with a change\n", res.Kept, keepDays)
 	} else {
-		a.UI.Printf("salt: kept %d backup(s) from the last %d day(s) with a change and dropped %d older one(s)\n",
+		a.UI.Printf("salt: kept %d backup(s) from the last %d day(s) with a change and dropped %d other(s)\n",
 			res.Kept, res.Days, res.Dropped)
 		a.UI.Printf("salt: history was rewritten, so push with `git push --force-with-lease`\n")
 	}

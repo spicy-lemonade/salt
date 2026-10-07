@@ -211,8 +211,10 @@ once, and git reads objects stored either way. git commands run by hand in
 the repo keep git's defaults.
 
 Each backup that changes a large file still adds its changed chunks to
-history. `salt backup` and `salt prune` keep every backup made on the last
-`--keep-days` days with a change.
+history. `salt backup` and `salt prune` keep every backup made on the latest
+day with a change, and only the last backup of each earlier day (see
+"Keeping only recent backups"), so backups made many times a day do not
+multiply what history holds.
 
 GitHub refuses a push over 2 GB, recommends keeping a repo under 1 GB, and
 strongly recommends keeping it under 5 GB (its figures as of October 2026).
@@ -242,7 +244,9 @@ days:
 - **So each day with no change makes the window one calendar day longer.**
   With one quiet day, 5 days with a change reach back 6 calendar days. With 3
   quiet days they reach back 8.
-- **Several backups on the same day count as one day**, and all are kept.
+- **Several backups on the same day count as one day.** All are kept on the
+  latest day with a change. On each earlier day only the last one is kept,
+  so backups made many times a day do not multiply what history holds.
 - A backup's date is its commit date, in the time zone of the machine that
   made the commit.
 
@@ -671,7 +675,7 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
    pushed by hand. The remote-tracking branch never counts, since a fetch
    moves it to whatever another machine pushed;
 6. drops old backups as `salt prune` does, keeping `--keep-days N` days with
-   a change (5 by default);
+   a change (5 by default), one a day before the latest;
 7. pushes the branch to `origin`, leased to the commit step 5 found there
    (`--force-with-lease=ref:commit`), so a backup pushed from another
    machine is never overwritten, even if something has fetched into the repo
