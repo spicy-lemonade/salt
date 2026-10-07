@@ -672,13 +672,13 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
    approved its keys or has no signing key. It also refuses, before any work
    is done, if REPO is not a git repo or has no remote named `origin`;
 2. gathers what each preset names (see "Presets"), and refuses if a preset
-   finds nothing, naming where it looked. When more than one preset was
-   given, it says to leave that one out if the person doesn't use it. A place the last backup held that
-   is not found this time is named in one line each, such as a folder on a
-   drive that is not mounted, or one pointed to by a variable set in the
-   person's shell but not in cron. The backup goes on without it, and its
-   earlier copies stay in history until prune drops them. The last backup's
-   paths come from salt's change cache;
+   finds nothing, naming where it looked. When another preset found
+   something, it says to leave that one out if the person doesn't use it.
+   A place the last backup held that is not found this time is named in one
+   line each, such as a folder on a drive that is not mounted, or one
+   pointed to by a variable set in the person's shell but not in cron. The
+   backup goes on without it, and its earlier copies stay in history until
+   prune drops them. The last backup's paths come from salt's change cache;
 3. makes a safe copy of each SQLite database found, as `--sqlite` does, and
    seals the copies and every other file found into REPO, which then holds
    only them. Anything else in REPO is removed, as with `salt seal --prune`;
@@ -892,8 +892,9 @@ or profile without the database is skipped, but finding none at all stops
 the backup, as for every preset.
 
 The preset covers the default path, `$HERMES_HOME/memory_store.db`, which
-is where Hermes keeps the database unless `plugins.hermes-memory-store.db_path`
-in its `config.yaml` names somewhere else. A `db_path` naming the default
+is where Hermes keeps the database unless
+`plugins.hermes-memory-store.db_path` in its `config.yaml` names somewhere
+else. A `db_path` naming the default
 file, such as the `~/.hermes/memory_store.db` that older versions of
 `hermes memory setup` write, is covered too. A database kept anywhere else
 is not. Back it up with `salt seal --sqlite PATH` into a repo of its own.

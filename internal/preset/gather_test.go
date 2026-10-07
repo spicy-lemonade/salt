@@ -346,10 +346,15 @@ func TestGatherFindsNothing(t *testing.T) {
 	if !errors.Is(err, ErrNothing) || !strings.HasSuffix(err.Error(), "for the t preset. It looks in <tool>, <tool>, <single.txt>") {
 		t.Fatalf("Gather = %v", err)
 	}
-	// The second preset is checked too, and with another given, leaving it
-	// out is suggested.
-	write(t, filepath.Join(home, "tool", "a.md"), "a")
+	// With another preset that finds nothing too, the place is more likely
+	// wrong than the preset unused, so leaving it out is not suggested.
 	other, _ := Parse("other", []byte(`{"name": "other", "paths": [{"from": "${UNSET}", "to": "o"}]}`))
+	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t), other}, t.TempDir(), plain); !errors.Is(err, ErrNothing) || strings.Contains(err.Error(), "leave out") {
+		t.Fatalf("Gather = %v", err)
+	}
+	// The second preset is checked too, and with another that finds
+	// something, leaving it out is suggested.
+	write(t, filepath.Join(home, "tool", "a.md"), "a")
 	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t), other}, t.TempDir(), plain); !errors.Is(err, ErrNothing) || !strings.HasSuffix(err.Error(), "other preset. It looks in . If you don't use it, leave out --preset other") {
 		t.Fatalf("Gather = %v", err)
 	}
@@ -398,18 +403,17 @@ func TestGatherHolographic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if slices.ContainsFunc(f.Paths(), func(p string) bool { return strings.Contains(p, "memory_store.db") }) {
-		t.Fatalf("the hermes preset backed up %v", f.Paths())
+	want := []string{"hermes/config.yaml", "hermes/memories/MEMORY.md", "hermes/profiles/writer/SOUL.md", "hermes/state.db"}
+	if got := slices.Sorted(slices.Values(f.Paths())); !slices.Equal(got, want) {
+		t.Fatalf("the hermes preset backed up %v, want %v", got, want)
 	}
-	alone := len(f.Paths())
+	want = slices.Sorted(slices.Values(slices.Concat(want, []string{"hermes/memory_store.db", "hermes/profiles/coder/memory_store.db"})))
 	f, err = gather(envOf(home, nil), hermes, holographic)
 	if err != nil {
 		t.Fatal(err)
 	}
-	paths := slices.Sorted(slices.Values(f.Paths()))
-	if len(paths) != alone+2 || len(slices.Compact(slices.Clone(paths))) != len(paths) ||
-		!slices.Contains(paths, "hermes/memory_store.db") || !slices.Contains(paths, "hermes/state.db") {
-		t.Fatalf("hermes and holographic backed up %v", paths)
+	if got := slices.Sorted(slices.Values(f.Paths())); !slices.Equal(got, want) {
+		t.Fatalf("hermes and holographic backed up %v, want %v", got, want)
 	}
 
 	other := filepath.Join(home, "elsewhere")

@@ -289,28 +289,20 @@ func TestBackupHermesFindsNothing(t *testing.T) {
 }
 
 // salt backup --preset holographic backs up the Holographic memory
-// provider's database in Hermes and a profile, while the main one is in use
-// with its newest rows only in the -wal file, and nothing else in the Hermes
-// folder. The restored databases open and hold every row, and a second run
-// with nothing changed makes no commit. With --preset hermes too, both are
-// backed up, each file once. HERMES_HOME names another Hermes folder, and
-// one without the database stops the backup, suggesting the preset be left
-// out, with nothing committed.
+// provider's database while it is in use, with its newest rows only in the
+// -wal file. The restored database opens and holds every row, and a second
+// run with nothing changed makes no commit. A Hermes folder without the
+// database stops the backup with nothing pushed. Which files the preset
+// finds is tested in internal/preset.
 func TestBackupHolographic(t *testing.T) {
 	sqlite := realSQLite(t)
 	e := newEnv(t)
 	b := newBackupRepo(t, e)
 	hermes := filepath.Join(e.home, ".hermes")
-	os.MkdirAll(hermes, 0o755)
-	startAgent(t, e, sqlite, filepath.Join(hermes, "memory_store.db"), 100)
-	makeDB(t, e, sqlite, filepath.Join(hermes, "profiles", "coder", "memory_store.db"), 3)
-	makeDB(t, e, sqlite, filepath.Join(hermes, "state.db"), 5)
-	write(t, filepath.Join(hermes, "SOUL.md"), "You are Hermes.")
-	write(t, filepath.Join(hermes, "memories", "MEMORY.md"), "The user deploys on Fridays.")
-	write(t, filepath.Join(hermes, "config.yaml"), "memory:\n  provider: holographic\nplugins:\n  hermes-memory-store:\n    db_path: $HERMES_HOME/memory_store.db\n")
-	for _, rel := range []string{".env", "logs/agent.log", "memory_store.db.bak", "profiles/writer/SOUL.md"} {
-		write(t, filepath.Join(hermes, rel), "left out")
+	if err := os.MkdirAll(hermes, 0o755); err != nil {
+		t.Fatal(err)
 	}
+	startAgent(t, e, sqlite, filepath.Join(hermes, "memory_store.db"), 100)
 	commits := commitCount(e, b.remote)
 
 	if out := e.must(b.base, "salt", "backup", "--preset", "holographic", b.dir); out != "" {
@@ -320,11 +312,10 @@ func TestBackupHolographic(t *testing.T) {
 		t.Fatal("the backup was not pushed")
 	}
 	dest, files := restoredFiles(t, e, b)
-	if want := []string{"hermes/memory_store.db", "hermes/profiles/coder/memory_store.db"}; !slices.Equal(files, want) {
-		t.Fatalf("restored %v, want %v", files, want)
+	if !slices.Equal(files, []string{"hermes/memory_store.db"}) {
+		t.Fatalf("restored %v", files)
 	}
 	assertDB(t, e, sqlite, filepath.Join(dest, "hermes/memory_store.db"), 100)
-	assertDB(t, e, sqlite, filepath.Join(dest, "hermes/profiles/coder/memory_store.db"), 3)
 	// The live database is left in use as it was.
 	if _, err := os.Stat(filepath.Join(hermes, "memory_store.db-wal")); err != nil {
 		t.Fatalf("the live -wal file: %v", err)
@@ -335,30 +326,10 @@ func TestBackupHolographic(t *testing.T) {
 		t.Fatalf("an unchanged backup made a commit: %s, then %s", commits, got)
 	}
 
-	e.must(b.base, "salt", "backup", "--preset", "hermes", "--preset", "holographic", b.dir)
-	dest, files = restoredFiles(t, e, b)
-	want := []string{"hermes/SOUL.md", "hermes/config.yaml", "hermes/memories/MEMORY.md", "hermes/memory_store.db", "hermes/profiles/coder/memory_store.db", "hermes/profiles/writer/SOUL.md", "hermes/state.db"}
-	if !slices.Equal(files, want) {
-		t.Fatalf("restored with hermes %v, want %v", files, want)
-	}
-	assertDB(t, e, sqlite, filepath.Join(dest, "hermes/memory_store.db"), 100)
-	assertDB(t, e, sqlite, filepath.Join(dest, "hermes/state.db"), 5)
-
-	other := filepath.Join(t.TempDir(), "hermes")
-	makeDB(t, e, sqlite, filepath.Join(other, "memory_store.db"), 4)
-	e.with("HERMES_HOME="+other).must(b.base, "salt", "backup", "--preset", "holographic", b.dir)
-	dest, files = restoredFiles(t, e, b)
-	if !slices.Equal(files, []string{"hermes/memory_store.db"}) {
-		t.Fatalf("restored with HERMES_HOME %v", files)
-	}
-	assertDB(t, e, sqlite, filepath.Join(dest, "hermes/memory_store.db"), 4)
-
 	empty := t.TempDir()
 	write(t, filepath.Join(empty, "SOUL.md"), "a Hermes without Holographic memory")
-	commits = commitCount(e, b.remote)
 	out, code := e.with("HERMES_HOME="+empty).run(b.base, "salt", "backup", "--preset", "hermes", "--preset", "holographic", b.dir)
-	if code != 1 || !strings.Contains(out, "found nothing to back up for the holographic preset. It looks in "+filepath.Join(empty, "memory_store.db")+", ") ||
-		!strings.Contains(out, ". If you don't use it, leave out --preset holographic") {
+	if code != 1 || !strings.Contains(out, "found nothing to back up for the holographic preset") {
 		t.Fatalf("no database: exit %d:\n%s", code, out)
 	}
 	if got := commitCount(e, b.remote); got != commits {
