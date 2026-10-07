@@ -114,7 +114,7 @@ Run `crontab -e` and add this line to run it every day at 6am. Use the path that
 0 6 * * * /opt/homebrew/bin/salt backup --preset NAME "$HOME/my-backup-repo" >> "$HOME/backup.log" 2>&1
 ```
 
-- Your repo then holds only what the presets find, so give `salt backup` a repo of its own. Repeat `--preset` for each tool you use.
+- Your repo then holds only what the presets find, so give `salt backup` a repo of its own. Repeat `--preset` for each tool you use. A preset for a memory tool that works with any agent, such as `mnemosyne`, finds its data on its own or inside an agent's folder, so give it alone or beside your agent's preset.
 - A settings file holding an API key or other secret is left out, and Salt names it. Keep secrets in environment variables instead.
 - `--keep-days N` keeps the last N days with a change. The default is 5. Every backup from the latest of those days is kept, and only the last backup of each earlier day.
 - `git push` to `origin` must work without a password prompt. Running `gh auth setup-git` once does this.
@@ -124,7 +124,7 @@ Run `crontab -e` and add this line to run it every day at 6am. Use the path that
 | Preset | What it backs up |
 |---|---|
 | `hermes` | [Hermes](https://github.com/NousResearch/hermes-agent) memory (`MEMORY.md` and `USER.md`), persona, settings, skills and databases, in Hermes and each of its profiles. Its `.env` and login files are left out |
-| `holographic` | The database of Hermes's [Holographic memory provider](https://github.com/NousResearch/hermes-agent/tree/main/plugins/memory/holographic) (`memory_store.db`), in Hermes and each of its profiles. Give it with `hermes`. It covers the default path only |
+| `holographic` | The database of Hermes's [Holographic memory provider](https://github.com/NousResearch/hermes-agent/tree/main/plugins/memory/holographic) (`memory_store.db`), in Hermes and each of its profiles. Add it to `hermes` to back up the rest of Hermes too. It covers the default path only |
 | `mnemosyne` | [Mnemosyne](https://github.com/mnemosyne-oss/mnemosyne) memory, on its own or inside Hermes and its profiles |
 
 Each preset is a small JSON file in [`internal/preset/presets`](internal/preset/presets), and the [design doc](docs/design.md#presets) explains the format and what each one backs up. To add one, copy an existing file, change the paths and open a pull request. If a tool's folders are set by environment variables, set them in the cron line too, since cron doesn't see your shell's variables.

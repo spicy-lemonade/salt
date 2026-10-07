@@ -4,6 +4,7 @@
 
 - **Source data is always the truth.** Salt must never modify, repair or convert the files it backs up; it encrypts them and restores them exactly as they were given (contents, dates and permissions).
 - **Build for any agent memory, not one tool.** Hermes, Mnemosyne, Honcho, Hindsight and the others are examples. Salt's code, messages and defaults must work for any files, SQLite or Postgres database, whatever tool made them, with no tool-specific paths, names or special cases.
+- **Presets are the one place tool-specific paths live**, one JSON file per tool in `internal/preset/presets`. A memory tool that works with any agent, such as Mnemosyne, Honcho, Hindsight or OpenViking, gets a preset that looks where the tool keeps its data on its own, and also inside an agent's folder where that agent embeds it, so it works alone or beside any agent's preset. The exceptions are an agent's own built-in memory (`hermes`) and a memory tool built for one agent (`holographic`, a Hermes plugin), whose presets look only in that agent's folders. No preset depends on another, and any can be given with any other.
 - *Never* run git commands without asking for user permission, even if 'auto-accept' is selected during a Claude Command session.
 - *Never* run files which use an LLM API without asking for user permission,  even if 'auto-accept' is selected during a Claude Command session.
 - *Never* attempt to re-engineer the code or alter data without asking for user permission.

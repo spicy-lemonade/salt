@@ -771,6 +771,15 @@ code reads them all, so adding a tool means adding one file:
   cannot be read, cannot be read as YAML, or is over 1 MiB is left out too.
   Salt never changes the file to remove the secret.
 
+A preset is for one tool. A memory tool that works with any agent, such as
+Mnemosyne, Honcho, Hindsight or OpenViking, gets a preset that looks where
+the tool keeps its data on its own, and also inside an agent's folder where
+that agent embeds it, so it works alone or beside any agent's preset. The
+exceptions are an agent's own built-in memory, such as `hermes`, and a
+memory tool built for one agent, such as `holographic`, a Hermes plugin.
+Their presets look only in that agent's folders. No preset depends on
+another, and any can be given with any other.
+
 Inside a folder, a file that starts with SQLite's header is a database and
 gets a safe copy. Its `-wal`, `-shm` and `-journal` files are not backed up,
 since the copy already holds what is in them. Every other file is sealed as
