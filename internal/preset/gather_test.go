@@ -341,14 +341,97 @@ func TestGatherFindsNothing(t *testing.T) {
 	mkdir(t, home, "tool") // an empty folder holds nothing to back up
 	write(t, filepath.Join(home, "profiles", "a", "tool", "settings.yaml"), "token: abc")
 	_, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), func(p string) string { return "<" + filepath.Base(p) + ">" })
-	if !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "for the t preset. It looks in <tool>, <tool>, <single.txt>") {
+	// With one preset, leaving it out would leave nothing, so it is not
+	// suggested.
+	if !errors.Is(err, ErrNothing) || !strings.HasSuffix(err.Error(), "for the t preset. It looks in <tool>, <tool>, <single.txt>") {
 		t.Fatalf("Gather = %v", err)
 	}
-	// The second preset is checked too.
-	write(t, filepath.Join(home, "tool", "a.md"), "a")
+	// With another preset that finds nothing too, the place is more likely
+	// wrong than the preset unused, so leaving it out is not suggested.
 	other, _ := Parse("other", []byte(`{"name": "other", "paths": [{"from": "${UNSET}", "to": "o"}]}`))
-	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t), other}, t.TempDir(), plain); !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "other preset") {
+	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t), other}, t.TempDir(), plain); !errors.Is(err, ErrNothing) || strings.Contains(err.Error(), "leave out") {
 		t.Fatalf("Gather = %v", err)
+	}
+	// The second preset is checked too, and with another that finds
+	// something, leaving it out is suggested.
+	write(t, filepath.Join(home, "tool", "a.md"), "a")
+	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t), other}, t.TempDir(), plain); !errors.Is(err, ErrNothing) || !strings.HasSuffix(err.Error(), "other preset. It looks in . If you don't use it, leave out --preset other") {
+		t.Fatalf("Gather = %v", err)
+	}
+}
+
+// The holographic preset backs up memory_store.db in the Hermes folder and
+// in each profile that has one, and nothing else, leaving its -wal and -shm
+// files to the safe copy. HERMES_HOME names another Hermes folder. Given
+// with the hermes preset, each file is backed up once, and the hermes preset
+// alone never backs up memory_store.db. Finding none is an error that
+// suggests leaving the preset out.
+func TestGatherHolographic(t *testing.T) {
+	presets, err := GetAll([]string{"hermes", "holographic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hermes, holographic := presets[0], presets[1]
+	home, err := filepath.EvalSymlinks(t.TempDir()) // databases are read from real paths
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, ".hermes")
+	for _, rel := range []string{"memory_store.db", "profiles/coder/memory_store.db", "state.db"} {
+		write(t, filepath.Join(dir, rel), sqliteFile)
+	}
+	for _, rel := range []string{
+		"memory_store.db-wal", "memory_store.db-shm", "memory_store.db.bak", "config.yaml", "memories/MEMORY.md",
+		"logs/agent.log", "profiles/coder/memory_store.db-wal", "profiles/writer/SOUL.md", "profiles/writer/data/memory_store.db",
+	} {
+		write(t, filepath.Join(dir, rel), "left out")
+	}
+	gather := func(e Env, presets ...*Preset) (*Found, error) {
+		return e.Gather(presets, t.TempDir(), plain)
+	}
+
+	f, err := gather(envOf(home, nil), holographic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, dbs := rels(f)
+	if want := []string{"hermes/memory_store.db", "hermes/profiles/coder/memory_store.db"}; files != nil || !slices.Equal(dbs, want) {
+		t.Fatalf("files %v, databases %v, want only databases %v", files, dbs, want)
+	}
+
+	f, err = gather(envOf(home, nil), hermes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"hermes/config.yaml", "hermes/memories/MEMORY.md", "hermes/profiles/writer/SOUL.md", "hermes/state.db"}
+	if got := slices.Sorted(slices.Values(f.Paths())); !slices.Equal(got, want) {
+		t.Fatalf("the hermes preset backed up %v, want %v", got, want)
+	}
+	want = slices.Sorted(slices.Values(slices.Concat(want, []string{"hermes/memory_store.db", "hermes/profiles/coder/memory_store.db"})))
+	f, err = gather(envOf(home, nil), hermes, holographic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := slices.Sorted(slices.Values(f.Paths())); !slices.Equal(got, want) {
+		t.Fatalf("hermes and holographic backed up %v, want %v", got, want)
+	}
+
+	other := filepath.Join(home, "elsewhere")
+	write(t, filepath.Join(other, "memory_store.db"), sqliteFile)
+	f, err = gather(envOf(home, map[string]string{"HERMES_HOME": other}), holographic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, dbs := rels(f); !slices.Equal(dbs, []string{"hermes/memory_store.db"}) || !strings.HasPrefix(f.Databases[0].String(), other) {
+		t.Fatalf("with HERMES_HOME: databases %v from %s", dbs, f.Databases[0])
+	}
+
+	empty := t.TempDir()
+	write(t, filepath.Join(empty, "SOUL.md"), "a Hermes without Holographic memory")
+	_, err = gather(envOf(home, map[string]string{"HERMES_HOME": empty}), hermes, holographic)
+	if want := "found nothing to back up for the holographic preset. It looks in " + filepath.Join(empty, "memory_store.db") + ", " +
+		filepath.Join(empty, "profiles", "*", "memory_store.db") + ". If you don't use it, leave out --preset holographic"; !errors.Is(err, ErrNothing) || err.Error() != want {
+		t.Fatalf("Gather = %v, want %s", err, want)
 	}
 }
 

@@ -672,12 +672,13 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
    approved its keys or has no signing key. It also refuses, before any work
    is done, if REPO is not a git repo or has no remote named `origin`;
 2. gathers what each preset names (see "Presets"), and refuses if a preset
-   finds nothing, naming where it looked. A place the last backup held that
-   is not found this time is named in one line each, such as a folder on a
-   drive that is not mounted, or one pointed to by a variable set in the
-   person's shell but not in cron. The backup goes on without it, and its
-   earlier copies stay in history until prune drops them. The last backup's
-   paths come from salt's change cache;
+   finds nothing, naming where it looked. When another preset found
+   something, it says to leave that one out if the person doesn't use it.
+   A place the last backup held that is not found this time is named in one
+   line each, such as a folder on a drive that is not mounted, or one
+   pointed to by a variable set in the person's shell but not in cron. The
+   backup goes on without it, and its earlier copies stay in history until
+   prune drops them. The last backup's paths come from salt's change cache;
 3. makes a safe copy of each SQLite database found, as `--sqlite` does, and
    seals the copies and every other file found into REPO, which then holds
    only them. Anything else in REPO is removed, as with `salt seal --prune`;
@@ -770,6 +771,15 @@ code reads them all, so adding a tool means adding one file:
   cannot be read, cannot be read as YAML, or is over 1 MiB is left out too.
   Salt never changes the file to remove the secret.
 
+A preset is for one tool. A memory tool that works with any agent, such as
+Mnemosyne, Honcho, Hindsight or OpenViking, gets a preset that looks where
+the tool keeps its data on its own, and also inside an agent's folder where
+that agent embeds it, so it works alone or beside any agent's preset. The
+exceptions are an agent's own built-in memory, such as `hermes`, and a
+memory tool built for one agent, such as `holographic`, a Hermes plugin.
+Their presets look only in that agent's folders. No preset depends on
+another, and any can be given with any other.
+
 Inside a folder, a file that starts with SQLite's header is a database and
 gets a safe copy. Its `-wal`, `-shm` and `-journal` files are not backed up,
 since the copy already holds what is in them. Every other file is sealed as
@@ -849,7 +859,7 @@ files, and the Python and Node caches and packages a skill can hold
 (`__pycache__`, `node_modules`, `.venv` and the like), which are installed
 again when needed. Memory providers with their own database, such as
 Mnemosyne or Hermes's Holographic provider (`memory_store.db`), are not part
-of this preset. Mnemosyne has its own, and the two can be given together.
+of this preset. Each has its own preset, which can be given with this one.
 
 Hermes's `config.yaml` can hold API keys and tokens, such as
 `model.api_key`, a `sudo_password` or a token in an MCP server's `env`. So it
@@ -880,6 +890,29 @@ small. A deleted output drops out of the next backup and stays in history
 until prune removes it. With `cron.output_retention` set to 0 or less,
 Hermes keeps every output and so does the backup.
 
+The `holographic` preset adds the database of Hermes's Holographic memory
+provider (`memory_store.db`) to the `hermes` preset. It looks where the
+`hermes` preset does, in the Hermes folder (`$HERMES_HOME` or `~/.hermes`)
+and in each Hermes profile, and backs the database up beside Hermes's own
+files. It backs up nothing else, so give it with `--preset hermes` to back
+up the rest of Hermes. Hermes keeps the database in WAL mode, so it gets a
+safe copy and its `-wal` and `-shm` files are not backed up. A Hermes folder
+or profile without the database is skipped, but finding none at all stops
+the backup, as for every preset.
+
+The preset covers the default path, `$HERMES_HOME/memory_store.db`, which
+is where Hermes keeps the database unless
+`plugins.hermes-memory-store.db_path` in its `config.yaml` names somewhere
+else. A `db_path` naming the default file, such as the
+`~/.hermes/memory_store.db` that older versions of `hermes memory setup`
+write, is covered too. A database kept anywhere else is not. Back it up
+with `salt seal --sqlite PATH` into a repo of its own.
+
+| On the machine | In the backup |
+|---|---|
+| `~/.hermes/memory_store.db` (or under `$HERMES_HOME`) | `hermes/memory_store.db` |
+| `~/.hermes/profiles/<name>/memory_store.db` | `hermes/profiles/<name>/memory_store.db` |
+
 Hermes sets `HERMES_HOME` to a profile's folder while it runs that profile.
 A `salt backup` started from inside Hermes, such as from one of its
 scheduled jobs, then sees only that profile. It backs that profile up as the
@@ -900,8 +933,4 @@ Touch ID, and switching recovery method.
 ## Still to build
 
 - OpenViking support. Its data format has not been checked yet.
-- Presets for more tools, such as OpenClaw, Honcho, Hindsight and Hermes's
-  Holographic memory provider.
-- Reusing the unchanged chunks of a large file that changes often, so a
-  backup uploads only what changed
-  ([#44](https://github.com/spicy-lemonade/salt/issues/44)).
+- Presets for more tools, such as OpenClaw, Honcho and Hindsight.

@@ -4,6 +4,7 @@
 
 - **Source data is always the truth.** Salt must never modify, repair or convert the files it backs up; it encrypts them and restores them exactly as they were given (contents, dates and permissions).
 - **Build for any agent memory, not one tool.** Hermes, Mnemosyne, Honcho, Hindsight and the others are examples. Salt's code, messages and defaults must work for any files, SQLite or Postgres database, whatever tool made them, with no tool-specific paths, names or special cases.
+- **Presets are the one place tool-specific paths live**, one JSON file per tool in `internal/preset/presets`. A memory tool that works with any agent, such as Mnemosyne, Honcho, Hindsight or OpenViking, gets a preset that looks where the tool keeps its data on its own, and also inside an agent's folder where that agent embeds it, so it works alone or beside any agent's preset. The exceptions are an agent's own built-in memory (`hermes`) and a memory tool built for one agent (`holographic`, a Hermes plugin), whose presets look only in that agent's folders. No preset depends on another, and any can be given with any other.
 - *Never* run git commands without asking for user permission, even if 'auto-accept' is selected during a Claude Command session.
 - *Never* run files which use an LLM API without asking for user permission,  even if 'auto-accept' is selected during a Claude Command session.
 - *Never* attempt to re-engineer the code or alter data without asking for user permission.
@@ -109,7 +110,7 @@ go test ./internal/seal -run TestRoundTrip
 - Decided out of scope is Touch ID gating, and switching recovery method from the 12 word passphrase to the user chosen passphrase or vice versa.
 - `salt seal --sqlite DB` makes a safe copy of a live SQLite database itself (`internal/source` runs `sqlite3 .backup`). `salt seal --postgres CONN` (or `--postgres-env VAR`) dumps a Postgres database as plain SQL with `pg_dump`, with the password passed in `PGPASSWORD` and never shown. See `docs/design.md`, "Databases".
 - `salt backup --preset NAME REPO` gathers what the presets name, seals it (the repo then holds only that), commits with hooks off after running the `salt check` logic in-process, prunes and pushes with `--force-with-lease`. It prints nothing on success. See `docs/design.md`, "One-command backup".
-- Not yet built: OpenViking support, and presets other than `mnemosyne` and `hermes` (OpenClaw, Honcho, Hindsight, Hermes's Holographic memory provider).
+- Not yet built: OpenViking support, and presets other than `hermes`, `holographic` and `mnemosyne` (OpenClaw, Honcho, Hindsight).
 
 ### Agent contributing rules
 

@@ -1,0 +1,8 @@
+{
+  "name": "holographic",
+  "about": "Hermes's Holographic memory provider database, in Hermes and each Hermes profile",
+  "paths": [
+    {"from": "${HERMES_HOME:-~/.hermes}/memory_store.db", "to": "hermes/memory_store.db"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/memory_store.db", "to": "hermes/profiles/*/memory_store.db"}
+  ]
+}
