@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -409,20 +410,57 @@ func TestOldPartsKeptUntilChanged(t *testing.T) {
 	assertTreesEqual(t, f.src, f.restore(RestoreOptions{}))
 }
 
-// A chunked file that shrinks, even to nothing, is still sealed in chunks
-// and restores as it is now.
+// A chunked file that shrinks to maxChunk or less, even to nothing, is one
+// object again, under its own name with plain paths, and is chunked again
+// once it grows.
 func TestChunkedFileShrinks(t *testing.T) {
+	for _, encryptPaths := range []bool{true, false} {
+		t.Run(map[bool]string{true: "encrypted-paths", false: "plain-paths"}[encryptPaths], func(t *testing.T) {
+			smallChunks(t)
+			f := newFixture(t, encryptPaths)
+			f.writeNoise("big.db", 256<<10)
+			f.seal(false)
+			chunked := func() bool {
+				c, _ := f.loadCache()
+				return c.Files["big.db"].chunked()
+			}
+			for _, content := range []string{"small now\n", "", string(noise(maxChunk))} {
+				f.write("big.db", content)
+				f.seal(false)
+				e := f.entry("big.db")
+				if len(e.Parts) != 0 || e.Size != int64(len(content)) || chunked() {
+					t.Fatalf("%d bytes sealed as %+v", len(content), e)
+				}
+				if want := path.Join(repo.FilesDir, "big.db") + ".age"; !encryptPaths && e.Object != want {
+					t.Errorf("%d bytes sealed as %s, want %s", len(content), e.Object, want)
+				}
+				assertTreesEqual(t, f.src, f.restore(RestoreOptions{}))
+			}
+			f.writeNoise("big.db", 256<<10)
+			f.seal(false)
+			if !chunked() {
+				t.Fatal("a file that grew again was not chunked")
+			}
+		})
+	}
+}
+
+// A live chunked file deleted before it is read is left out of the backup,
+// as any live file is.
+func TestLiveChunkedFileGone(t *testing.T) {
 	smallChunks(t)
 	f := newFixture(t, true)
-	f.writeNoise("big.db", 256<<10)
-	f.seal(false)
-	for _, content := range []string{"small now\n", ""} {
-		f.write("big.db", content)
-		f.seal(false)
-		if e := f.entry("big.db"); len(e.Parts) != 0 || e.Size != int64(len(content)) {
-			t.Fatalf("%d bytes sealed as %+v", len(content), e)
-		}
-		assertTreesEqual(t, f.src, f.restore(RestoreOptions{}))
+	x := Extra{Rel: "x.db", Path: filepath.Join(t.TempDir(), "x.db"), Live: true}
+	if err := os.WriteFile(x.Path, noise(256<<10), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.sealExtra(x); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(x.Path)
+	res, err := f.sealExtra(x)
+	if err != nil || !slices.Equal(res.Gone, []string{"x.db"}) {
+		t.Fatalf("seal of a deleted live chunked file = %+v, %v", res, err)
 	}
 }
 

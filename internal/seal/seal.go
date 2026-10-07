@@ -229,10 +229,20 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		prev, cached := c.Files[it.rel]
 		ce, ok := prev, false
 		var size int64
-		// A file sealed in chunks last time is chunked again at once: one
-		// read both hashes it and finds which chunks changed. Any other file
-		// is hashed first, so an unchanged one keeps its objects.
+		// A file sealed in chunks last time, and still over maxChunk, is
+		// chunked again at once: one read both hashes it and finds which
+		// chunks changed. Any other file is hashed first, so an unchanged one
+		// keeps its objects, and one that shrank is one object again.
 		chunk := cached && prev.chunked()
+		if chunk {
+			fi, err := os.Stat(it.abs)
+			if vanished(err) {
+				return nil
+			} else if err != nil {
+				return err
+			}
+			chunk = fi.Size() > int64(maxChunk)
+		}
 		if !chunk {
 			var sha string
 			if sha, size, err = hashFile(it.abs); vanished(err) {

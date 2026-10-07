@@ -147,6 +147,9 @@ keeps every file it writes far below both.
   is compressed and encrypted as its own object under `objects/`, even with
   `--plain-paths`. A chunk is 1 to 16 MiB, about 4 MiB on average.
 
+A file is measured each time it is sealed, so one that shrinks to 16 MiB or
+less is one object again, and one that grows past 16 MiB is chunked.
+
 Chunk boundaries follow the content (FastCDC, with a rolling hash over the
 last 64 bytes). A change in one place changes only the chunk around it, and
 bytes inserted or removed move only the boundaries near them. So both a
