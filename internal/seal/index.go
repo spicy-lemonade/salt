@@ -43,7 +43,9 @@ type Entry struct {
 	Path   string `json:"path"`
 	Object string `json:"object,omitempty"` // repo-relative, regular files only
 	// Parts are the objects after Object, in order, for a file sealed in
-	// parts (see splitAbove). Restore joins them back into one stream.
+	// parts or chunks. Restore joins their plaintext back into one stream:
+	// parts are one zstd stream cut up, and chunks are one zstd frame each,
+	// which zstd reads one after another as one stream.
 	Parts   []string `json:"parts,omitempty"`
 	SHA256  string   `json:"sha256,omitempty"` // of the plaintext
 	Size    int64    `json:"size"`
@@ -77,6 +79,10 @@ func (e Entry) objects() []string {
 // index instead. Every other index keeps repo.FormatVersion, so it stays
 // byte for byte the same, signature included.
 const partsIndexVersion = 2
+
+// chunksIndexVersion is the index version seal writes when a file is in
+// chunks (see encryptChunks).
+const chunksIndexVersion = 3
 
 func (ix *Index) marshal() ([]byte, string, error) {
 	b, err := json.Marshal(ix)
@@ -201,7 +207,7 @@ func ReadIndex(root string, ids []age.Identity, allowUnsigned bool) (*Index, err
 	if err != nil {
 		return nil, fmt.Errorf("index: %w", err)
 	}
-	if ix.Version != repo.FormatVersion && ix.Version != partsIndexVersion {
+	if ix.Version != repo.FormatVersion && ix.Version != partsIndexVersion && ix.Version != chunksIndexVersion {
 		return nil, fmt.Errorf("index version %d is not supported by this salt; upgrade salt", ix.Version)
 	}
 	if err := checkSignature(ix, d.sum(), ids); err != nil {

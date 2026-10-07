@@ -15,7 +15,8 @@ and OpenViking later) before it is backed up to Git.
   `salt init --plain-paths`.
 - **Files are processed a piece at a time**, never loaded whole into memory.
 - **Unchanged files are not re-encrypted**, so an unchanged snapshot makes no
-  commit.
+  commit. A large file is sealed in chunks, and only the chunks that changed
+  are encrypted again.
 
 ## Example usage
 
@@ -41,7 +42,7 @@ from the history, then pushes with `git push --force-with-lease` (see
 | `.salt/recipients.txt` | public keys every file is encrypted to |
 | `.salt/key.age` | passphrase-locked private key (passphrase recovery only) |
 | `index.age` | encrypted, signed list of real file names, sizes, hashes and last-modified dates |
-| `objects/…` | encrypted files under random names (default), and the later parts of a large file (see "Large files") |
+| `objects/…` | encrypted files under random names (default), and the chunks of a large file (see "Large files") |
 | `files/…` | encrypted files under real names (`--plain-paths`) |
 
 ## Keys and recovery
@@ -138,35 +139,61 @@ If you lose them and this laptop, your backups cannot be recovered.
 
 ## Large files
 
-GitHub refuses any file over 100 MiB, so salt never writes one.
+GitHub refuses any file over 100 MiB and warns about any over 50 MB, so salt
+keeps every file it writes far below both.
 
-- **Up to 99 MiB** (measured before sealing): one encrypted object, as
-  always. zstd and age add about 0.03% to data that does not compress, so
-  the object stays under the limit.
-- **Over 99 MiB:** the compressed stream is split into 45 MiB parts, each a
-  complete age file. Parts stay under 50 MB, above which GitHub warns on
-  every push. A large file that compresses to 45 MiB or less is still one
-  object.
+- **Up to 16 MiB:** one encrypted object, as always.
+- **Over 16 MiB:** the file is cut into chunks of plaintext, and each chunk
+  is compressed and encrypted as its own object under `objects/`, even with
+  `--plain-paths`. A chunk is 1 to 16 MiB, about 4 MiB on average.
 
-The first part is named like any other object. Later parts get random names
-under `objects/`, even with `--plain-paths`, since any name under `files/`
-could belong to a real file and clash with it. The encrypted index lists each
-file's parts in order. Restore and verify decrypt them in turn, opening one
-at a time, so memory stays flat. An unchanged large file keeps all its parts,
-and a changed one replaces them all. An index with a file in parts is written
-as version 2, so an older salt refuses it instead of restoring only the first
-part. Any other index stays version 1.
+Chunk boundaries follow the content (FastCDC, with a rolling hash over the
+last 64 bytes). A change in one place changes only the chunk around it, and
+bytes inserted or removed move only the boundaries near them. So both a
+database whose pages change in place and a SQL dump with rows added keep
+most of their chunks. Salt's change cache records the SHA-256 of each
+chunk's plaintext. The next seal reads the file once, and any chunk it has
+sealed before, in this file or another, keeps its object. Only new chunks
+are encrypted and pushed. In tests, a change of a few KiB added 1.1 new
+chunks on average and never more than 4.
 
-The change-detection cache lists every part of a split file and leaves its
-single-object fields empty. An older salt using the same cache then finds
-nothing to reuse and encrypts the file again, rather than keeping only the
-first part. A cached object over 100 MiB, which an older salt wrote for a
-large file, is never reused, so the first seal after upgrading splits the
-file even if it has not changed.
+A change to a database is rarely in one place. In a 320 MB SQLite test
+database, updating one row of an indexed table rewrote 19 pages spread
+across the file, the header included. Such a change adds several chunks,
+still far less than the whole file.
 
-A live file can grow between being measured and being sealed. So a file
-measured at 99 MiB or less is cut at 99.5 MiB of compressed data, and the
-rest goes into a second part.
+The rolling hash adds up numbers from a table derived from the signing key
+(HKDF-SHA256), so where the boundaries fall differs for every key, and a
+reader of the repo cannot work it out. Without this, the sizes of a file's
+chunks could help tell which known file it is. Changing the derivation
+would move every boundary, so each large file would be encrypted again in
+full once. Restore never needs the table.
+
+Each chunk is a complete zstd frame in its own age file, and zstd reads
+frames one after another as one stream. The encrypted index lists each
+file's objects in order, and restore and verify decrypt them in turn,
+opening one at a time, so memory stays flat. Sealing holds one chunk in
+memory per worker, and reuses zstd encoders from one chunk to the next. An
+index with a file in chunks is written as version 3, so an older salt
+refuses it. Any other index keeps the version it had.
+
+Older salts split a file over 99 MiB into parts of 45 MiB of compressed
+data, written as index version 2. Salt still restores and verifies them,
+and keeps an unchanged file's parts. Once such a file changes, it is sealed
+in chunks. A file of 16 MiB or less that grows past 99.5 MiB of compressed
+data while it is sealed, as a live file can, still has the rest put into a
+second part. A cached object over 100 MiB, which an older salt wrote for a
+large file, is never reused, so that file is sealed again even if it has
+not changed.
+
+The change-detection cache lists every object of a file in parts or chunks
+and leaves its single-object fields empty. An older salt using the same
+cache then finds nothing to reuse and encrypts the file again, rather than
+keeping only its first object.
+
+A chunk lost from the repo is the only one encrypted again on the next
+seal. Chunks written by a seal that failed part way are not in any index,
+and the next seal removes them.
 
 `salt doctor` warns about any file over 100 MiB in the repo, which only an
 older salt or a person could have put there.
@@ -183,24 +210,16 @@ by name, because a person's own setting for one would otherwise override
 once, and git reads objects stored either way. git commands run by hand in
 the repo keep git's defaults.
 
-Salt reuses a file's encrypted copy only when the whole file is unchanged.
-Any change to a large database, even to one page, encrypts all of it again,
-so every backup that changes it uploads its full compressed size again.
-Splitting it into parts does not help, since every part is new.
-
-`salt backup` and `salt prune` keep every backup made on the last
-`--keep-days` days with a change. So a repo holds one copy per backup in that
-window, not one per day. Hourly backups with the default 5 days can keep up
-to 120 copies of a database that changes every hour. With one backup a day,
-a 2 GB database that compresses to about 700 MB and changes daily keeps
-about 3.5 GB in history. Back up a large database once a day.
+Each backup that changes a large file still adds its changed chunks to
+history. `salt backup` and `salt prune` keep every backup made on the last
+`--keep-days` days with a change.
 
 GitHub refuses a push over 2 GB, recommends keeping a repo under 1 GB, and
 strongly recommends keeping it under 5 GB (its figures as of October 2026).
-A first backup of several large databases can go over the push limit, and a
-few days of a large, changing database can go past the recommended size.
-Splitting files into parts helps with neither. This applies to any large
-database that changes often, whatever tool made it.
+A first backup of several large databases can go over the push limit, and
+a large database that changes in many places every day can go past the
+recommended size in a few days. This applies to any large database, whatever
+tool made it. Back up a large database once a day.
 
 ## Keeping only recent backups
 
@@ -398,9 +417,9 @@ Anyone who can read the repo cannot read your files, but can learn some
 things about them:
 
 - **How many files there are.** Each file is one encrypted object, except a
-  file over 99 MiB, which is several (see "Large files"), so the number of
-  objects is close to the number of files. Symlinks are kept only in the
-  index.
+  file over 16 MiB, which is one object per chunk of about 4 MiB (see "Large
+  files"). So the number of objects shows roughly how many files there are
+  and how big the large ones are. Symlinks are kept only in the index.
 - **Roughly how big each file is.** Files are compressed, then encrypted, and
   encryption adds a small overhead (a short header and 16 bytes per 64 KiB).
   So an object's size is close to the file's compressed size, which also shows
@@ -412,8 +431,10 @@ things about them:
   `index.age` shows that a file's last-modified date or permissions changed,
   but no file's contents. From the history, a reader can see when backups
   ran, how many files changed each time, and, by matching sizes, how one file
-  such as a growing database changes over time. `salt prune` limits this to
-  the backups it keeps.
+  such as a growing database changes over time. For a file in chunks, a
+  reader sees which chunks were replaced, which shows when the file changed,
+  roughly where in it and roughly how much, but not what it holds. `salt
+  prune` limits this to the backups it keeps.
 - **How many keys can decrypt the backups.** `.salt/recipients.txt` is public,
   so a reader can see how many keys the backups are encrypted to.
 - **File names, with `--plain-paths`.** Objects are stored under their real
@@ -444,6 +465,8 @@ start another until the machine runs out of memory. These rules prevent that:
 5. End-to-end tests run only through `make e2e`. It builds salt once, caps
    the number of processes, and keeps the tests away from the real keychain.
 6. At most 4 files are worked on at once, with a 512 MB soft memory limit.
+   A file sealed in chunks holds one chunk, at most 16 MiB, in memory at a
+   time.
 7. Only one salt seals, backs up or prunes a repo at a time. Each takes a
    lock (`flock`) on `.git/salt/lock` in the repo, and a second one stops at
    once instead of waiting. The lock is never committed. It is the same file

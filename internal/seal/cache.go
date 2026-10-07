@@ -37,10 +37,13 @@ type cacheEntry struct {
 	Parts []cachePart `json:"parts,omitempty"` // every part, for a split file
 }
 
-// cachePart is one file of ciphertext and its size.
+// cachePart is one file of ciphertext and its size. For a chunk (see
+// encryptChunks) Chunk is the SHA-256 of its plaintext, so a later seal can
+// reuse it wherever the same chunk appears.
 type cachePart struct {
 	Object     string `json:"object"`
 	CipherSize int64  `json:"cipher_size"`
+	Chunk      string `json:"chunk,omitempty"`
 }
 
 // newCacheEntry records a file sealed into parts, in order.
@@ -57,6 +60,33 @@ func (c cacheEntry) all() []cachePart {
 		return c.Parts
 	}
 	return []cachePart{c.cachePart}
+}
+
+// cipherSize is the size of all its ciphertext.
+func (c cacheEntry) cipherSize() int64 {
+	var n int64
+	for _, p := range c.all() {
+		n += p.CipherSize
+	}
+	return n
+}
+
+// chunked reports whether the file was sealed in chunks.
+func (c cacheEntry) chunked() bool {
+	return c.all()[0].Chunk != ""
+}
+
+// chunks maps the plaintext hash of every chunk in the cache to its part.
+func (c *cache) chunks() map[string]cachePart {
+	known := map[string]cachePart{}
+	for _, ce := range c.Files {
+		for _, p := range ce.all() {
+			if p.Chunk != "" {
+				known[p.Chunk] = p
+			}
+		}
+	}
+	return known
 }
 
 func cacheKey(recipients []string, encryptPaths bool) string {

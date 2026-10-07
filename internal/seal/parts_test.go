@@ -23,13 +23,14 @@ import (
 	"github.com/spicy-lemonade/salt/internal/repo"
 )
 
-// smallParts makes files over 64 KiB split into 16 KiB parts, and caps a
-// file that grows past 64 KiB while it is sealed at 80 KiB, for one test.
+// smallParts makes a file that is not chunked split into parts of 16 KiB
+// of compressed data, for one test. Parts are the layout an older salt wrote
+// for every large file, which salt still restores, verifies and reuses.
 func smallParts(t *testing.T) {
 	t.Helper()
-	oldSplit, oldPart, oldOne := splitAbove, partSize, oneObjectLimit
-	splitAbove, partSize, oneObjectLimit = 64<<10, 16<<10, 80<<10
-	t.Cleanup(func() { splitAbove, partSize, oneObjectLimit = oldSplit, oldPart, oldOne })
+	old := oneObjectLimit
+	oneObjectLimit = 16 << 10
+	t.Cleanup(func() { oneObjectLimit = old })
 }
 
 // noise returns n bytes that do not compress, the same on every run.
@@ -71,10 +72,10 @@ func (f *fixture) indexVersion() int {
 	return ix.Version
 }
 
-// maxCipherSize is the most a part of partSize compressed bytes can take
-// once encrypted: age adds 16 bytes per 64 KiB chunk and a short header.
+// maxCipherSize is the most a part of oneObjectLimit compressed bytes can
+// take once encrypted: age adds 16 bytes per 64 KiB and a short header.
 func maxCipherSize() int64 {
-	return partSize + (partSize/(64<<10)+1)*16 + 1024
+	return oneObjectLimit + (oneObjectLimit/(64<<10)+1)*16 + 1024
 }
 
 func TestSplitRoundTrip(t *testing.T) {
@@ -121,13 +122,12 @@ func TestSplitRoundTrip(t *testing.T) {
 	}
 }
 
-// A file up to splitAbove is one object, even when it does not compress and
-// is far bigger than a part; so is a larger file that compresses into one
-// part. Neither changes the index version.
+// A file that compresses to oneObjectLimit or less is one object, however
+// big it is. Neither changes the index version.
 func TestNoSplitAtOrBelowTheLimit(t *testing.T) {
 	smallParts(t)
 	f := newFixture(t, true)
-	f.writeNoise("at-limit.bin", int(splitAbove))
+	f.writeNoise("at-limit.bin", int(oneObjectLimit)-1024)
 	f.write("compresses.txt", strings.Repeat("the same line\n", 20000))
 	f.seal(false)
 	for _, rel := range []string{"at-limit.bin", "compresses.txt"} {
@@ -156,7 +156,7 @@ func TestOneObjectGrowth(t *testing.T) {
 	}
 }
 
-// A file measured at or under splitAbove that grows before it is encrypted,
+// A file measured at or under maxChunk that grows before it is encrypted,
 // as a live file can, still never makes an object over oneObjectLimit: the
 // rest goes into a second part. The backup holds the grown file.
 func TestFileThatGrowsWhileSealed(t *testing.T) {
@@ -191,15 +191,15 @@ func TestFileThatGrowsWhileSealed(t *testing.T) {
 }
 
 // The cap leaves room for what age adds to a full object, and is above
-// anything a file of splitAbove bytes compresses to, so such a file is
-// never cut in two.
+// anything a file or chunk of maxChunk bytes compresses to, so neither is
+// ever cut in two.
 func TestOneObjectLimitFits(t *testing.T) {
 	ageCost := (oneObjectLimit/(64<<10) + 1) * 16
 	if oneObjectLimit+ageCost+4096 >= repo.GitHubFileLimit {
 		t.Fatalf("an object of %d compressed bytes can reach GitHub's limit", oneObjectLimit)
 	}
-	if float64(splitAbove)*1.001 >= float64(oneObjectLimit) {
-		t.Fatalf("a %d byte file that does not compress could be cut at %d", splitAbove, oneObjectLimit)
+	if float64(maxChunk)*1.001 >= float64(oneObjectLimit) {
+		t.Fatalf("a %d byte file that does not compress could be cut at %d", maxChunk, oneObjectLimit)
 	}
 }
 
@@ -417,7 +417,7 @@ func TestSplitStreams(t *testing.T) {
 		return b.TotalAlloc - a.TotalAlloc
 	}
 	run := func(part int64) (seal, restore uint64, parts int) {
-		partSize = part
+		oneObjectLimit = part
 		f := newFixture(t, true)
 		f.writeNoise("big.db", size)
 		seal = alloc(func() { f.seal(false) })

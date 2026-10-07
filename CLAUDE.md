@@ -58,11 +58,11 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - `.salt/recipients.txt`: public; the age public keys every file is encrypted to
 - `.salt/key.age`: passphrase-wrapped private key (passphrase recovery only)
 - `index.age`: encrypted JSON index holding real paths, SHA-256 of the plaintext, sizes, modes, last-modified times and symlinks, signed with the signing key
-- `objects/xx/<random>.age`: file contents when paths are encrypted (the default), and parts after the first of a file over 99 MiB
+- `objects/xx/<random>.age`: file contents when paths are encrypted (the default), and every chunk of a file over 16 MiB
 - `files/<path>.age`: file contents with `--plain-paths`
 - `README.md`, `LICENSE`, `.gitignore`, `.gitattributes`: the only other files allowed unencrypted
 
-**Pipeline:** file -> zstd -> age -> object, fully streamed with fixed buffers and at most 4 workers. No data file is ever read whole into memory. A file over 99 MiB has its compressed stream split into 45 MiB parts, each its own age file, so nothing in the repo reaches GitHub's 100 MiB limit (see `docs/design.md`, "Large files").
+**Pipeline:** file -> zstd -> age -> object, fully streamed with fixed buffers and at most 4 workers. No data file is ever read whole into memory. A file over 16 MiB is cut into content-defined chunks of plaintext (FastCDC, 1 to 16 MiB, about 4 MiB on average, boundaries keyed from the signing key), each compressed and encrypted as its own object and reused by its plaintext hash, so a change uploads only the chunks around it. An index with a chunked file is version 3. Older salts' 45 MiB parts (index version 2) are still read (see `docs/design.md`, "Large files").
 
 **Keys:**
 - Sealing needs only the public key and the signing key, so encrypting a backup never needs the decryption key.
@@ -72,7 +72,7 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 
 **Approved keys:** `salt init` saves the repo's keys and file-name setting to the OS config dir (`salt/trusted/<hash>.json`, 0600). `salt seal` refuses if the repo's `.salt/recipients.txt` or `format.json` differ, because anyone who can push could otherwise add their own key. `salt trust` approves a change. All repo reads and writes go through `os.Root` so symlinks can't lead outside the repo.
 
-**Change detection:** age output is randomised, so a local cache (the OS cache dir, `seal-<hash>.json`, 0600, never committed) maps plaintext hashes to existing ciphertext. Unchanged files keep their ciphertext, and an unchanged snapshot (same contents, permissions and last-modified dates) produces no commit. The same folder holds `copykey-<hash>` (0600), a random key per repo that database copies use in place of a random one of their own (for `pg_dump --restrict-key`), so an unchanged database also makes no commit.
+**Change detection:** age output is randomised, so a local cache (the OS cache dir, `seal-<hash>.json`, 0600, never committed) maps plaintext hashes, of whole files and of chunks, to existing ciphertext. Unchanged files and chunks keep their ciphertext, and an unchanged snapshot (same contents, permissions and last-modified dates) produces no commit. The same folder holds `copykey-<hash>` (0600), a random key per repo that database copies use in place of a random one of their own (for `pg_dump --restrict-key`), so an unchanged database also makes no commit.
 
 **Restore:** decrypts into a temp directory, verifies every file against the index, then moves the result into place with owner-only permissions. An existing destination is moved aside, never overwritten.
 

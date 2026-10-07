@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sync"
 
 	"filippo.io/age"
 	"github.com/klauspost/compress/zstd"
@@ -24,6 +25,11 @@ const (
 	zstdWindow    = 4 << 20
 	zstdMaxWindow = 8 << 20
 )
+
+// encoders holds zstd encoders for encryptTo to use again. Making one costs
+// several MiB, and a large file in chunks needs one per chunk. At most one
+// per worker is in use at a time.
+var encoders sync.Pool
 
 // encryptTo streams r through zstd and age into new files inside rt, and
 // returns the SHA-256 of the plaintext that was read and the files written,
@@ -46,13 +52,17 @@ func encryptTo(rt *os.Root, rel string, r io.Reader, recipients []age.Recipient,
 	if err := pw.open(rel); err != nil {
 		return "", nil, err
 	}
-	zw, err := zstd.NewWriter(pw,
-		zstd.WithEncoderConcurrency(1),
-		zstd.WithWindowSize(zstdWindow),
-		zstd.WithLowerEncoderMem(true))
-	if err != nil {
-		return "", nil, err
+	zw, ok := encoders.Get().(*zstd.Encoder)
+	if !ok {
+		zw, err = zstd.NewWriter(nil,
+			zstd.WithEncoderConcurrency(1),
+			zstd.WithWindowSize(zstdWindow),
+			zstd.WithLowerEncoderMem(true))
+		if err != nil {
+			return "", nil, err
+		}
 	}
+	zw.Reset(pw)
 	h := sha256.New()
 	if _, err := io.Copy(zw, io.TeeReader(r, h)); err != nil {
 		zw.Close()
@@ -61,6 +71,10 @@ func encryptTo(rt *os.Root, rel string, r io.Reader, recipients []age.Recipient,
 	if err := zw.Close(); err != nil {
 		return "", nil, err
 	}
+	// Only an encoder that closed cleanly is used again, and it lets go of
+	// pw first.
+	zw.Reset(nil)
+	encoders.Put(zw)
 	if err := pw.closePart(); err != nil {
 		return "", nil, err
 	}
