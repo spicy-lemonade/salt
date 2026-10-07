@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path"
@@ -312,38 +311,31 @@ func TestChunksSharedBetweenFiles(t *testing.T) {
 }
 
 // A seal that fails part way through a chunked file removes the chunks it
-// had written, so a full disk is not left fuller for the next try. A quarter
-// of the folders chunks can go in are read-only, so some chunks are almost
-// always written before one fails.
+// had written, so a full disk is not left fuller for the next try. The seal
+// fails as it is about to write the third new chunk, so two are written
+// first.
 func TestFailedChunkedSealLeavesNoChunks(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("root can write to a read-only folder")
-	}
 	smallChunks(t)
 	f := newFixture(t, true)
 	f.writeNoise("big.db", 256<<10)
 	f.seal(false)
 	f.write("big.db", string(noise(2 << 20)[1<<20:]))
-	objects := filepath.Join(f.root, repo.ObjectsDir)
-	var dirs []string
-	for i := range 256 {
-		d := filepath.Join(objects, fmt.Sprintf("%02x", i))
-		os.MkdirAll(d, 0o755)
-		if i%4 == 3 {
-			os.Chmod(d, 0o500)
-			dirs = append(dirs, d)
+	full := errors.New("no space left on device")
+	most := 0
+	chunkHook = func(written int) error {
+		most = max(most, written)
+		if written == 2 {
+			return full
 		}
+		return nil
 	}
-	os.Chmod(objects, 0o500)
-	dirs = append(dirs, objects)
-	t.Cleanup(func() {
-		for _, d := range dirs {
-			os.Chmod(d, 0o755)
-		}
-	})
+	t.Cleanup(func() { chunkHook = nil })
 	before := snapshot(t, f.root)
-	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); err == nil {
-		t.Fatal("seal succeeded")
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); !errors.Is(err, full) || !strings.Contains(err.Error(), "big.db") {
+		t.Fatalf("seal = %v", err)
+	}
+	if most != 2 {
+		t.Fatalf("the seal failed after %d new chunks, want 2", most)
 	}
 	for p := range snapshot(t, f.root) {
 		if _, ok := before[p]; !ok {

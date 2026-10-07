@@ -118,12 +118,14 @@ type item struct {
 	live    bool // see Extra.Live
 }
 
-// entriesHook lets tests change the entries before Seal checks them, and
-// hashedHook lets them change a file after Seal has measured it. Both are
-// always nil outside tests.
+// entriesHook lets tests change the entries before Seal checks them,
+// hashedHook lets them change a file after Seal has measured it, and
+// chunkHook lets them fail a seal before it writes a new chunk, given how
+// many it has written for the file. All are always nil outside tests.
 var (
 	entriesHook func([]Entry) []Entry
 	hashedHook  func(path string)
+	chunkHook   func(written int) error
 )
 
 // Seal encrypts the tree at src into the repository r. An empty src seals
@@ -446,6 +448,11 @@ func encryptChunks(rt *os.Root, r *repo.Repo, abs string, gear *gearTable, prev 
 			ok = ok && partIntact(rt, p)
 		}
 		if !ok {
+			if chunkHook != nil {
+				if err := chunkHook(len(wrote)); err != nil {
+					return cacheEntry{}, 0, 0, err
+				}
+			}
 			obj, err := objectName(true, "")
 			if err != nil {
 				return cacheEntry{}, 0, 0, err
