@@ -344,6 +344,75 @@ func TestFailedChunkedSealLeavesNoChunks(t *testing.T) {
 	}
 }
 
+// failOn makes a one-worker seal fail as it is about to write the first new
+// chunk of the file named name, after every file before it has finished.
+func failOn(t *testing.T, name string) error {
+	t.Helper()
+	full := errors.New("no space left on device")
+	failing := false
+	hashedHook = func(p string) { failing = failing || filepath.Base(p) == name }
+	chunkHook = func(int) error {
+		if failing {
+			return full
+		}
+		return nil
+	}
+	t.Cleanup(func() { hashedHook, chunkHook = nil, nil })
+	return full
+}
+
+// A seal that fails keeps what the files before the failure wrote, so the
+// next seal reuses a large file's chunks instead of encrypting it again.
+func TestFailedSealKeepsFinishedFiles(t *testing.T) {
+	smallChunks(t)
+	f := newFixture(t, true)
+	f.writeNoise("a.db", 512<<10)
+	f.write("b.db", string(noise(1 << 20)[512<<10:]))
+	full := failOn(t, "b.db")
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer, Workers: 1}); !errors.Is(err, full) {
+		t.Fatalf("seal = %v", err)
+	}
+	hashedHook, chunkHook = nil, nil
+	res := f.seal(false)
+	if slices.ContainsFunc(res.Written, func(w Written) bool { return w.Path == "a.db" }) {
+		t.Fatalf("a.db, sealed before the failure, was encrypted again: %+v", res.Written)
+	}
+	if !slices.ContainsFunc(res.Written, func(w Written) bool { return w.Path == "b.db" }) {
+		t.Fatalf("b.db was not sealed: %+v", res.Written)
+	}
+	assertTreesEqual(t, f.src, f.restore(RestoreOptions{}))
+	vr, err := Verify(f.root, f.ids(), VerifyOptions{})
+	if err != nil || vr.ProblemCount != 0 || len(vr.Unreferenced) != 0 {
+		t.Fatalf("verify = %+v, %v", vr, err)
+	}
+}
+
+// With plain paths a changed file's object is replaced in place. When the
+// seal then fails on a later file and the file goes back to what it was,
+// the object, which holds the newer content at the same size, is not kept
+// for the older content: restore and verify still pass.
+func TestFailedSealRecordsReplacedPlainObject(t *testing.T) {
+	smallChunks(t)
+	f := newFixture(t, false)
+	old := string(noise(8 << 10))
+	f.write("x.bin", old)
+	f.seal(false)
+	f.write("x.bin", string(noise(16 << 10)[8<<10:]))
+	f.writeNoise("y.db", 256<<10)
+	full := failOn(t, "y.db")
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer, Workers: 1}); !errors.Is(err, full) {
+		t.Fatalf("seal = %v", err)
+	}
+	hashedHook, chunkHook = nil, nil
+	f.write("x.bin", old)
+	f.seal(false)
+	assertTreesEqual(t, f.src, f.restore(RestoreOptions{}))
+	vr, err := Verify(f.root, f.ids(), VerifyOptions{})
+	if err != nil || vr.ProblemCount != 0 {
+		t.Fatalf("verify = %+v, %v", vr, err)
+	}
+}
+
 // A new file whose chunks were all sealed before writes nothing new, but is
 // counted as encrypted, not unchanged.
 func TestNewFileFromKnownChunksIsNotUnchanged(t *testing.T) {

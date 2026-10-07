@@ -201,7 +201,12 @@ files, so an unchanged file always keeps its own objects, even when another
 file holds the same chunks under other objects. A chunk lost from the repo
 is the only one encrypted again on the next seal. A seal that fails part way
 through a file removes the chunks it wrote for it, so a full disk is not
-left fuller for the next try.
+left fuller for the next try. The files it finished before the failure keep
+what they wrote: salt saves their entries in the change cache, so the next
+seal reuses a large file's chunks instead of encrypting it again. Nothing
+else is removed, and the next seal that succeeds removes what no index
+needs. The saved entries also record what a `--plain-paths` object replaced
+in place now holds, so it is never kept for the content it held before.
 
 `salt doctor` warns about any file over 100 MiB in the repo, which only an
 older salt or a person could have put there.

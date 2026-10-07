@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"math"
 	"os"
 	"path"
@@ -187,6 +188,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	gone := make([]bool, len(items))
 	var encrypted, reused atomic.Int64
 	written := make([]int64, len(items))
+	done := make([]bool, len(items)) // regular files fully sealed
 	known := c.chunks()
 	gear := chunkGear(opt.Signer.Seed())
 	err = forEach(len(items), workers(opt.Workers), func(i int) error {
@@ -289,9 +291,23 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			}
 		}
 		entries[i], newCache[i] = e, ce
+		done[i] = true
 		return nil
 	})
 	if err != nil {
+		// The files sealed before the failure keep what they wrote, so the
+		// next seal reuses it rather than encrypting it all again. It also
+		// records what a plain-paths object replaced in place now holds, so
+		// it is never kept for the content it held before. Nothing is
+		// removed; the next seal removes what no index needs. Losing this
+		// save only costs that reuse, so the seal's own error is returned.
+		partial := &cache{Key: c.Key, IndexSHA: c.IndexSHA, IndexSize: c.IndexSize, Files: maps.Clone(c.Files)}
+		for i, d := range done {
+			if d {
+				partial.Files[items[i].rel] = newCache[i]
+			}
+		}
+		partial.save(cPath)
 		return nil, err
 	}
 	res.Encrypted, res.Reused = int(encrypted.Load()), int(reused.Load())
