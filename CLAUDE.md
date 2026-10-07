@@ -44,7 +44,7 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - `internal/hook`: pre-commit hook script and installation
 - `internal/gitx`: the only way salt runs git (hooks, compression and delta search always off)
 - `internal/source`: safe copies of live databases (runs `sqlite3` and `pg_dump`); each kind is a `Database` listed in `Kinds`; with `gitx` and `proc`, the only packages that start programs
-- `internal/proc`: runs the programs `gitx` and `source` may stop part way (`git clone`, `git ls-remote`, `git push`, `git commit`, `sqlite3`, `pg_dump`); caps their error output and how long a stopped one is waited for
+- `internal/proc`: runs the programs `gitx` and `source` may stop part way (`git clone`, `git ls-remote`, `git rev-list`, `git push`, `git commit`, `sqlite3`, `pg_dump`); caps their error output and how long a stopped one is waited for
 - `internal/preset`: presets for `salt backup`, one embedded JSON file per tool in `presets/`, read by the same tool-agnostic code; finds each preset's files and SQLite databases and leaves out files holding secrets
 - `internal/guard`: refuses nested salt processes; sets a soft memory limit; locks a backup repo so two salts never seal, back up or prune it at once
 - `internal/prune`: keeps only the backups from the last N days with a change (counted for the whole repo, not per file), all of the latest day's and the last of each earlier day's, by rewriting the branch's history
@@ -62,7 +62,7 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - `files/<path>.age`: file contents with `--plain-paths`
 - `README.md`, `LICENSE`, `.gitignore`, `.gitattributes`: the only other files allowed unencrypted
 
-**Pipeline:** file -> zstd -> age -> object, fully streamed with fixed buffers and at most 4 workers. No data file is ever read whole into memory. A file over 16 MiB is cut into content-defined chunks of plaintext (FastCDC, 1 to 16 MiB, about 4 MiB on average, boundaries keyed from the signing key), each compressed and encrypted as its own object and reused by its plaintext hash, so a change uploads only the chunks around it. An index with a chunked file is version 3. Older salts' 45 MiB parts (index version 2) are still read (see `docs/design.md`, "Large files").
+**Pipeline:** file -> zstd -> age -> object, fully streamed with fixed buffers and at most 4 workers. No data file is ever read whole into memory. A file over 16 MiB is cut into content-defined chunks of plaintext (FastCDC, 1 to 16 MiB, about 4 MiB on average, boundaries keyed from the signing key), each compressed and encrypted as its own object and reused by its plaintext hash, so a change uploads only the chunks around it. An index with parts or chunks is version 2. Older salts' 45 MiB parts are still read (see `docs/design.md`, "Large files").
 
 **Keys:**
 - Sealing needs only the public key and the signing key, so encrypting a backup never needs the decryption key.

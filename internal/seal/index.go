@@ -75,14 +75,11 @@ func (e Entry) objects() []string {
 }
 
 // partsIndexVersion is the index version seal writes when a file is in
-// parts, so an older salt, which would read only the first part, refuses the
-// index instead. Every other index keeps repo.FormatVersion, so it stays
-// byte for byte the same, signature included.
+// parts or chunks, so a salt from before parts, which would read only the
+// first object, refuses the index instead. Every other index keeps
+// repo.FormatVersion, so it stays byte for byte the same, signature
+// included. A salt that reads parts reads chunks the same way.
 const partsIndexVersion = 2
-
-// chunksIndexVersion is the index version seal writes when a file is in
-// chunks (see encryptChunks).
-const chunksIndexVersion = 3
 
 func (ix *Index) marshal() ([]byte, string, error) {
 	b, err := json.Marshal(ix)
@@ -207,7 +204,7 @@ func ReadIndex(root string, ids []age.Identity, allowUnsigned bool) (*Index, err
 	if err != nil {
 		return nil, fmt.Errorf("index: %w", err)
 	}
-	if ix.Version != repo.FormatVersion && ix.Version != partsIndexVersion && ix.Version != chunksIndexVersion {
+	if ix.Version != repo.FormatVersion && ix.Version != partsIndexVersion {
 		return nil, fmt.Errorf("index version %d is not supported by this salt; upgrade salt", ix.Version)
 	}
 	if err := checkSignature(ix, d.sum(), ids); err != nil {

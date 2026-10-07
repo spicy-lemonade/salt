@@ -539,7 +539,7 @@ func TestBackupWarnsOfALargePush(t *testing.T) {
 			if !slices.Equal(e.git.sizeLeases, []string{"tip"}) || !slices.Contains(e.git.calls, "push") {
 				t.Fatalf("measured against %v, calls %v", e.git.sizeLeases, e.git.calls)
 			}
-			const want = "salt: warning: this push sends about 3.0 GiB. GitHub refuses a push over 2 GB"
+			const want = "salt: warning: this push sends up to about 3.0 GiB. GitHub refuses a push over 2 GB"
 			if out := e.ui.out.String(); strings.Contains(out, want) != tc.warn {
 				t.Fatalf("output:\n%s", out)
 			}
@@ -551,7 +551,7 @@ func TestBackupWarnsOfALargePush(t *testing.T) {
 func TestWarnPushNamesLargeFiles(t *testing.T) {
 	e := newEnv(t)
 	e.ui.out.Reset()
-	e.app.warnPush(e.root, "", []seal.Written{
+	e.app.warnPush(context.Background(), e.root, "", []seal.Written{
 		{Path: "tool/state.db", Bytes: warnFileBytes + 1},
 		{Path: "tool/notes.md", Bytes: warnFileBytes},
 		{Path: "tool/huge.db", Bytes: 5 << 30},
@@ -567,5 +567,20 @@ func TestWarnPushNamesLargeFiles(t *testing.T) {
 	}
 	if strings.Contains(out, "notes.md") {
 		t.Errorf("a file at the limit was named:\n%s", out)
+	}
+}
+
+// Ctrl-C while the push is measured stops the backup before prune.
+func TestBackupInterruptedWhileMeasuringThePush(t *testing.T) {
+	e, _, presets := backupEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	e.git.onPushSize = cancel
+	err := e.app.Backup(BackupOptions{Repo: e.root, Presets: presets, KeepDays: 3, Context: ctx})
+	if !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "old backups were not dropped and it was not pushed") {
+		t.Fatalf("Backup = %v", err)
+	}
+	if slices.Contains(e.git.calls, "prune") || slices.Contains(e.git.calls, "push") {
+		t.Fatalf("calls = %v", e.git.calls)
 	}
 }

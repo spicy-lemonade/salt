@@ -226,12 +226,13 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			e.Mode = uint32(it.mode.Perm())
 		}
 		e.MTime = unixNano(it.modTime)
-		ce, ok := c.Files[it.rel]
+		prev, cached := c.Files[it.rel]
+		ce, ok := prev, false
 		var size int64
 		// A file sealed in chunks last time is chunked again at once: one
 		// read both hashes it and finds which chunks changed. Any other file
 		// is hashed first, so an unchanged one keeps its objects.
-		chunk := ok && ce.chunked()
+		chunk := cached && prev.chunked()
 		if !chunk {
 			var sha string
 			if sha, size, err = hashFile(it.abs); vanished(err) {
@@ -242,13 +243,13 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			if hashedHook != nil {
 				hashedHook(it.abs)
 			}
-			ok = ok && ce.SHA256 == sha && objectIntact(rt, ce)
+			ok = cached && prev.SHA256 == sha && objectIntact(rt, prev)
 			chunk = !ok && size > int64(maxChunk)
 		}
 		var newBytes int64
 		switch {
 		case chunk:
-			ce, size, newBytes, err = encryptChunks(rt, r, it.abs, gear, known)
+			ce, size, newBytes, err = encryptChunks(rt, r, it.abs, gear, prev, known)
 		case !ok:
 			var obj string
 			if obj, err = objectName(r.Format.EncryptPaths, it.rel); err != nil {
@@ -263,12 +264,14 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		if err != nil {
 			return fmt.Errorf("%s: %w", it.rel, err)
 		}
-		if newBytes > 0 {
-			encrypted.Add(1)
-			written[i] = newBytes
-		} else {
+		// A changed file whose chunks were all sealed before, such as one put
+		// back as it was, wrote nothing new but is not unchanged.
+		if newBytes == 0 && cached && ce.SHA256 == prev.SHA256 {
 			reused.Add(1)
+		} else {
+			encrypted.Add(1)
 		}
+		written[i] = newBytes
 		e.SHA256, e.Size = ce.SHA256, size
 		for j, p := range ce.all() {
 			if j == 0 {
@@ -306,11 +309,8 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		for _, obj := range e.objects() {
 			keep[obj] = true
 		}
-		switch {
-		case newCache[i].chunked():
-			version = chunksIndexVersion
-		case len(e.Parts) > 0:
-			version = max(version, partsIndexVersion)
+		if len(e.Parts) > 0 {
+			version = partsIndexVersion
 		}
 	}
 
@@ -379,21 +379,38 @@ func encryptFile(rt *os.Root, r *repo.Repo, abs, obj string, limit int64) (cache
 	return newCacheEntry(sha, parts), cr.n, nil
 }
 
-// encryptChunks seals the file at abs in chunks (see chunker). A chunk
-// already in known, or met earlier in the file, keeps its object if it is
-// still intact; any other is compressed and encrypted on its own into a new
-// object under a random name, even with plain paths, as no chunk belongs to
-// one file. The file is read once, through one buffer. It returns the
-// plaintext size it read and how many bytes of new ciphertext it wrote.
+// encryptChunks seals the file at abs in chunks (see chunker). A chunk that
+// was in the file last time (prev), met earlier in the file, or in known
+// keeps its object if it is still intact; any other is compressed and
+// encrypted on its own into a new object under a random name, even with
+// plain paths, as a chunk can be in more than one file. The file's own
+// chunks are looked up first, so an unchanged file always keeps its own
+// objects, even when another file holds the same chunks under others. The
+// file is read once, through one buffer. It returns the plaintext size it
+// read and how many bytes of new ciphertext it wrote.
 //
-// A failure leaves the chunks already written in the repo. The index never
-// names them, so the next seal removes them.
-func encryptChunks(rt *os.Root, r *repo.Repo, abs string, gear *gearTable, known map[string]cachePart) (ce cacheEntry, size, newBytes int64, err error) {
+// On failure it removes the chunks it wrote, so a full disk is not left
+// fuller for the next try.
+func encryptChunks(rt *os.Root, r *repo.Repo, abs string, gear *gearTable, prev cacheEntry, known map[string]cachePart) (ce cacheEntry, size, newBytes int64, err error) {
 	f, err := os.Open(abs)
 	if err != nil {
 		return cacheEntry{}, 0, 0, err
 	}
 	defer f.Close()
+	var wrote []string
+	defer func() {
+		if err != nil {
+			for _, obj := range wrote {
+				rt.Remove(filepath.FromSlash(obj))
+			}
+		}
+	}()
+	own := map[string]cachePart{}
+	for _, p := range prev.all() {
+		if p.Chunk != "" {
+			own[p.Chunk] = p
+		}
+	}
 	ch := newChunker(f, gear)
 	whole := sha256.New()
 	seen := map[string]cachePart{}
@@ -411,8 +428,11 @@ func encryptChunks(rt *os.Root, r *repo.Repo, abs string, gear *gearTable, known
 		s := sha256.Sum256(b)
 		key := hex.EncodeToString(s[:])
 		p, ok := seen[key]
-		if !ok {
-			p, ok = known[key]
+		for _, m := range []map[string]cachePart{own, known} {
+			if ok {
+				break
+			}
+			p, ok = m[key]
 			ok = ok && partIntact(rt, p)
 		}
 		if !ok {
@@ -424,6 +444,7 @@ func encryptChunks(rt *os.Root, r *repo.Repo, abs string, gear *gearTable, known
 			if err != nil {
 				return cacheEntry{}, 0, 0, err
 			}
+			wrote = append(wrote, obj)
 			p = written[0]
 			p.Chunk = key
 			newBytes += p.CipherSize
@@ -465,7 +486,7 @@ func unixNano(t time.Time) int64 {
 // objectIntact reports whether every part of a cached file is still in the
 // repo at the size it was written, and small enough to push. An older salt
 // wrote a large file as one object over GitHub's limit; that file is sealed
-// again, so it is split, even though it has not changed.
+// again, in chunks, even though it has not changed.
 func objectIntact(rt *os.Root, ce cacheEntry) bool {
 	for _, p := range ce.all() {
 		if !partIntact(rt, p) {

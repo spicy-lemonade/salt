@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -203,8 +204,8 @@ func TestChunkedRoundTrip(t *testing.T) {
 					t.Errorf("chunk %s is not under objects/", obj)
 				}
 			}
-			if v := f.indexVersion(); v != chunksIndexVersion {
-				t.Errorf("index version %d, want %d", v, chunksIndexVersion)
+			if v := f.indexVersion(); v != partsIndexVersion {
+				t.Errorf("index version %d, want %d", v, partsIndexVersion)
 			}
 			i := slices.IndexFunc(res.Written, func(w Written) bool { return w.Path == "data/big.db" })
 			if i < 0 || res.Written[i].Bytes < 1<<20 {
@@ -309,6 +310,77 @@ func TestChunksSharedBetweenFiles(t *testing.T) {
 	}
 }
 
+// A seal that fails part way through a chunked file removes the chunks it
+// had written, so a full disk is not left fuller for the next try. A quarter
+// of the folders chunks can go in are read-only, so some chunks are almost
+// always written before one fails.
+func TestFailedChunkedSealLeavesNoChunks(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root can write to a read-only folder")
+	}
+	smallChunks(t)
+	f := newFixture(t, true)
+	f.writeNoise("big.db", 256<<10)
+	f.seal(false)
+	f.write("big.db", string(noise(2 << 20)[1<<20:]))
+	objects := filepath.Join(f.root, repo.ObjectsDir)
+	var dirs []string
+	for i := range 256 {
+		d := filepath.Join(objects, fmt.Sprintf("%02x", i))
+		os.MkdirAll(d, 0o755)
+		if i%4 == 3 {
+			os.Chmod(d, 0o500)
+			dirs = append(dirs, d)
+		}
+	}
+	os.Chmod(objects, 0o500)
+	dirs = append(dirs, objects)
+	t.Cleanup(func() {
+		for _, d := range dirs {
+			os.Chmod(d, 0o755)
+		}
+	})
+	before := snapshot(t, f.root)
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); err == nil {
+		t.Fatal("seal succeeded")
+	}
+	for p := range snapshot(t, f.root) {
+		if _, ok := before[p]; !ok {
+			t.Errorf("a failed seal left %s", p)
+		}
+	}
+}
+
+// A new file whose chunks were all sealed before writes nothing new, but is
+// counted as encrypted, not unchanged.
+func TestNewFileFromKnownChunksIsNotUnchanged(t *testing.T) {
+	smallChunks(t)
+	f := newFixture(t, true)
+	data := string(noise(512 << 10))
+	f.write("a.db", data)
+	f.seal(false)
+	f.write("b.db", data)
+	if res := f.seal(false); res.Encrypted != 1 || res.Reused != 6 || len(res.Written) != 0 {
+		t.Fatalf("seal of a copy = %+v", res)
+	}
+}
+
+// Two files with the same chunks, both new in one seal, each keep their own
+// objects, so the next seal of the unchanged snapshot changes nothing.
+func TestSameNewChunksInTwoFilesStayPut(t *testing.T) {
+	smallChunks(t)
+	f := newFixture(t, true)
+	data := string(noise(512 << 10))
+	f.write("a.db", data)
+	f.write("b.db", data)
+	f.seal(false)
+	for range 3 {
+		if res := f.seal(false); res.IndexNew || len(res.Removed) != 0 || res.Encrypted != 0 {
+			t.Fatalf("an unchanged snapshot changed the repo: %+v", res)
+		}
+	}
+}
+
 // A large file in parts, as an older salt sealed it, keeps its parts while it
 // is unchanged, and is chunked once it changes.
 func TestOldPartsKeptUntilChanged(t *testing.T) {
@@ -326,8 +398,8 @@ func TestOldPartsKeptUntilChanged(t *testing.T) {
 	old := f.entry("big.db").objects()
 	f.writeNoise("big.db", 300<<10)
 	res := f.seal(false)
-	if v := f.indexVersion(); v != chunksIndexVersion {
-		t.Fatalf("index version %d, want chunks", v)
+	if c, _ := f.loadCache(); !c.Files["big.db"].chunked() {
+		t.Fatalf("a changed file in parts was not chunked: %+v", c.Files["big.db"])
 	}
 	slices.Sort(old)
 	slices.Sort(res.Removed)

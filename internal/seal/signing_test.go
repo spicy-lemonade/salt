@@ -138,8 +138,8 @@ func TestAllowUnsignedKeepsOtherChecks(t *testing.T) {
 	if _, err := ReadIndex(f.root, f.ids(), true); err == nil || errors.Is(err, ErrNotSigned) || !strings.Contains(err.Error(), "cannot unmarshal") {
 		t.Fatalf("signature that is not a string: %v", err)
 	}
-	f.writeIndex(&Index{Version: chunksIndexVersion + 1, Entries: []Entry{}})
-	if _, err := ReadIndex(f.root, f.ids(), true); err == nil || !strings.Contains(err.Error(), "version 4") {
+	f.writeIndex(&Index{Version: partsIndexVersion + 1, Entries: []Entry{}})
+	if _, err := ReadIndex(f.root, f.ids(), true); err == nil || !strings.Contains(err.Error(), "version 3") {
 		t.Fatalf("unsupported version: %v", err)
 	}
 }

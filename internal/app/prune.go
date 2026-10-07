@@ -9,8 +9,9 @@ import (
 
 // Prune keeps only the backups from the keepDays most recent days on which
 // anything in the repo changed, one a day before the latest of them (see
-// prune.Select), and drops the rest from the checked-out branch. It refuses a repo this machine has not approved: if someone else
-// changed its keys, the history that shows it must not be rewritten away.
+// prune.Select), and drops the rest from the checked-out branch. It refuses
+// a repo this machine has not approved: if someone else changed its keys,
+// the history that shows it must not be rewritten away.
 func (a *App) Prune(repoRoot string, keepDays int) error {
 	r, err := repo.Open(repoRoot)
 	if err != nil {

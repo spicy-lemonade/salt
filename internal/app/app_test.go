@@ -98,10 +98,11 @@ type fakeGit struct {
 	onStage  func()
 	onCommit func() error
 	// pushSize and pushSizeErr are what PushSize returns; sizeLeases
-	// records the lease each call was given.
+	// records the lease each call was given. onPushSize runs during it.
 	pushSize    int64
 	pushSizeErr error
 	sizeLeases  []string
+	onPushSize  func()
 }
 
 func (f *fakeGit) HookPath(string) (string, error) { return f.hook, nil }
@@ -179,8 +180,11 @@ func (f *fakeGit) Push(ctx context.Context, _, lease string) error {
 	return f.push(ctx)
 }
 
-func (f *fakeGit) PushSize(_, lease string) (int64, error) {
+func (f *fakeGit) PushSize(_ context.Context, _, lease string) (int64, error) {
 	f.sizeLeases = append(f.sizeLeases, lease)
+	if f.onPushSize != nil {
+		f.onPushSize()
+	}
 	return f.pushSize, f.pushSizeErr
 }
 

@@ -174,11 +174,13 @@ frames one after another as one stream. The encrypted index lists each
 file's objects in order, and restore and verify decrypt them in turn,
 opening one at a time, so memory stays flat. Sealing holds one chunk in
 memory per worker, and reuses zstd encoders from one chunk to the next. An
-index with a file in chunks is written as version 3, so an older salt
-refuses it. Any other index keeps the version it had.
+index with a file in parts or chunks is written as version 2, so a salt from
+before parts, which would read only the first object, refuses it. Any other
+index stays version 1. A salt that reads parts reads chunks too, the same
+way.
 
 Older salts split a file over 99 MiB into parts of 45 MiB of compressed
-data, written as index version 2. Salt still restores and verifies them,
+data. Salt still restores and verifies them,
 and keeps an unchanged file's parts. Once such a file changes, it is sealed
 in chunks. A file of 16 MiB or less that grows past 99.5 MiB of compressed
 data while it is sealed, as a live file can, still has the rest put into a
@@ -191,9 +193,12 @@ and leaves its single-object fields empty. An older salt using the same
 cache then finds nothing to reuse and encrypts the file again, rather than
 keeping only its first object.
 
-A chunk lost from the repo is the only one encrypted again on the next
-seal. Chunks written by a seal that failed part way are not in any index,
-and the next seal removes them.
+A file's own chunks from its last seal are looked up before those of other
+files, so an unchanged file always keeps its own objects, even when another
+file holds the same chunks under other objects. A chunk lost from the repo
+is the only one encrypted again on the next seal. A seal that fails part way
+through a file removes the chunks it wrote for it, so a full disk is not
+left fuller for the next try.
 
 `salt doctor` warns about any file over 100 MiB in the repo, which only an
 older salt or a person could have put there.
@@ -217,8 +222,11 @@ day with a change, and only the last backup of each earlier day (see
 multiply what history holds. Before pushing, `salt backup` warns when the
 push would send more than 1 GiB, or when a file added more than 500 MiB of
 new encrypted data, naming the file and never showing what it holds. The
-push still goes ahead. Measuring the push needs git 2.31 or later. With an
-older git only the files are named.
+push still goes ahead. The push is measured (`git rev-list --disk-usage`)
+before old backups are dropped, while the commit origin holds is sure to be
+in the local repo. So after pushes that failed it can also count backups
+prune is about to drop. Measuring the push needs git 2.31 or later. When git
+cannot measure it, only the files are named.
 
 GitHub refuses a push over 2 GB, recommends keeping a repo under 1 GB, and
 strongly recommends keeping it under 5 GB (its figures as of October 2026).
@@ -230,7 +238,8 @@ tool made it. Back up a large database once a day.
 ## Keeping only recent backups
 
 Encrypted files can't be compressed against their earlier versions, so every
-change adds the changed file's full size to the repo. `salt prune REPO` stops
+change adds the changed file's full size to the repo, or for a large file
+the size of its changed chunks. `salt prune REPO` stops
 the repo growing forever by dropping old backups from its history.
 
 ### What "5 days" means
@@ -465,8 +474,8 @@ start another until the machine runs out of memory. These rules prevent that:
    Compression and the delta search are off too (see "Large files").
 4. Only `internal/gitx`, `internal/source` and `internal/proc` may start other
    programs. `internal/proc` runs the ones salt may stop part way (`git
-   clone`, `git ls-remote`, `git push`, `git commit`, `sqlite3` and
-   `pg_dump`). It keeps at most 4 KiB of their error output, and waits at
+   clone`, `git ls-remote`, `git rev-list`, `git push`, `git commit`,
+   `sqlite3` and `pg_dump`). It keeps at most 4 KiB of their error output, and waits at
    most 5 seconds for the output of one that was stopped, since a program it
    started can hold that output open. Unit tests never start any.
    `internal/rules` enforces rules 1 and 4.
@@ -680,7 +689,8 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
    moves it to whatever another machine pushed;
 6. warns when the push would send more than 1 GiB, or when a file added
    more than 500 MiB of new encrypted data, naming the file (see "Large
-   files"). The push still goes ahead;
+   files"). The push still goes ahead. Ctrl-C or SIGTERM while the push is
+   measured stops the backup before old backups are dropped;
 7. drops old backups as `salt prune` does, keeping `--keep-days N` days with
    a change (5 by default), one a day before the latest;
 8. pushes the branch to `origin`, leased to the commit step 5 found there
