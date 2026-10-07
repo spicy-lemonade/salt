@@ -81,6 +81,9 @@ type GitOps interface {
 	// Push pushes the checked-out branch to origin if origin's branch is
 	// still at lease (see gitx.Push).
 	Push(ctx context.Context, repoRoot, lease string) error
+	// PushSize returns about how many bytes Push would send to origin, whose
+	// branch is at lease (see gitx.PushSize).
+	PushSize(ctx context.Context, repoRoot, lease string) (int64, error)
 }
 
 // RealGit runs git through gitx (hooks disabled).
@@ -115,6 +118,9 @@ func (RealGit) Lease(ctx context.Context, root string, known []string) (string, 
 }
 func (RealGit) Push(ctx context.Context, root, lease string) error {
 	return gitx.Push(ctx, root, lease)
+}
+func (RealGit) PushSize(ctx context.Context, root, lease string) (int64, error) {
+	return gitx.PushSize(ctx, root, lease)
 }
 
 // HookSearchPath is where the pre-commit hook looks for salt: the caller's

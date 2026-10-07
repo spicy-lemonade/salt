@@ -116,7 +116,7 @@ Run `crontab -e` and add this line to run it every day at 6am. Use the path that
 
 - Your repo then holds only what the presets find, so give `salt backup` a repo of its own. Repeat `--preset` for each tool you use.
 - A settings file holding an API key or other secret is left out, and Salt names it. Keep secrets in environment variables instead.
-- `--keep-days N` keeps the last N days with a change. The default is 5.
+- `--keep-days N` keeps the last N days with a change. The default is 5. Every backup from the latest of those days is kept, and only the last backup of each earlier day.
 - `git push` to `origin` must work without a password prompt. Running `gh auth setup-git` once does this.
 
 ### Presets
@@ -132,14 +132,14 @@ To get your memory back, [restore into a new folder](#-getting-your-files-back),
 
 ## 🧹 Keeping only recent backups
 
-Every change adds the whole changed file to your repo again, since encrypted files can't be compressed against older versions. Over months a busy repo gets slow to clone and push. `salt prune` keeps only recent backups.
+Every change adds the whole changed file to your repo again, or for a file over 16 MiB the parts of it that changed, since encrypted files can't be compressed against older versions. Over months a busy repo gets slow to clone and push. `salt prune` keeps only recent backups.
 
 ```bash
 salt prune ~/my-backup-repo                  # keep the last 5 days with a change
 salt prune --keep-days 10 ~/my-backup-repo   # keep 10 instead
 ```
 
-**"5 days" means 5 days on which anything in the repo changed, not 5 calendar days.** Days are counted for the whole repo, never per file, and a day with no changes is skipped. The latest backup is always kept, so the current version of every file is too. Pruning rewrites your git history, so push with `git push --force-with-lease` afterwards. The [design doc](docs/design.md#keeping-only-recent-backups) has worked examples, and a way to keep a database for longer.
+**"5 days" means 5 days on which anything in the repo changed, not 5 calendar days.** Days are counted for the whole repo, never per file, and a day with no changes is skipped. Every backup from the latest day with a change is kept, and only the last backup of each earlier day, so backing up every hour doesn't multiply what your repo holds. The latest backup is always kept, so the current version of every file is too. Pruning rewrites your git history, so push with `git push --force-with-lease` afterwards. The [design doc](docs/design.md#keeping-only-recent-backups) has worked examples, and a way to keep a database for longer.
 
 ## 🔑 Getting your files back
 

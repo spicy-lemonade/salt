@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -182,32 +183,72 @@ func commits(days ...string) []gitx.Commit {
 
 func TestSelect(t *testing.T) {
 	for _, tt := range []struct {
-		name       string
-		days       []string
-		keepDays   int
-		keep, seen int
+		name     string
+		days     []string
+		keepDays int
+		keep     []int
+		seen     int
 	}{
-		{"no commits", nil, 5, 0, 0},
-		{"one commit", []string{"09-15"}, 5, 1, 1},
-		{"fewer days than kept", []string{"09-15", "09-14", "09-13"}, 5, 3, 3},
-		{"exactly the days kept", []string{"5", "4", "3", "2", "1"}, 5, 5, 5},
-		{"daily backups", []string{"8", "7", "6", "5", "4", "3", "2", "1"}, 5, 5, 5},
+		{"no commits", nil, 5, nil, 0},
+		{"one commit", []string{"09-15"}, 5, []int{0}, 1},
+		{"fewer days than kept", []string{"09-15", "09-14", "09-13"}, 5, []int{0, 1, 2}, 3},
+		{"exactly the days kept", []string{"5", "4", "3", "2", "1"}, 5, []int{0, 1, 2, 3, 4}, 5},
+		{"daily backups", []string{"8", "7", "6", "5", "4", "3", "2", "1"}, 5, []int{0, 1, 2, 3, 4}, 5},
 		// A day with no change makes no commit and is skipped: the 5 days
 		// kept span 6 calendar days.
-		{"a quiet day", []string{"09-15", "09-14", "09-12", "09-11", "09-10", "09-09", "09-08"}, 5, 5, 5},
-		// Several backups on one day count as one day and are all kept.
-		{"several on one day", []string{"3", "3", "3", "2", "2", "1"}, 2, 5, 2},
-		{"one day keeps only the latest day", []string{"3", "3", "2", "1"}, 1, 2, 1},
-		{"one day, daily backups", []string{"3", "2", "1"}, 1, 1, 1},
+		{"a quiet day", []string{"09-15", "09-14", "09-12", "09-11", "09-10", "09-09", "09-08"}, 5, []int{0, 1, 2, 3, 4}, 5},
+		// Several backups on one day count as one day. All are kept on the
+		// latest day, and only the newest on each earlier one.
+		{"several on one day", []string{"3", "3", "3", "2", "2", "1"}, 2, []int{0, 1, 2, 3}, 2},
+		{"several on every day", []string{"3", "3", "2", "2", "2", "1", "1", "0"}, 3, []int{0, 1, 2, 5}, 3},
+		{"one day keeps only the latest day", []string{"3", "3", "2", "1"}, 1, []int{0, 1}, 1},
+		{"one day, daily backups", []string{"3", "2", "1"}, 1, []int{0}, 1},
 		// A commit with an odd clock ends the window where it sits.
-		{"odd clock", []string{"5", "4", "1999", "3", "2", "1"}, 3, 3, 3},
+		{"odd clock", []string{"5", "4", "1999", "3", "2", "1"}, 3, []int{0, 1, 2}, 3},
+		// A day met again further down is not a new day.
+		{"a day met again", []string{"3", "2", "3", "2", "1"}, 2, []int{0, 1, 2}, 2},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			keep, seen := Select(commits(tt.days...), tt.keepDays)
-			if keep != tt.keep || seen != tt.seen {
-				t.Fatalf("Select = %d commits over %d days, want %d over %d", keep, seen, tt.keep, tt.seen)
+			if !slices.Equal(keep, tt.keep) || seen != tt.seen {
+				t.Fatalf("Select = %v over %d days, want %v over %d", keep, seen, tt.keep, tt.seen)
 			}
 		})
+	}
+}
+
+// Hourly backups: the latest day keeps every backup, and each earlier day
+// only its last, so history holds one backup a day before today.
+func TestRunThinsEarlierDays(t *testing.T) {
+	root := repoDir(t)
+	g := newMemGit(root)
+	var want []string
+	for d := 1; d <= 7; d++ {
+		day := fmt.Sprintf("2026-09-%02d", d)
+		for h := 1; h <= 3; h++ {
+			tree := fmt.Sprintf("t%d-%d", d, h)
+			g.commit(day, tree)
+			if d >= 3 && (h == 3 || d == 7) {
+				want = append([]string{fmt.Sprintf("tree %s | Backup %s", tree, day)}, want...)
+			}
+		}
+	}
+	res, err := Run(g, root, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *res != (Result{Kept: 7, Days: 5, Dropped: 14}) {
+		t.Fatalf("result = %+v", *res)
+	}
+	if got := g.branchTrees(t); !slices.Equal(got, want) {
+		t.Fatalf("branch after prune:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if log, _ := g.FirstParentLog(""); log[len(log)-1].Parents != 0 {
+		t.Fatalf("oldest kept = %+v, want it as the new first commit", log[len(log)-1])
+	}
+	head := g.head
+	if res, err := Run(g, root, 5); err != nil || res.Dropped != 0 || g.head != head {
+		t.Fatalf("second prune: %+v, %v", res, err)
 	}
 }
 

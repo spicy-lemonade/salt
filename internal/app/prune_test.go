@@ -26,7 +26,7 @@ func TestPruneReportsWhatItDropped(t *testing.T) {
 	}
 	out := e.ui.out.String()
 	for _, want := range []string{
-		"salt: kept 6 backup(s) from the last 5 day(s) with a change and dropped 12 older one(s)",
+		"salt: kept 6 backup(s) from the last 5 day(s) with a change and dropped 12 other(s)",
 		"push with `git push --force-with-lease`",
 	} {
 		if !strings.Contains(out, want) {
@@ -63,7 +63,7 @@ func TestPruneWarnsAboutAFailedCleanup(t *testing.T) {
 	}
 	out := e.ui.out.String()
 	for _, want := range []string{
-		"dropped 1 older one(s)",
+		"dropped 1 other(s)",
 		"--force-with-lease",
 		"salt: warning: the old backups were dropped, but removing them from the local repo failed: disk full; they take up space on this machine until the next prune removes them",
 	} {

@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"maps"
 	"math"
 	"os"
 	"path"
@@ -26,22 +29,15 @@ import (
 // MaxWorkers caps how many files are hashed or encrypted at once.
 const MaxWorkers = 4
 
-// A file larger than splitAbove bytes is sealed in parts of partSize
-// compressed bytes each, so no file in the repo reaches GitHub's limit. Parts
-// stay under 50 MB, above which GitHub warns on every push.
+// A file is one object, unless it is over maxChunk bytes, when it is sealed
+// in chunks (see chunk.go). zstd and age add about 0.03% to data that does
+// not compress, so an object stays far below GitHub's limit. Should a live
+// file grow past oneObjectLimit after it was measured, whatever runs past it
+// goes into a second part. The 512 KiB left free covers age's 16 bytes per
+// 64 KiB many times over.
 //
-// A smaller file is one object, as it always was: zstd and age add about
-// 0.03% to data that does not compress, so it stays below the limit too.
-// Should the file grow past splitAbove after it was measured, as a live file
-// can, whatever runs past oneObjectLimit goes into a second part. The 512 KiB
-// left free covers age's 16 bytes per 64 KiB many times over.
-//
-// They are variables so tests can split small files.
-var (
-	splitAbove     int64 = 99 << 20
-	partSize       int64 = 45 << 20
-	oneObjectLimit int64 = repo.GitHubFileLimit - 512<<10
-)
+// It is a variable so tests can split small files.
+var oneObjectLimit int64 = repo.GitHubFileLimit - 512<<10
 
 // Options configures Seal.
 type Options struct {
@@ -96,14 +92,21 @@ var DefaultExclude = []string{".DS_Store", ".git"}
 
 // Result summarises a seal.
 type Result struct {
-	Files     int      // regular files in the snapshot
-	Symlinks  int      // symlinks recorded in the index
-	Encrypted int      // files (re-)encrypted this run
-	Reused    int      // unchanged files whose ciphertext was kept
-	Removed   []string // repo paths deleted as stale or unmanaged
-	Skipped   []string // source paths that are not files or symlinks
-	Gone      []string // backup paths of live extra files deleted, or no longer files, before they were read
-	IndexNew  bool     // whether index.age was rewritten
+	Files     int       // regular files in the snapshot
+	Symlinks  int       // symlinks recorded in the index
+	Encrypted int       // files (re-)encrypted this run
+	Reused    int       // unchanged files whose ciphertext was kept
+	Removed   []string  // repo paths deleted as stale or unmanaged
+	Skipped   []string  // source paths that are not files or symlinks
+	Gone      []string  // backup paths of live extra files deleted, or no longer files, before they were read
+	Written   []Written // files that wrote new ciphertext, in path order
+	IndexNew  bool      // whether index.age was rewritten
+}
+
+// Written is how many bytes of new ciphertext a seal wrote for one file.
+type Written struct {
+	Path  string // slash path in the backup
+	Bytes int64
 }
 
 type item struct {
@@ -116,12 +119,14 @@ type item struct {
 	live    bool // see Extra.Live
 }
 
-// entriesHook lets tests change the entries before Seal checks them, and
-// hashedHook lets them change a file after Seal has measured it. Both are
-// always nil outside tests.
+// entriesHook lets tests change the entries before Seal checks them,
+// hashedHook lets them change a file after Seal has measured it, and
+// chunkHook lets them fail a seal before it writes a new chunk, given how
+// many it has written for the file. All are always nil outside tests.
 var (
 	entriesHook func([]Entry) []Entry
 	hashedHook  func(path string)
+	chunkHook   func(written int) error
 )
 
 // Seal encrypts the tree at src into the repository r. An empty src seals
@@ -182,7 +187,12 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	newCache := make([]cacheEntry, len(items))
 	gone := make([]bool, len(items))
 	var encrypted, reused atomic.Int64
+	written := make([]int64, len(items))
+	done := make([]bool, len(items)) // regular files fully sealed
+	known := c.chunks()
+	gear := chunkGear(opt.Signer.Seed())
 	err = forEach(len(items), workers(opt.Workers), func(i int) error {
+		var err error // each worker's own, never Seal's
 		it := items[i]
 		e := Entry{Path: it.rel, Mode: uint32(it.mode.Perm())}
 		if it.isLink {
@@ -219,38 +229,59 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			it.mode, it.modTime = fi.Mode(), fi.ModTime()
 			e.Mode = uint32(it.mode.Perm())
 		}
-		sha, size, err := hashFile(it.abs)
+		e.MTime = unixNano(it.modTime)
+		prev, cached := c.Files[it.rel]
+		ce, ok := prev, false
+		var size int64
+		// A file sealed in chunks last time, and still over maxChunk, is
+		// chunked again at once: one read both hashes it and finds which
+		// chunks changed. Any other file is hashed first, so an unchanged one
+		// keeps its objects, and one that shrank is one object again.
+		// Every error below falls through to one check, so a live file
+		// deleted at any step is left out, and any other error names it.
+		chunk := cached && prev.chunked()
+		if chunk {
+			var fi os.FileInfo
+			if fi, err = os.Stat(it.abs); err == nil {
+				chunk = fi.Size() > int64(maxChunk)
+			}
+		}
+		if err == nil && !chunk {
+			var sha string
+			if sha, size, err = hashFile(it.abs); err == nil {
+				if hashedHook != nil {
+					hashedHook(it.abs)
+				}
+				ok = cached && prev.SHA256 == sha && objectIntact(rt, prev)
+				chunk = !ok && size > int64(maxChunk)
+			}
+		}
+		var newBytes int64
+		switch {
+		case err != nil:
+		case chunk:
+			ce, size, newBytes, err = encryptChunks(rt, r, it.abs, gear, prev, known)
+		case !ok:
+			var obj string
+			if obj, err = objectName(r.Format.EncryptPaths, it.rel); err == nil {
+				ce, size, err = encryptFile(rt, r, it.abs, obj, oneObjectLimit)
+				newBytes = ce.cipherSize()
+			}
+		}
 		if vanished(err) {
 			return nil
 		}
 		if err != nil {
-			return err
+			return fmt.Errorf("%s: %w", it.rel, err)
 		}
-		e.MTime = unixNano(it.modTime)
-		if hashedHook != nil {
-			hashedHook(it.abs)
-		}
-		ce, ok := c.Files[it.rel]
-		if ok && ce.SHA256 == sha && objectIntact(rt, ce) {
+		// A changed file whose chunks were all sealed before, such as one put
+		// back as it was, wrote nothing new but is not unchanged.
+		if newBytes == 0 && cached && ce.SHA256 == prev.SHA256 {
 			reused.Add(1)
 		} else {
-			obj, err := objectName(r.Format.EncryptPaths, it.rel)
-			if err != nil {
-				return err
-			}
-			limit := oneObjectLimit
-			if size > splitAbove {
-				limit = partSize
-			}
-			ce, size, err = encryptFile(rt, r, it.abs, obj, limit)
-			if vanished(err) {
-				return nil
-			}
-			if err != nil {
-				return fmt.Errorf("%s: %w", it.rel, err)
-			}
 			encrypted.Add(1)
 		}
+		written[i] = newBytes
 		e.SHA256, e.Size = ce.SHA256, size
 		for j, p := range ce.all() {
 			if j == 0 {
@@ -260,16 +291,38 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			}
 		}
 		entries[i], newCache[i] = e, ce
+		done[i] = true
 		return nil
 	})
 	if err != nil {
+		// The files sealed before the failure keep what they wrote, so the
+		// next seal reuses it rather than encrypting it all again. It also
+		// records what a plain-paths object replaced in place now holds, so
+		// it is never kept for the content it held before. Nothing is
+		// removed; the next seal removes what no index needs. Losing this
+		// save only costs that reuse, so the seal's own error is returned.
+		partial := &cache{Key: c.Key, IndexSHA: c.IndexSHA, IndexSize: c.IndexSize, Files: maps.Clone(c.Files)}
+		for i, d := range done {
+			if d {
+				partial.Files[items[i].rel] = newCache[i]
+			}
+		}
+		partial.save(cPath)
 		return nil, err
 	}
 	res.Encrypted, res.Reused = int(encrypted.Load()), int(reused.Load())
+	for i, n := range written {
+		if n > 0 {
+			res.Written = append(res.Written, Written{Path: items[i].rel, Bytes: n})
+		}
+	}
 	items, entries, newCache, res.Gone = dropGone(items, entries, newCache, gone)
 
 	next := &cache{Key: c.Key, Files: map[string]cacheEntry{}}
 	keep := map[string]bool{}
+	// An index with a file in parts or chunks gets a later version, so an
+	// older salt that cannot read it refuses it.
+	version := repo.FormatVersion
 	for i, e := range entries {
 		if e.Symlink != "" || items[i].isLink {
 			res.Symlinks++
@@ -280,6 +333,9 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		for _, obj := range e.objects() {
 			keep[obj] = true
 		}
+		if len(e.Parts) > 0 {
+			version = partsIndexVersion
+		}
 	}
 
 	if entriesHook != nil {
@@ -288,13 +344,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	if err := checkIndexEntries(entries); err != nil {
 		return nil, err
 	}
-	ix := &Index{Version: repo.FormatVersion, Entries: entries}
-	for _, e := range entries {
-		if len(e.Parts) > 0 {
-			ix.Version = partsIndexVersion
-			break
-		}
-	}
+	ix := &Index{Version: version, Entries: entries}
 	ix.sign(opt.Signer)
 	b, ixSHA, err := ix.marshal()
 	if err != nil {
@@ -353,6 +403,87 @@ func encryptFile(rt *os.Root, r *repo.Repo, abs, obj string, limit int64) (cache
 	return newCacheEntry(sha, parts), cr.n, nil
 }
 
+// encryptChunks seals the file at abs in chunks (see chunker). A chunk that
+// was in the file last time (prev), met earlier in the file, or in known
+// keeps its object if it is still intact; any other is compressed and
+// encrypted on its own into a new object under a random name, even with
+// plain paths, as a chunk can be in more than one file. The file's own
+// chunks are looked up first, so an unchanged file always keeps its own
+// objects, even when another file holds the same chunks under others. The
+// file is read once, through one buffer. It returns the plaintext size it
+// read and how many bytes of new ciphertext it wrote.
+//
+// On failure it removes the chunks it wrote, so a full disk is not left
+// fuller for the next try.
+func encryptChunks(rt *os.Root, r *repo.Repo, abs string, gear *gearTable, prev cacheEntry, known map[string]cachePart) (ce cacheEntry, size, newBytes int64, err error) {
+	f, err := os.Open(abs)
+	if err != nil {
+		return cacheEntry{}, 0, 0, err
+	}
+	defer f.Close()
+	var wrote []string
+	defer func() {
+		if err != nil {
+			for _, obj := range wrote {
+				rt.Remove(filepath.FromSlash(obj))
+			}
+		}
+	}()
+	own := map[string]cachePart{}
+	for _, p := range prev.all() {
+		if p.Chunk != "" {
+			own[p.Chunk] = p
+		}
+	}
+	ch := newChunker(f, gear)
+	whole := sha256.New()
+	seen := map[string]cachePart{}
+	var parts []cachePart
+	for {
+		b, err := ch.next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return cacheEntry{}, 0, 0, err
+		}
+		whole.Write(b)
+		size += int64(len(b))
+		s := sha256.Sum256(b)
+		key := hex.EncodeToString(s[:])
+		p, ok := seen[key]
+		for _, m := range []map[string]cachePart{own, known} {
+			if ok {
+				break
+			}
+			p, ok = m[key]
+			ok = ok && partIntact(rt, p)
+		}
+		if !ok {
+			if chunkHook != nil {
+				if err := chunkHook(len(wrote)); err != nil {
+					return cacheEntry{}, 0, 0, err
+				}
+			}
+			obj, err := objectName(true, "")
+			if err != nil {
+				return cacheEntry{}, 0, 0, err
+			}
+			_, written, err := encryptTo(rt, obj, bytes.NewReader(b), r.Recipients, 0)
+			if err != nil {
+				return cacheEntry{}, 0, 0, err
+			}
+			wrote = append(wrote, obj)
+			p = written[0]
+			p.Chunk = key
+			newBytes += p.CipherSize
+		}
+		seen[key] = p
+		parts = append(parts, p)
+	}
+	return newCacheEntry(sum(whole), parts), size, newBytes, nil
+}
+
 // objectName picks where a file's ciphertext lives. With encrypted paths it
 // is random, so the name reveals nothing about the file.
 func objectName(encryptPaths bool, rel string) (string, error) {
@@ -384,14 +515,20 @@ func unixNano(t time.Time) int64 {
 // objectIntact reports whether every part of a cached file is still in the
 // repo at the size it was written, and small enough to push. An older salt
 // wrote a large file as one object over GitHub's limit; that file is sealed
-// again, so it is split, even though it has not changed.
+// again, in chunks, even though it has not changed.
 func objectIntact(rt *os.Root, ce cacheEntry) bool {
 	for _, p := range ce.all() {
-		if p.Object == "" || p.CipherSize > repo.GitHubFileLimit || !sizeIs(rt, p.Object, p.CipherSize) {
+		if !partIntact(rt, p) {
 			return false
 		}
 	}
 	return true
+}
+
+// partIntact reports whether one part is still in the repo at the size it
+// was written, and small enough to push.
+func partIntact(rt *os.Root, p cachePart) bool {
+	return p.Object != "" && p.CipherSize <= repo.GitHubFileLimit && sizeIs(rt, p.Object, p.CipherSize)
 }
 
 // sizeIs reports whether rel is a regular file (not a symlink) of size n.

@@ -150,6 +150,13 @@ func (b *backupRepo) touch(t *testing.T, path, day string) {
 // something changed. It reports whether a commit was made.
 func (b *backupRepo) backup(t *testing.T, day string) bool {
 	t.Helper()
+	return b.backupAs(t, day, "Backup "+day)
+}
+
+// backupAs is backup with the commit subject given, for several backups on
+// one day.
+func (b *backupRepo) backupAs(t *testing.T, day, subject string) bool {
+	t.Helper()
 	// Only changed files are written, and they are dated the morning they
 	// changed. The others keep their dates, as a script copying with
 	// `cp -p` keeps them.
@@ -164,7 +171,6 @@ func (b *backupRepo) backup(t *testing.T, day string) bool {
 	if _, code := b.e.run(b.dir, "git", "diff", "--cached", "--quiet"); code == 0 {
 		return false
 	}
-	subject := "Backup " + day
 	b.commitOn(t, day, subject)
 	b.sealed[subject] = maps.Clone(b.files)
 	b.sealedDates[subject] = maps.Clone(b.dates)
@@ -226,6 +232,43 @@ func sameDates(a, b map[string]time.Time) bool {
 	return maps.EqualFunc(a, b, time.Time.Equal)
 }
 
+// Three backups a day for three days: prune keeps every backup of the latest
+// day and only the last of each earlier day, and each kept backup restores
+// as it was.
+func TestPruneKeepsOneBackupADayBeforeTheLatest(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	for d := 1; d <= 3; d++ {
+		day := fmt.Sprintf("2026-09-%02d", d)
+		for run := 1; run <= 3; run++ {
+			subject := fmt.Sprintf("Backup %s run %d", day, run)
+			b.files["memories/MEMORY.md"] = "notes as of " + subject + "\n"
+			if !b.backupAs(t, day, subject) {
+				t.Fatalf("%s made no commit", subject)
+			}
+		}
+	}
+	// The repo's first commit, from setting it up, is on a fourth day and
+	// goes too.
+	out := e.must(b.base, "salt", "prune", "--keep-days", "3", b.dir)
+	if !strings.Contains(out, "kept 5 backup(s) from the last 3 day(s) with a change and dropped 5 other(s)") {
+		t.Fatalf("prune output:\n%s", out)
+	}
+	want := []string{
+		"Backup 2026-09-03 run 3", "Backup 2026-09-03 run 2", "Backup 2026-09-03 run 1",
+		"Backup 2026-09-02 run 3", "Backup 2026-09-01 run 3",
+	}
+	if got := b.subjects(); !slices.Equal(got, want) {
+		t.Fatalf("kept %q, want %q", got, want)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(e.must(b.dir, "git", "log", "--format=%H %s")), "\n") {
+		sha, subject, _ := strings.Cut(line, " ")
+		if got, _ := b.restoreCommit(t, sha); !maps.Equal(got, b.sealed[subject]) {
+			t.Fatalf("%s restored %v, want %v", subject, got, b.sealed[subject])
+		}
+	}
+}
+
 // Daily backups for nine days, with one day on which nothing changed, pushed
 // once at the end. Pruning keeps the last 5 days with a change, which here
 // span 6 calendar days; every kept backup still restores exactly, with each
@@ -254,7 +297,7 @@ func TestPruneKeepsTheLastDaysWithAChange(t *testing.T) {
 	before := b.log()
 
 	out := e.must(b.base, "salt", "prune", b.dir)
-	if !strings.Contains(out, "kept 5 backup(s) from the last 5 day(s) with a change and dropped 4 older one(s)") ||
+	if !strings.Contains(out, "kept 5 backup(s) from the last 5 day(s) with a change and dropped 4 other(s)") ||
 		!strings.Contains(out, "git push --force-with-lease") {
 		t.Fatalf("prune output:\n%s", out)
 	}

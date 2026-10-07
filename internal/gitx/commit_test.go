@@ -50,3 +50,14 @@ func TestCommitArgs(t *testing.T) {
 		t.Fatalf("commitArgs = %q, want %q", got, want)
 	}
 }
+
+func TestDiskUsage(t *testing.T) {
+	if n, err := diskUsage("5001451\n"); err != nil || n != 5001451 {
+		t.Fatalf("diskUsage = %d, %v", n, err)
+	}
+	for _, bad := range []string{"", "lots", "-1", "12 34"} {
+		if _, err := diskUsage(bad); err == nil || !strings.Contains(err.Error(), "unexpected") {
+			t.Errorf("diskUsage(%q) = %v, want an error", bad, err)
+		}
+	}
+}

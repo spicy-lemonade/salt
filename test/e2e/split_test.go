@@ -15,9 +15,6 @@ import (
 	"time"
 )
 
-// gitHubFileLimit is the size above which GitHub refuses a pushed file.
-const gitHubFileLimit = 100 << 20
-
 // writeNoise writes size bytes that do not compress to path, a megabyte at a
 // time, and returns their SHA-256.
 func writeNoise(t *testing.T, path string, size int) string {
@@ -51,10 +48,10 @@ func fileSHA(t *testing.T, path string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// A file over GitHub's limit is sealed in parts that are each under it,
+// A file over GitHub's limit is sealed in chunks that are each far under it,
 // passes the real hook, is pushed, and restores identically from a fresh
-// clone. A file under the limit stays one object.
-func TestSealSplitsAFileOverTheLimit(t *testing.T) {
+// clone. A small file stays one object.
+func TestSealChunksAFileOverTheLimit(t *testing.T) {
 	e := newEnv(t)
 	b := newBackupRepo(t, e)
 	big := filepath.Join(b.src, "memory.db")
@@ -77,8 +74,8 @@ func TestSealSplitsAFileOverTheLimit(t *testing.T) {
 	b.commitOn(t, "2026-09-01", "backup") // the hook checks every part
 	e.must(b.dir, "git", "push", "-q", "origin", "main")
 
-	// Every pushed file is under the limit; the big file is in 3 parts of
-	// about 45 MiB and the small one is a single object.
+	// Every pushed file is under the 50 MB GitHub warns about. The big file
+	// is in chunks of at most 16 MiB, and the small one is a single object.
 	var objects int
 	for _, line := range strings.Split(strings.TrimSpace(e.must(b.remote, "git", "ls-tree", "-r", "-l", "main")), "\n") {
 		fields := strings.Fields(line)
@@ -86,26 +83,26 @@ func TestSealSplitsAFileOverTheLimit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ls-tree line %q: %v", line, err)
 		}
-		if size >= gitHubFileLimit {
-			t.Errorf("pushed %s is %d bytes, over GitHub's limit", fields[4], size)
+		if size > 16<<20+64<<10 {
+			t.Errorf("pushed %s is %d bytes, more than a chunk", fields[4], size)
 		}
 		if strings.HasPrefix(fields[4], "objects/") {
 			objects++
 		}
 	}
-	if objects != 4 {
-		t.Errorf("pushed %d objects, want 3 parts and 1 small file", objects)
+	if objects < 105/16+2 {
+		t.Errorf("pushed %d objects, want at least %d chunks and 1 small file", objects, 105/16+1)
 	}
 
 	if out := e.must(b.base, "salt", "verify", b.dir); !strings.Contains(out, "All 2 files") {
 		t.Fatalf("verify:\n%s", out)
 	}
 	if out := e.must(b.base, "salt", "doctor", b.dir); strings.Contains(out, "GitHub") {
-		t.Fatalf("doctor warns about the parts:\n%s", out)
+		t.Fatalf("doctor warns about the chunks:\n%s", out)
 	}
 	e.must(b.base, "salt", "seal", "--prune", b.src, b.dir)
 	if st := e.must(b.dir, "git", "status", "--porcelain"); st != "" {
-		t.Fatalf("an unchanged split file changed the repo:\n%s", st)
+		t.Fatalf("an unchanged chunked file changed the repo:\n%s", st)
 	}
 
 	clone := filepath.Join(b.base, "clone")
@@ -118,5 +115,67 @@ func TestSealSplitsAFileOverTheLimit(t *testing.T) {
 	}
 	if fi, err := os.Stat(restored); err != nil || !fi.ModTime().Equal(edited) {
 		t.Fatalf("restored memory.db: %v, want last-modified %v", err, edited)
+	}
+}
+
+// objectFiles lists the files under the repo's objects folder.
+func objectFiles(t *testing.T, repo string) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	err := filepath.WalkDir(filepath.Join(repo, "objects"), func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			out[p] = true
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// A live SQLite database larger than a chunk, changed by one row, adds only
+// a few new chunks rather than a new copy of all of it. Each backup restores
+// the database as it was.
+func TestSealChunksAChangedDatabase(t *testing.T) {
+	sqlite := realSQLite(t)
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	os.MkdirAll(b.src, 0o755)
+	write(t, filepath.Join(b.src, "MEMORY.md"), "small\n")
+	db := filepath.Join(b.base, "agent.db")
+	e.must(b.base, sqlite, db, "PRAGMA journal_mode=WAL; CREATE TABLE m(id INTEGER PRIMARY KEY, body TEXT); "+
+		"WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<40000) INSERT INTO m SELECT i, hex(randomblob(400)) FROM n; "+
+		"CREATE INDEX mb ON m(body);")
+	backup := func(subject string) {
+		e.must(b.base, "salt", "seal", "--prune", "--sqlite", db, b.src, b.dir)
+		e.must(b.dir, "git", "add", "-A")
+		b.commitOn(t, "2026-09-01", subject)
+	}
+	backup("first")
+	before := objectFiles(t, b.dir)
+	e.must(b.base, sqlite, db, "UPDATE m SET body = 'changed' WHERE id = 20000;")
+	backup("second")
+	after := objectFiles(t, b.dir)
+	added := 0
+	for p := range after {
+		if !before[p] {
+			added++
+		}
+	}
+	t.Logf("one changed row added %d of %d chunks", added, len(after)-1)
+	if added == 0 || added > (len(after)-1)/2 {
+		t.Fatalf("one changed row added %d of %d chunks", added, len(after)-1)
+	}
+	for _, rev := range []string{"HEAD~1", "HEAD"} {
+		wt := filepath.Join(b.base, "wt-"+strings.ReplaceAll(rev, "~", "-"))
+		e.must(b.dir, "git", "worktree", "add", "-q", "--detach", wt, rev)
+		dest := filepath.Join(b.base, "restored-"+filepath.Base(wt))
+		e.must(b.base, "salt", "restore", wt, "--to", dest)
+		got := strings.TrimSpace(e.must(dest, sqlite, filepath.Join(dest, "agent.db"), "SELECT count(*), body = 'changed' FROM m WHERE id = 20000; PRAGMA integrity_check;"))
+		want := map[string]string{"HEAD~1": "1|0\nok", "HEAD": "1|1\nok"}[rev]
+		if got != want {
+			t.Fatalf("%s restored %q, want %q", rev, got, want)
+		}
 	}
 }

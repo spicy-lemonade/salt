@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -106,6 +107,36 @@ func Push(ctx context.Context, dir, lease string) error {
 	}
 	_, err = remote(ctx, dir, "git push", "push", "--quiet", "--force-with-lease="+ref+":"+lease, "origin", ref+":"+ref)
 	return err
+}
+
+// PushSize returns about how many bytes Push would send from the repository
+// at dir: the size on disk of every object the checked-out commit holds that
+// lease, the commit origin's branch is at, does not ("" when origin has no
+// branch). Salt's git commands store objects uncompressed, so this is close
+// to what goes over the network. It needs git 2.31 or later. Cancelling ctx
+// stops git.
+func PushSize(ctx context.Context, dir, lease string) (int64, error) {
+	args := []string{"rev-list", "--objects", "--disk-usage", "HEAD"}
+	if lease != "" {
+		args = append(args, "--not", lease)
+	}
+	cmd := exec.CommandContext(ctx, "git", Args(dir, args...)...)
+	stdout := &proc.LimitedBuffer{Max: 64}
+	cmd.Stdout = stdout
+	if err := proc.Run(ctx, cmd); err != nil {
+		return 0, err
+	}
+	return diskUsage(stdout.String())
+}
+
+// diskUsage reads the byte count `git rev-list --disk-usage` prints.
+func diskUsage(out string) (int64, error) {
+	out = strings.TrimSpace(out)
+	n, err := strconv.ParseInt(out, 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("git rev-list --disk-usage: unexpected %q", out)
+	}
+	return n, nil
 }
 
 // leaseFor returns the commit origin's branch must still be at for the push

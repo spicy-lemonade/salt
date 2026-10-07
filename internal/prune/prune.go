@@ -9,7 +9,9 @@
 // Days are counted on the repo, not per file: a day counts when the repo has
 // a commit dated that day, which happens when anything in it changed. A day
 // with no change makes no commit and is skipped, so keeping 5 days can reach
-// further back than 5 calendar days.
+// further back than 5 calendar days. Every backup on the latest day is kept,
+// and only the last backup of each earlier day, so backups made many times a
+// day do not multiply what history holds.
 package prune
 
 import (
@@ -17,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 
 	"github.com/spicy-lemonade/salt/internal/gitx"
 )
@@ -70,26 +73,33 @@ var ErrNotPrunable = errors.New("not pruning")
 // could not delete them from the local repo.
 var ErrCleanup = errors.New("the old backups were dropped, but removing them from the local repo failed")
 
-// Select returns how many commits, newest first, fall on the keepDays most
-// recent days with a commit. It always keeps at least the newest commit.
-// Days are taken in branch order, so a commit with an odd clock still ends
-// the window where it sits rather than being moved.
-func Select(commits []gitx.Commit, keepDays int) (keep, days int) {
+// Select returns the indexes of the commits to keep, newest first, and how
+// many days they fall on. It keeps every commit on the latest day with a
+// commit, and only the newest commit of each earlier day, over the keepDays
+// most recent days with a commit. It always keeps the newest commit. Days
+// are taken in branch order, so a commit with an odd clock still ends the
+// window where it sits rather than being moved.
+func Select(commits []gitx.Commit, keepDays int) (keep []int, days int) {
 	seen := map[string]bool{}
 	for i, c := range commits {
-		if !seen[c.Day] {
-			if len(seen) == keepDays {
-				return i, len(seen)
+		if seen[c.Day] {
+			if c.Day == commits[0].Day {
+				keep = append(keep, i)
 			}
-			seen[c.Day] = true
+			continue
 		}
+		if len(seen) == keepDays {
+			break
+		}
+		seen[c.Day] = true
+		keep = append(keep, i)
 	}
-	return len(commits), len(seen)
+	return keep, len(seen)
 }
 
-// Run drops every commit older than the keepDays most recent days with a
-// change from the branch checked out in the repo at root, then deletes them
-// from the local repo. It changes nothing when there is nothing to drop.
+// Run drops every commit Select does not keep from the branch checked out
+// in the repo at root, then deletes them from the local repo. It changes
+// nothing when there is nothing to drop.
 func Run(g Git, root string, keepDays int) (*Result, error) {
 	if keepDays < 1 {
 		return nil, fmt.Errorf("%w: the number of days to keep must be 1 or more, got %d", ErrNotPrunable, keepDays)
@@ -121,14 +131,14 @@ func Run(g Git, root string, keepDays int) (*Result, error) {
 		return nil, err
 	}
 	keep, days := Select(commits, keepDays)
-	res := &Result{Kept: keep, Days: days, Dropped: len(commits) - keep}
+	res := &Result{Kept: len(keep), Days: days, Dropped: len(commits) - len(keep)}
 	if res.Dropped == 0 {
 		return res, nil
 	}
 
 	// Copy the kept commits oldest first, each onto the copy before it.
 	parent := ""
-	for i := keep - 1; i >= 0; i-- {
+	for _, i := range slices.Backward(keep) {
 		raw, err := g.CatCommit(root, commits[i].SHA)
 		if err != nil {
 			return nil, err
@@ -141,7 +151,7 @@ func Run(g Git, root string, keepDays int) (*Result, error) {
 			return nil, err
 		}
 	}
-	reason := fmt.Sprintf("salt prune: keep the last %d days with a change", keepDays)
+	reason := fmt.Sprintf("salt prune: keep the last %d days with a change, one a day before the latest", keepDays)
 	if err := g.UpdateRef(root, branch, parent, commits[0].SHA, reason); err != nil {
 		return nil, err
 	}

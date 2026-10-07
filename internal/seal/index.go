@@ -43,7 +43,9 @@ type Entry struct {
 	Path   string `json:"path"`
 	Object string `json:"object,omitempty"` // repo-relative, regular files only
 	// Parts are the objects after Object, in order, for a file sealed in
-	// parts (see splitAbove). Restore joins them back into one stream.
+	// parts or chunks. Restore joins their plaintext back into one stream:
+	// parts are one zstd stream cut up, and chunks are one zstd frame each,
+	// which zstd reads one after another as one stream.
 	Parts   []string `json:"parts,omitempty"`
 	SHA256  string   `json:"sha256,omitempty"` // of the plaintext
 	Size    int64    `json:"size"`
@@ -73,9 +75,10 @@ func (e Entry) objects() []string {
 }
 
 // partsIndexVersion is the index version seal writes when a file is in
-// parts, so an older salt, which would read only the first part, refuses the
-// index instead. Every other index keeps repo.FormatVersion, so it stays
-// byte for byte the same, signature included.
+// parts or chunks, so a salt from before parts, which would read only the
+// first object, refuses the index instead. Every other index keeps
+// repo.FormatVersion, so it stays byte for byte the same, signature
+// included. A salt that reads parts reads chunks the same way.
 const partsIndexVersion = 2
 
 func (ix *Index) marshal() ([]byte, string, error) {
