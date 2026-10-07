@@ -141,7 +141,11 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 	}
 	for _, p := range presets {
 		if !w.found[p] {
-			return nil, fmt.Errorf("%w for the %s preset. It looks in %s", ErrNothing, p.Name, strings.Join(lookedIn[p], ", "))
+			hint := ""
+			if len(presets) > 1 {
+				hint = ". If you don't use it, leave out --preset " + p.Name
+			}
+			return nil, fmt.Errorf("%w for the %s preset. It looks in %s%s", ErrNothing, p.Name, strings.Join(lookedIn[p], ", "), hint)
 		}
 	}
 	return w.f, nil
