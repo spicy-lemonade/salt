@@ -155,8 +155,8 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 		for _, x := range p.Paths {
 			if where, ok := e.expand(x.From); ok {
 				looked = append(looked, show(where))
-			} else if _, unset := e.vars(x.From); len(unset) > 0 {
-				looked = append(looked, notSet(unset))
+			} else if _, _, missing := e.vars(x.From); len(missing) > 0 {
+				looked = append(looked, notSet(missing))
 			}
 			places, err := e.Find(x)
 			if err != nil {
@@ -177,13 +177,13 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 			}
 		}
 		for _, d := range p.Databases {
-			db, unset, err := e.database(p, d)
+			db, missing, err := e.database(p, d)
 			if err != nil {
 				return nil, err
 			}
 			if db == nil {
-				if len(unset) > 0 {
-					looked = append(looked, "the database in "+notSet(unset))
+				if len(missing) > 0 {
+					looked = append(looked, "the database in "+notSet(missing))
 				}
 				continue
 			}
@@ -224,33 +224,38 @@ func notSet(names []string) string {
 }
 
 // database returns the database d names for the preset p, ready to copy.
-// It returns nil, and the variables that are not set, when d's connection
-// needs one of them. Errors name the variables the connection came from,
-// never the connection, which may hold a password.
-func (e Env) database(p *Preset, d Database) (db source.Database, unset []string, err error) {
+// It returns nil, and the variables it needs that are not set, when d's
+// connection needs one of them. Errors name the variables the connection
+// came from, never the connection, which may hold a password. A variable
+// that is set comes first, as what it holds is the likelier cause, then
+// those whose defaults were used.
+func (e Env) database(p *Preset, d Database) (db source.Database, missing []string, err error) {
 	conn, err := d.conn()
 	if err != nil {
 		return nil, nil, fmt.Errorf("preset %s: %w", p.Name, err)
 	}
-	set, unset := e.vars(d.From)
+	set, defaulted, missing := e.vars(d.From)
 	from, ok := e.expand(d.From)
 	if !ok {
-		return nil, unset, nil
+		return nil, missing, nil
 	}
 	where, about := fmt.Sprintf("the %s preset's database connection", p.Name), ""
-	switch {
-	case len(unset) > 0:
-		are := "is"
-		if len(unset) > 1 {
-			are = "are"
+	if len(set) > 0 {
+		where = fmt.Sprintf("the connection in %s, used by the %s preset,", strings.Join(set, " and "), p.Name)
+		about = fmt.Sprintf("The %s preset read this connection from %s", p.Name, strings.Join(set, " and "))
+	}
+	if len(defaulted) > 0 {
+		names, are, s := strings.Join(defaulted, " and "), "is", ""
+		if len(defaulted) > 1 {
+			are, s = "are", "s"
 		}
-		names := strings.Join(unset, " and ")
-		where = fmt.Sprintf("the %s preset's default database connection", p.Name)
-		about = fmt.Sprintf("This is the %s preset's default connection, used when %s %s not set. If the database is elsewhere, set %s, in the cron line too", p.Name, names, are, names)
-	case len(set) > 0:
-		names := strings.Join(set, " and ")
-		where = fmt.Sprintf("the connection in %s, used by the %s preset,", names, p.Name)
-		about = fmt.Sprintf("The %s preset read this connection from %s", p.Name, names)
+		if about == "" {
+			where = fmt.Sprintf("the %s preset's default database connection", p.Name)
+			about = fmt.Sprintf("This is the %s preset's default connection, used when %s %s not set", p.Name, names, are)
+		} else {
+			about += fmt.Sprintf(", with its default%s for %s, which %s not set", s, names, are)
+		}
+		about += fmt.Sprintf(". If the database is elsewhere, set %s, in the cron line too", names)
 	}
 	db, err = conn(from, where)
 	if err == nil {

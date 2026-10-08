@@ -60,19 +60,24 @@ func (e Env) expand(template string) (string, bool) {
 	return out, ok && out != ""
 }
 
-// vars lists the variables template reads, each once, in order: those set
-// to something, and those unset or empty.
-func (e Env) vars(template string) (set, unset []string) {
+// vars lists the variables template reads, each once, in order of first
+// use: those set to something, those unset with a default wherever they
+// are read, and those unset that are read at least once without one. An
+// empty variable counts as unset, as in expand.
+func (e Env) vars(template string) (set, defaulted, missing []string) {
 	for _, m := range variable.FindAllStringSubmatch(template, -1) {
 		switch name := m[1]; {
-		case slices.Contains(set, name) || slices.Contains(unset, name):
+		case slices.Contains(set, name) || slices.Contains(missing, name):
 		case e.getenv(name) != "":
 			set = append(set, name)
-		default:
-			unset = append(unset, name)
+		case m[2] == "":
+			defaulted = slices.DeleteFunc(defaulted, func(n string) bool { return n == name })
+			missing = append(missing, name)
+		case !slices.Contains(defaulted, name):
+			defaulted = append(defaulted, name)
 		}
 	}
-	return set, unset
+	return set, defaulted, missing
 }
 
 // getenv returns the environment variable name, or "" when it is unset or

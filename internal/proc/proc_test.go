@@ -68,6 +68,10 @@ func TestError(t *testing.T) {
 	if !errors.Is(err, cause) {
 		t.Fatal("Error does not unwrap to its cause")
 	}
+	// A program that says nothing gets no empty ": " on the end.
+	if err := (&Error{Program: "pg_dump", Err: cause}); err.Error() != "pg_dump: exit status 1" {
+		t.Fatalf("with no error output, Error() = %q", err)
+	}
 }
 
 // Only a program's exit can be from a signal; an error starting it is not.

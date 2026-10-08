@@ -21,19 +21,28 @@ func mkdir(t *testing.T, parts ...string) string {
 	return p
 }
 
-// vars names each variable a template reads once, in order, as set or as
-// unset or empty, whatever its default. Without Getenv, none is set.
+// vars names each variable a template reads once, in order of first use, as
+// set, as unset with a default wherever it is read, or as unset and read at
+// least once without one. An empty variable is unset, as in expand. Without
+// Getenv, none is set.
 func TestVars(t *testing.T) {
 	e := envOf("/home/me", map[string]string{"A": "a", "C": ""})
-	set, unset := e.vars("${A}/${B:-x}/${A}/${C}/${B}/$D")
-	if !slices.Equal(set, []string{"A"}) || !slices.Equal(unset, []string{"B", "C"}) {
-		t.Fatalf("vars = %v, %v", set, unset)
+	for _, c := range []struct {
+		template                string
+		set, defaulted, missing []string
+	}{
+		{"${A}/${B:-x}/${A}/${C}/${B}/${E:-y}/${E:-z}/$D", []string{"A"}, []string{"E"}, []string{"C", "B"}},
+		{"${G}/${G:-x}", nil, nil, []string{"G"}},
+		{"${C:-x}/${F:-}", nil, []string{"C", "F"}, nil},
+		{"/plain", nil, nil, nil},
+	} {
+		set, defaulted, missing := e.vars(c.template)
+		if !slices.Equal(set, c.set) || !slices.Equal(defaulted, c.defaulted) || !slices.Equal(missing, c.missing) {
+			t.Errorf("vars(%s) = %v, %v, %v, want %v, %v, %v", c.template, set, defaulted, missing, c.set, c.defaulted, c.missing)
+		}
 	}
-	if set, unset := (Env{}).vars("${A}"); set != nil || !slices.Equal(unset, []string{"A"}) {
-		t.Fatalf("without Getenv: %v, %v", set, unset)
-	}
-	if set, unset := e.vars("/plain"); set != nil || unset != nil {
-		t.Fatalf("no variables: %v, %v", set, unset)
+	if set, defaulted, missing := (Env{}).vars("${A}/${B:-x}"); set != nil || !slices.Equal(defaulted, []string{"B"}) || !slices.Equal(missing, []string{"A"}) {
+		t.Fatalf("without Getenv: %v, %v, %v", set, defaulted, missing)
 	}
 }
 

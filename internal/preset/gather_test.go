@@ -487,8 +487,8 @@ func TestGatherDatabases(t *testing.T) {
 	if _, err := gather(nil, mk("v", "${V_URL}", "v.sql")); !errors.Is(err, ErrNothing) || !strings.HasSuffix(err.Error(), "for the v preset. It looks in the database in $V_URL (not set)") {
 		t.Fatalf("unset: %v", err)
 	}
-	both, err := Parse("m", []byte(`{"name": "m", "paths": [{"from": "${M_DIR}/data", "to": "m"}, {"from": "/m", "to": "m2"}],
-		"databases": [{"kind": "postgres", "from": "postgresql://${M_USER}@h/${M_DB}?user=${M_USER}", "to": "m.sql"}]}`))
+	both, err := Parse("m", []byte(`{"name": "m", "paths": [{"from": "${M_DIR}/data/${M_SUB:-x}", "to": "m"}, {"from": "/m", "to": "m2"}],
+		"databases": [{"kind": "postgres", "from": "postgresql://${M_USER}@h:${M_PORT:-5432}/${M_DB}?user=${M_USER}", "to": "m.sql"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,6 +508,7 @@ func TestGatherDatabases(t *testing.T) {
 		{mk("same", "postgresql://${H_X}:s3cret@${H_X}", "s.sql"), map[string]string{"H_X": "h"}, "the connection in H_X, used by the same preset, names no database"},
 		{mk("bad", "${B_URL:-mysql://u:s3cret@h/db}", "b.sql"), map[string]string{"OTHER": "x"}, "the bad preset's default database connection is not a Postgres connection"},
 		{mk("lit", "mysql://u:s3cret@h/db", "l.sql"), nil, "the lit preset's database connection is not a Postgres connection"},
+		{mk("mix", "postgresql://${U_X}:s3cret@${H_X:-h}", "x.sql"), map[string]string{"U_X": "u"}, "the connection in U_X, used by the mix preset, names no database"},
 	} {
 		_, err := gather(c.vars, c.p)
 		if err == nil || !strings.HasPrefix(err.Error(), c.want) || strings.Contains(err.Error(), "s3cret") {
@@ -523,7 +524,10 @@ func TestGatherDatabases(t *testing.T) {
 		about string
 	}{
 		{withDefault, nil, "This is the d preset's default connection, used when D_URL is not set. If the database is elsewhere, set D_URL, in the cron line too"},
+		{withDefault, map[string]string{"D_URL": ""}, "This is the d preset's default connection, used when D_URL is not set. If the database is elsewhere, set D_URL, in the cron line too"},
 		{withDefault, map[string]string{"D_URL": "postgresql://h/mem"}, "The d preset read this connection from D_URL"},
+		{mk("mix", "postgresql://${U_X}@${H_X:-h}/db", "x.sql"), map[string]string{"U_X": "u"}, "The mix preset read this connection from U_X, with its default for H_X, which is not set. If the database is elsewhere, set H_X, in the cron line too"},
+		{mk("mix", "postgresql://${U_X}@${H_X:-h}:${P_X:-5432}/db", "x.sql"), map[string]string{"U_X": "u"}, "The mix preset read this connection from U_X, with its defaults for H_X and P_X, which are not set. If the database is elsewhere, set H_X and P_X, in the cron line too"},
 		{mk("a", "postgresql://${A_U:-u}@${A_H:-h}/db", "a.sql"), nil, "This is the a preset's default connection, used when A_U and A_H are not set. If the database is elsewhere, set A_U and A_H, in the cron line too"},
 		{mk("lit", "postgresql://h/db", "l.sql"), nil, ""},
 	} {
@@ -582,6 +586,7 @@ func TestPresetDBCopy(t *testing.T) {
 	about := "The t preset read this connection from T_URL"
 	refused := &proc.Error{Program: "pg_dump", Err: errors.New("exit status 1"), Stderr: "pg_dump: error: connection refused"}
 	running := &proc.Error{Program: "pg_dump", Err: errors.New("exit status 1"), Stderr: "Is the server running on that host?"}
+	silent := &proc.Error{Program: "pg_dump", Err: errors.New("exit status 1")}
 	missing := fmt.Errorf("salt needs the pg_dump program, which %w", proc.ErrMissingProgram)
 	for _, c := range []struct {
 		err   error
@@ -590,6 +595,7 @@ func TestPresetDBCopy(t *testing.T) {
 	}{
 		{refused, about, refused.Error() + ". " + about},
 		{running, about, running.Error() + " " + about},
+		{silent, about, "pg_dump: exit status 1. " + about},
 		{refused, "", refused.Error()},
 		{context.Canceled, about, context.Canceled.Error()},
 		{missing, about, missing.Error()},
