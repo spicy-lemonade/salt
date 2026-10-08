@@ -427,8 +427,9 @@ func (w *walker) walk(s *spot, by []*Preset) (gone bool, err error) {
 		// is in. The place itself may be a symlink, so its path as the preset
 		// names it and its real path are both tried. Inside it, symlinks are
 		// not followed.
+		paths := []string{filepath.ToSlash(walked), filepath.ToSlash(at)}
 		matches := func(pat string) bool {
-			for _, p := range []string{filepath.ToSlash(walked), filepath.ToSlash(at)} {
+			for _, p := range paths {
 				start := len(p)
 				for i := 0; i <= strings.Count(pat, "/") && start >= 0; i++ {
 					start = strings.LastIndexByte(p[:start], '/')

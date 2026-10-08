@@ -1264,12 +1264,15 @@ out, and salt names them in every backup. After restoring, set each
 account's model settings up again.
 
 OpenViking saves a snapshot by writing its objects into `.ovgit` first and
-then pointing a branch at the newest one. Salt lists the files of a folder
-first and reads them later, so a snapshot saved while salt backs up can
-leave the backup's branch pointing at a snapshot whose objects it does not
-hold. The snapshot history restored from that backup then fails at its
-newest snapshot. The memory in `viking` and the older snapshots are not
-affected, and the next backup holds the whole history again. OpenViking
+then pointing the branch (`refs/heads/main`) at the newest one. Salt reads
+files in order of their path, so it reads the snapshot objects before the
+branch. A snapshot saved while salt backs up can then leave the backup's
+branch pointing at a snapshot whose objects it does not hold. OpenViking
+reaches every snapshot through the branch, so after restoring such a backup
+it can neither save a new snapshot nor list or go back to older ones, until
+`refs/heads/main` is pointed back at an earlier snapshot by hand. The memory
+in `viking` is not affected, and the next backup holds the whole history
+again. OpenViking
 advises pausing writes while its workspace is copied, so run `salt backup`
 when OpenViking is not saving snapshots, or with it stopped.
 
