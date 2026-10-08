@@ -403,11 +403,12 @@ func TestBackupHoncho(t *testing.T) {
 // vectors when pgvector is installed, and backs it up with each agent's
 // Hindsight settings, leaving out settings holding a token and the .env
 // files beside them, and never shows a password. The restored dump loads
-// into a new database that matches the live one. A server that cannot be
-// reached stops the backup with nothing committed or pushed, and the error
-// says where the connection came from. The test always sets
-// HINDSIGHT_API_DATABASE_URL, so it never reaches a real Postgres on this
-// machine. Which files the preset finds is tested in internal/preset.
+// into a new database that matches the live one, and a second run with
+// nothing changed makes no commit. A server that cannot be reached stops
+// the backup with nothing committed or pushed, and the error says where the
+// connection came from. The test always sets HINDSIGHT_API_DATABASE_URL, so
+// it never reaches a real Postgres on this machine. Which files the preset
+// finds is tested in internal/preset.
 func TestBackupHindsight(t *testing.T) {
 	e := newEnv(t)
 	s := startPostgres(t, e)
@@ -417,6 +418,8 @@ func TestBackupHindsight(t *testing.T) {
 	if _, code := s.e.run(s.data, filepath.Join(s.bin, "psql"), "-X", "-q", "-d", "hindsight", "-c", "CREATE EXTENSION vector"); code == 0 {
 		s.psql(t, "hindsight", "CREATE TABLE tenant_a.embeddings (id int PRIMARY KEY, v vector(3)); INSERT INTO tenant_a.embeddings VALUES (1, '[1,2,3]'), (2, '[0.5,0,-1]');")
 		snapshot += " UNION ALL SELECT id, v::text, 0 FROM tenant_a.embeddings"
+	} else {
+		t.Log("pgvector is not installed, so vectors are not tested")
 	}
 	live := s.psql(t, "hindsight", snapshot)
 	b := newBackupRepo(t, e)
@@ -446,8 +449,14 @@ func TestBackupHindsight(t *testing.T) {
 		t.Fatalf("restored database = %q, want %q", got, live)
 	}
 
+	commits = commitCount(e, b.remote)
+	salt.must(b.base, "salt", "backup", "--preset", "hindsight", b.dir)
+	if got := commitCount(e, b.remote); got != commits {
+		t.Fatalf("an unchanged backup made a commit: %s, then %s", commits, got)
+	}
+
 	s.stop()
-	commits, local := commitCount(e, b.remote), commitCount(e, b.dir)
+	local := commitCount(e, b.dir)
 	out, code := salt.run(b.base, "salt", "backup", "--preset", "hindsight", b.dir)
 	if code != 1 || !strings.Contains(out, "copying the database postgresql://agent@127.0.0.1:"+port+"/hindsight: pg_dump") ||
 		!strings.HasSuffix(strings.TrimSpace(out), "The hindsight preset read this connection from HINDSIGHT_API_DATABASE_URL") || strings.Contains(out, "s3cret") || strings.Contains(out, "pa:ss") {

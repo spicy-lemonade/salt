@@ -118,6 +118,8 @@ func TestSealPostgres(t *testing.T) {
 	vector := code == 0
 	if vector {
 		s.psql(t, "memory", "CREATE TABLE embeddings (id int PRIMARY KEY, v vector(3)); INSERT INTO embeddings VALUES (1, '[1,2,3]'), (2, '[0.5,0,-1]');")
+	} else {
+		t.Log("pgvector is not installed, so vectors are not tested")
 	}
 	live := s.psql(t, "memory", pgSnapshot)
 	b := newBackupRepo(t, e)
