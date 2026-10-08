@@ -59,6 +59,8 @@ type Postgres struct {
 	// rather than settings, and hasQuery whether that URL has settings.
 	keys            []string
 	isURL, hasQuery bool
+	// keepalives is the value conn gives libpq's keepalives setting, if any.
+	keepalives string
 }
 
 // pgDump is what salt needs to know about the pg_dump it runs.
@@ -196,12 +198,14 @@ func pgDumpCommand(ctx context.Context, p *Postgres, o CopyOptions, d pgDump) *e
 
 // dumpConn is p's connection with each of keepalives it does not set itself
 // added, leaving out those libpq, pg_dump's libpq version, is too old for.
-// A connection that sets keepalives itself, such as keepalives=0, gets none.
+// A connection that turns keepalives off, with keepalives=0, gets none.
 // Nor does one that names a libpq service, or runs with PGSERVICE set, as
 // the service file may set its own and the connection's settings would win
 // over them.
 func (p *Postgres) dumpConn(libpq int) string {
-	if _, set := os.LookupEnv("PGSERVICE"); set || slices.Contains(p.keys, "service") || slices.Contains(p.keys, "keepalives") {
+	// libpq reads keepalives as a whole number, and only 0 turns them off.
+	off, err := strconv.Atoi(strings.TrimSpace(p.keepalives))
+	if _, set := os.LookupEnv("PGSERVICE"); set || slices.Contains(p.keys, "service") || (err == nil && off == 0) {
 		return p.conn
 	}
 	var add []string
@@ -277,6 +281,8 @@ func parseURL(s string) (p Postgres, err error) {
 			continue
 		case key == "dbname":
 			p.dbname = value
+		case key == "keepalives":
+			p.keepalives = value
 		}
 		kept = append(kept, kv)
 		p.keys = append(p.keys, key)
@@ -315,6 +321,8 @@ func parseSettings(s string) (p Postgres, err error) {
 			continue
 		case "dbname":
 			p.dbname = value
+		case "keepalives":
+			p.keepalives = value
 		}
 		kept = append(kept, key+"='"+settingQuoter.Replace(value)+"'")
 		p.keys = append(p.keys, key)

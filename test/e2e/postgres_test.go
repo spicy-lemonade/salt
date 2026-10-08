@@ -268,6 +268,7 @@ for a; do case "$a" in --dbname=*) printf '%s' "${a#--dbname=}" > "$SALT_TEST_CO
 		{"17.2", "host=127.0.0.1 dbname=memory keepalives_count=9", "host='127.0.0.1' dbname='memory' keepalives_count='9' keepalives_idle=30 keepalives_interval=10 tcp_user_timeout=60000"},
 		{"17.2", "service=agent dbname=memory", "service='agent' dbname='memory'"},
 		{"17.2", "postgresql://127.0.0.1/memory?keepalives=0", "postgresql://127.0.0.1/memory?keepalives=0"},
+		{"17.2", "postgresql://127.0.0.1/memory?keepalives=1", "postgresql://127.0.0.1/memory?keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=3&tcp_user_timeout=60000"},
 	} {
 		salt, tmp := withTemp(t, e.with(stub, "SALT_TEST_VERSION="+tc.version, "SALT_TEST_CONN="+conn))
 		salt.must(b.base, "salt", "seal", "--postgres", tc.conn, b.src, b.dir)

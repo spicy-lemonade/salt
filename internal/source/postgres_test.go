@@ -266,6 +266,12 @@ func TestDumpConn(t *testing.T) {
 		// Keepalives turned off stay off, with no tcp_user_timeout either.
 		{"postgresql://h/m?keepalives=0", 17, "postgresql://h/m?keepalives=0"},
 		{"dbname=m keepalives=0", 17, "dbname='m' keepalives='0'"},
+		{"dbname=m keepalives=' 00'", 17, "dbname='m' keepalives=' 00'"},
+		{"postgresql://h/m?keepalives=1&keepalives=0", 17, "postgresql://h/m?keepalives=1&keepalives=0"},
+		// Keepalives turned on, libpq's default, still get the rest.
+		{"postgresql://h/m?keepalives=1", 17, "postgresql://h/m?keepalives=1&" + keepURL + "&tcp_user_timeout=60000"},
+		{"dbname=m keepalives=1", 0, "dbname='m' keepalives='1' " + keep},
+		{"postgresql://h/m?keepalives=0&keepalives=1", 0, "postgresql://h/m?keepalives=0&keepalives=1&" + keepURL},
 		// A service file may set its own.
 		{"service=agent dbname=m", 17, "service='agent' dbname='m'"},
 		{"postgresql://h/m?service=agent", 0, "postgresql://h/m?service=agent"},
