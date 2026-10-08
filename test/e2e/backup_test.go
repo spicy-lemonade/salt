@@ -436,6 +436,95 @@ func TestBackupOpenClaw(t *testing.T) {
 	}
 }
 
+// salt backup --preset openviking backs up OpenViking's memory, resources
+// and snapshot history, its client and workspace settings, and the same in
+// the Hermes folder and a Hermes profile, with Hermes's record of the
+// memories it copied. It leaves out the vector index, logs, locks, keys,
+// logins, the Hermes server's own settings, runtime and models, and a
+// settings file holding an API key. The restored files are the same, and a
+// second run with nothing changed makes no commit. HERMES_HOME names
+// another Hermes folder. Which files the preset finds is tested in
+// internal/preset.
+func TestBackupOpenViking(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	kept := map[string]string{
+		"openviking/ovcli.conf":                                                           `{"url": "http://127.0.0.1:1933"}`,
+		"openviking/workspaces/salt-1a2b.json":                                            `{"version": 1, "peer": {"id": "salt"}}`,
+		"openviking/data/viking/default/_system/users.json":                               `{"users": {"default": {"role": "admin", "key": ""}}}`,
+		"openviking/data/viking/default/user/default/memories/preferences/deploys.md":     "The user deploys on Fridays.",
+		"openviking/data/viking/default/user/default/memories/.abstract.md":               "a summary",
+		"openviking/data/viking/default/resources/log/notes.md":                           "a resource folder named log",
+		"openviking/data/.ovgit/default/HEAD":                                             "ref: refs/heads/main\n",
+		"hermes/openviking/memory_mirror_registry.json":                                   `{"entries": {}}`,
+		"hermes/openviking/data/viking/default/user/default/memories/m.md":                "hermes memory",
+		"hermes/profiles/coder/openviking/data/viking/default/user/default/memories/m.md": "coder memory",
+	}
+	for rel, content := range kept {
+		write(t, filepath.Join(e.home, "."+rel), content)
+	}
+	for _, rel := range []string{
+		".openviking/master.key", ".openviking/codex_auth.json", ".openviking/logs/cc-hooks.log",
+		".openviking/data/.openviking.lock", ".openviking/data/vectordb/context/000001.sst", ".openviking/data/log/openviking.log",
+		".openviking/data/viking/default/resources/log/.path.ovlock",
+		".hermes/openviking/ov.conf", ".hermes/openviking/runtime/bin/openviking-server", ".hermes/openviking/models/bge.gguf",
+		".hermes/openviking/pending_sessions/s.json",
+	} {
+		write(t, filepath.Join(e.home, rel), "left out")
+	}
+	write(t, filepath.Join(e.home, ".openviking", "ov.conf"), `{"embedding": {"dense": {"api_key": "sk-secret"}}}`)
+	commits := commitCount(e, b.remote)
+
+	out := e.must(b.base, "salt", "backup", "--preset", "openviking", b.dir)
+	warning := "salt: left ~/.openviking/ov.conf out of the backup because its setting api_key holds a secret. Keep secrets in environment variables so the file can be backed up\n"
+	if out != warning {
+		t.Fatalf("backup printed:\n%s", out)
+	}
+	if got := commitCount(e, b.remote); got == commits {
+		t.Fatal("the backup was not pushed")
+	}
+	dest, files := restoredFiles(t, e, b)
+	if want := slices.Sorted(maps.Keys(kept)); !slices.Equal(files, want) {
+		t.Fatalf("restored %v, want %v", files, want)
+	}
+	for rel, content := range kept {
+		if got, err := os.ReadFile(filepath.Join(dest, rel)); err != nil || string(got) != content {
+			t.Errorf("restored %s holds %q, %v", rel, got, err)
+		}
+	}
+
+	commits = commitCount(e, b.remote)
+	e.must(b.base, "salt", "backup", "--preset", "openviking", b.dir)
+	if got := commitCount(e, b.remote); got != commits {
+		t.Fatalf("an unchanged backup made a commit: %s, then %s", commits, got)
+	}
+
+	// HERMES_HOME names the Hermes folder in place of ~/.hermes, and the
+	// places only ~/.hermes held are named as missing.
+	other := filepath.Join(t.TempDir(), "hermes")
+	write(t, filepath.Join(other, "openviking", "data", "viking", "default", "user", "default", "memories", "m.md"), "another Hermes")
+	missing := " was in the last backup but was not found this time, so it is no longer backed up. Its earlier copies stay in history until prune drops them\n"
+	if out := e.with("HERMES_HOME="+other).must(b.base, "salt", "backup", "--preset", "openviking", b.dir); out != warning+
+		"salt: hermes/openviking/memory_mirror_registry.json"+missing+
+		"salt: hermes/profiles/coder/openviking/data/viking"+missing {
+		t.Fatalf("backup with HERMES_HOME printed:\n%s", out)
+	}
+	var want []string
+	for rel := range kept {
+		if strings.HasPrefix(rel, "openviking/") {
+			want = append(want, rel)
+		}
+	}
+	want = slices.Sorted(slices.Values(append(want, "hermes/openviking/data/viking/default/user/default/memories/m.md")))
+	dest, files = restoredFiles(t, e, b)
+	if !slices.Equal(files, want) {
+		t.Fatalf("restored with HERMES_HOME %v, want %v", files, want)
+	}
+	if got, err := os.ReadFile(filepath.Join(dest, "hermes/openviking/data/viking/default/user/default/memories/m.md")); err != nil || string(got) != "another Hermes" {
+		t.Fatalf("restored the Hermes memory as %q, %v", got, err)
+	}
+}
+
 // salt backup --preset honcho dumps the database DB_CONNECTION_URI names,
 // written as Honcho writes it with its driver, and backs it up with
 // Honcho's settings in Hermes, leaving out a profile's settings holding an

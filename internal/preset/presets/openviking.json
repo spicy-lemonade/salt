@@ -1,0 +1,24 @@
+{
+  "name": "openviking",
+  "about": "OpenViking's memory, resources, skills and snapshot history, its settings and each agent's workspace settings, on its own or inside Hermes and each Hermes profile",
+  "paths": [
+    {"from": "~/.openviking/ov.conf", "to": "openviking/ov.conf"},
+    {"from": "~/.openviking/ovcli.conf", "to": "openviking/ovcli.conf"},
+    {"from": "~/.openviking/workspaces", "to": "openviking/workspaces"},
+    {"from": "~/.openviking/data/viking", "to": "openviking/data/viking"},
+    {"from": "~/.openviking/data/.ovgit", "to": "openviking/data/.ovgit"},
+    {"from": "${HERMES_HOME:-~/.hermes}/openviking/memory_mirror_registry.json", "to": "hermes/openviking/memory_mirror_registry.json"},
+    {"from": "${HERMES_HOME:-~/.hermes}/openviking/data/viking", "to": "hermes/openviking/data/viking"},
+    {"from": "${HERMES_HOME:-~/.hermes}/openviking/data/.ovgit", "to": "hermes/openviking/data/.ovgit"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/openviking/memory_mirror_registry.json", "to": "hermes/profiles/*/openviking/memory_mirror_registry.json"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/openviking/data/viking", "to": "hermes/profiles/*/openviking/data/viking"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/openviking/data/.ovgit", "to": "hermes/profiles/*/openviking/data/.ovgit"}
+  ],
+  "skip": [".path.ovlock", ".exact.ovlock.*"],
+  "secrets": [
+    {
+      "files": ["ov.conf", "ovcli.conf", "users.json", "setting.json", "setting.backup.json", "cluster.json", "cluster.backup.json"],
+      "keys": ["key", "ak", "sk"]
+    }
+  ]
+}
