@@ -33,9 +33,17 @@ type scriptUI struct {
 	answer      func(prompt, out string) (string, error)
 	interactive bool
 	clears      int
+	// onPrintf, when set, is called with each line printed.
+	onPrintf func(line string)
 }
 
-func (s *scriptUI) Printf(f string, a ...any) { fmt.Fprintf(&s.out, f, a...) }
+func (s *scriptUI) Printf(f string, a ...any) {
+	line := fmt.Sprintf(f, a...)
+	s.out.WriteString(line)
+	if s.onPrintf != nil {
+		s.onPrintf(line)
+	}
+}
 func (s *scriptUI) ReadLine(p string) (string, error) {
 	s.out.WriteString(p)
 	return s.answer(p, s.out.String())

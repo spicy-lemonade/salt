@@ -181,9 +181,9 @@ func TestSealDatabaseCopyFails(t *testing.T) {
 }
 
 // A database found on this machine, as a preset finds them, that is deleted
-// before or while it is copied is left out, and the rest is sealed. Without
-// Live the same database stops the seal (see TestSealDatabaseCopyFails), and
-// a signal still stops it either way.
+// before or while it is copied is left out and listed as gone, and the rest
+// is sealed. Without Live the same database stops the seal (see
+// TestSealDatabaseCopyFails), and a signal still stops it either way.
 func TestSealLiveDatabaseGone(t *testing.T) {
 	for name, vanish := range map[string]func(d *fakeDB){
 		"deleted before": func(d *fakeDB) { os.Remove(d.path) },
@@ -200,8 +200,16 @@ func TestSealLiveDatabaseGone(t *testing.T) {
 			gone := fc.db(filepath.Join(filepath.Dir(db), "gone.db"))
 			os.WriteFile(gone.path, []byte("SQLite format 3\x00"), 0o644)
 			vanish(gone)
-			if err := e.app.Seal(SealOptions{Src: src, Repo: e.root, Databases: []source.Database{fc.db(db), gone}, Live: true}); err != nil {
+			r, signer, err := e.app.openToSeal(e.root)
+			if err != nil {
 				t.Fatal(err)
+			}
+			res, err := e.app.seal(r, signer, SealOptions{Src: src, Databases: []source.Database{fc.db(db), gone}, Live: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(res.Gone, []string{"gone.db"}) {
+				t.Fatalf("gone = %v", res.Gone)
 			}
 			assertNoCopiesLeft(t, fc)
 			if got := e.restored(); !mapsEqual(got, map[string]string{"memory.db": "SQLite format 3\x00memories"}) {

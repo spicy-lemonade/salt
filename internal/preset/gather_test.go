@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/source"
 )
 
@@ -204,6 +205,9 @@ func TestGatherTakesEachPlaceOnce(t *testing.T) {
 	}
 	if files, _ := rels(f); !slices.Equal(files, []string{"first/b.md", "third.md"}) {
 		t.Fatalf("files = %v", files)
+	}
+	if want := []string{"first", "second", "third.md"}; !slices.Equal(f.Places, want) {
+		t.Fatalf("places = %v, want %v", f.Places, want)
 	}
 }
 
@@ -641,7 +645,7 @@ func TestGatherSidecarOfSkippedDatabase(t *testing.T) {
 
 // A file or folder deleted after the walk listed it, as a tool's files can
 // be at any time, is skipped, and the files Gather adds are marked live. A
-// place deleted while it is walked is still an error.
+// preset whose only place is deleted while it is walked has found nothing.
 func TestGatherSkipsWhatVanishes(t *testing.T) {
 	home, err := filepath.EvalSymlinks(t.TempDir()) // the walk sees real paths
 	if err != nil {
@@ -671,9 +675,150 @@ func TestGatherSkipsWhatVanishes(t *testing.T) {
 	if !f.Files[0].Live {
 		t.Fatal("a gathered file is not marked live")
 	}
+	if !slices.Equal(f.Places, []string{"tool"}) {
+		t.Fatalf("places = %v", f.Places)
+	}
 
 	vanish = []string{"."}
-	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain); !errors.Is(err, ErrNothing) {
 		t.Fatalf("Gather = %v", err)
+	}
+}
+
+// A place deleted after it was found, a folder or a single file, is skipped
+// and left out of Places, so the backup goes on and names it as missing. A
+// place found under two paths leaves both out.
+func TestGatherSkipsVanishedPlaces(t *testing.T) {
+	for _, gone := range []string{"data", "single.txt"} {
+		t.Run(gone, func(t *testing.T) {
+			home, err := filepath.EvalSymlinks(t.TempDir()) // the walk sees real paths
+			if err != nil {
+				t.Fatal(err)
+			}
+			write(t, filepath.Join(home, "data", "a.md"), "a")
+			write(t, filepath.Join(home, "single.txt"), "one file")
+			p, err := Parse("t", []byte(`{"name": "t", "paths": [
+				{"from": "~/data", "to": "first"},
+				{"from": "${DATA}", "to": "second"},
+				{"from": "~/single.txt", "to": "single.txt"}]}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			listedHook = func(p string) {
+				if p == filepath.Join(home, gone) {
+					os.RemoveAll(p)
+				}
+			}
+			t.Cleanup(func() { listedHook = nil })
+			f, err := envOf(home, map[string]string{"DATA": filepath.Join(home, "data")}).Gather([]*Preset{p}, t.TempDir(), plain)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantPlaces, wantFiles := []string{"single.txt"}, []string{"single.txt"}
+			if gone == "single.txt" {
+				wantPlaces, wantFiles = []string{"first", "second"}, []string{"first/a.md"}
+			}
+			if !slices.Equal(f.Places, wantPlaces) {
+				t.Errorf("places = %v, want %v", f.Places, wantPlaces)
+			}
+			if files, _ := rels(f); !slices.Equal(files, wantFiles) {
+				t.Errorf("files = %v, want %v", files, wantFiles)
+			}
+		})
+	}
+}
+
+// Two presets that share only a place deleted before it is read have both
+// found nothing, and the first in name order is named.
+func TestGatherSharedPlaceVanishes(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir()) // the walk sees real paths
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(home, "data", "a.md"), "a")
+	var presets []*Preset
+	for _, name := range []string{"b", "a"} {
+		p, err := Parse(name, []byte(`{"name": "`+name+`", "paths": [{"from": "~/data", "to": "data"}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		presets = append(presets, p)
+	}
+	listedHook = func(p string) {
+		if p == filepath.Join(home, "data") {
+			os.RemoveAll(p)
+		}
+	}
+	t.Cleanup(func() { listedHook = nil })
+	_, err = envOf(home, nil).Gather(presets, t.TempDir(), plain)
+	if !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "for the a preset") {
+		t.Fatalf("Gather = %v", err)
+	}
+}
+
+// A spot deleted between Find and its walk is skipped and reported gone. Any
+// other error on it still stops the walk.
+func TestWalkSkipsGoneSpot(t *testing.T) {
+	home := t.TempDir()
+	missing := filepath.Join(home, "missing")
+	s := &spot{place: Place{Abs: missing, Rel: "a", Real: missing}, real: missing}
+	w := &walker{f: &Found{by: map[*Preset][]string{}}, spots: map[string]*spot{missing: s}, show: plain}
+	gone, err := w.walk(s, []*Preset{testPreset(t)})
+	if err != nil || !gone || len(w.f.Files) != 0 || len(w.f.by) != 0 {
+		t.Fatalf("walk = %v, %v, files %v, by %v", gone, err, w.f.Files, w.f.by)
+	}
+
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every file")
+	}
+	locked := mkdir(t, home, "locked")
+	os.Chmod(locked, 0)
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	s = &spot{place: Place{Abs: locked, Rel: "b", Real: locked}, real: locked}
+	if gone, err := w.walk(s, []*Preset{testPreset(t)}); gone || !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("walk = %v, %v", gone, err)
+	}
+}
+
+// Drop removes the paths gone from the files, databases and places found,
+// and from what each preset backs up. CheckGone then fails for a preset left
+// with nothing, naming the first in name order, and passes while each has
+// something left.
+func TestDropAndCheckGone(t *testing.T) {
+	db, err := source.NewSQLite(filepath.Join(t.TempDir(), "x.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := &Preset{Name: "a"}, &Preset{Name: "b"}
+	found := func() *Found {
+		return &Found{
+			Files:     []seal.Extra{{Rel: "one.md"}, {Rel: "dir/two.md"}},
+			Databases: []source.Database{db},
+			Places:    []string{"one.md", "dir", "x.db"},
+			by:        map[*Preset][]string{a: {"one.md", "x.db"}, b: {"x.db"}},
+		}
+	}
+	f := found()
+	f.Drop(nil)
+	if err := f.CheckGone(); err != nil || len(f.Files) != 2 || len(f.Databases) != 1 || len(f.Places) != 3 {
+		t.Fatalf("nothing gone: %v, %+v", err, f)
+	}
+	f = found()
+	f.Drop([]string{"one.md", "dir/two.md"})
+	if err := f.CheckGone(); err != nil {
+		t.Fatalf("files gone: %v", err)
+	}
+	if len(f.Files) != 0 || len(f.Databases) != 1 || !slices.Equal(f.Places, []string{"dir", "x.db"}) {
+		t.Fatalf("files gone: %+v", f)
+	}
+	f = found()
+	f.Drop([]string{"x.db"})
+	if err := f.CheckGone(); !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "for the b preset") || len(f.Databases) != 0 {
+		t.Fatalf("database gone: %v, %+v", err, f)
+	}
+	f = found()
+	f.Drop([]string{"x.db", "one.md"})
+	if err := f.CheckGone(); !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "for the a preset") {
+		t.Fatalf("both gone: %v", err)
 	}
 }

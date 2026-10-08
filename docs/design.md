@@ -673,15 +673,21 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
    is done, if REPO is not a git repo or has no remote named `origin`;
 2. gathers what each preset names (see "Presets"), and refuses if a preset
    finds nothing, naming where it looked. When another preset found
-   something, it says to leave that one out if the person doesn't use it.
-   A place the last backup held that is not found this time is named in one
-   line each, such as a folder on a drive that is not mounted, or one
-   pointed to by a variable set in the person's shell but not in cron. The
-   backup goes on without it, and its earlier copies stay in history until
-   prune drops them. The last backup's paths come from salt's change cache;
+   something, it says to leave that one out if the person doesn't use it;
 3. makes a safe copy of each SQLite database found, as `--sqlite` does, and
    seals the copies and every other file found into REPO, which then holds
-   only them. Anything else in REPO is removed, as with `salt seal --prune`;
+   only them. Anything else in REPO is removed, as with `salt seal --prune`.
+   A place the last backup held that is not found this time, and that
+   holds nothing of its own in this backup (a place inside it that is
+   found does not count), is then named in one line each, such as a
+   folder on a drive that is not mounted, one pointed to by a variable set
+   in the person's shell but not in cron, or a file deleted before it was
+   sealed. A missing place inside another missing one is not named again.
+   The backup goes on without it, and its earlier copies stay in history
+   until prune drops them. The last backup's paths come from salt's change
+   cache. A preset whose every file was deleted before it was sealed stops
+   the backup here, before anything is committed, as one that found
+   nothing does;
 4. stages everything with `git add --all`, runs the pre-commit hook's check
    (`salt check`) inside salt, and commits as `salt backup` if anything
    changed. The commit runs with git hooks off, like every git command salt
@@ -789,9 +795,13 @@ copies made in between can take a while. A symlink inside a folder is not
 followed or backed up, and salt prints one line about it. A `from` that is
 itself a symlink is followed. A file or database the tool deletes while salt
 backs it up, as tools do with temporary files, or replaces with something
-that is not a file, is left out of that backup instead of stopping it. A
-database named with `--sqlite`, or a file in `salt seal`'s source folder,
-still stops the seal when it is missing, since the person named it.
+that is not a file, is left out of that backup instead of stopping it. So
+is a place a preset found and the tool deletes before salt reads it, such
+as a profile deleted during the backup. It then counts as not found, so
+salt names it if the last backup held it, and a preset left with nothing
+still stops the backup. A database named with `--sqlite`, or a file in
+`salt seal`'s source folder, still stops the seal when it is missing, since
+the person named it.
 
 A place found twice, such as a folder named both by a variable and by its
 default, or by two presets, is backed up once, under the first path, taking

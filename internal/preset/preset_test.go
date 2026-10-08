@@ -124,7 +124,7 @@ func TestParseGoodPreset(t *testing.T) {
 }
 
 // A backup path is in the place a preset path's To names, each * matching
-// one part, and the outermost place when they nest.
+// one part, and the innermost place when they nest.
 func TestPlaceOf(t *testing.T) {
 	p, err := Parse("t", []byte(`{"name": "t", "paths": [
 		{"from": "~/tool/profiles/*/data", "to": "tool/profiles/*/data"},
@@ -138,7 +138,7 @@ func TestPlaceOf(t *testing.T) {
 		"tool/profiles/work/data/notes.md":  "tool/profiles/work/data",
 		"tool/profiles/work/data":           "tool/profiles/work/data",
 		"tool/settings.yaml":                "tool/settings.yaml",
-		"outer/inner/a.md":                  "outer",
+		"outer/inner/a.md":                  "outer/inner",
 		"outer/b.md":                        "outer",
 		"tool/profiles/work/other/notes.md": "",
 		"tool/profiles/work":                "",
