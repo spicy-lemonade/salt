@@ -156,6 +156,66 @@ func TestFindStars(t *testing.T) {
 	}
 }
 
+// A * with text around it in a part matches each folder named with that
+// text and at least one character for the *, which is what fills the * in
+// the backup path. Hidden folders are matched only by a part starting with
+// a dot. A * that would fill a part with . or .. matches nothing.
+func TestFindStarInPart(t *testing.T) {
+	home := t.TempDir()
+	work := mkdir(t, home, ".tool-work", "data")
+	odd := mkdir(t, home, ".tool-a.b-c", "data")
+	mkdir(t, home, ".tool-", "data")   // the * matches nothing
+	mkdir(t, home, ".tool", "data")    // no dash
+	mkdir(t, home, ".tool-..", "data") // the * would fill a part with ..
+	mkdir(t, home, "tool-plain", "data")
+	os.WriteFile(filepath.Join(home, ".tool-file"), nil, 0o644)
+	got := places(t, envOf(home, nil), Path{From: "~/.tool-*/data", To: "profiles/*/data"})
+	want := []Place{{Abs: odd, Rel: "profiles/a.b-c/data"}, {Abs: work, Rel: "profiles/work/data"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("Find = %v, want %v", got, want)
+	}
+
+	// Text after the *, the * kept inside a part of the backup path, and a
+	// hidden folder left out by a part that does not start with a dot.
+	ws := mkdir(t, home, "state", "ws-a.d")
+	mkdir(t, home, "state", ".ws-b.d")
+	mkdir(t, home, "state", "ws-.d.x")
+	got = places(t, envOf(home, nil), Path{From: "~/state/ws-*.d", To: "s/workspace-*"})
+	if !slices.Equal(got, []Place{{Abs: ws, Rel: "s/workspace-a"}}) {
+		t.Fatalf("text after the *: %v", got)
+	}
+	// Such parts and whole * parts together.
+	inner := mkdir(t, home, ".tool-work", "agents", "main", "skills")
+	got = places(t, envOf(home, nil), Path{From: "~/.tool-*/agents/*/skills", To: "profiles/*/agents/*/skills"})
+	if !slices.Equal(got, []Place{{Abs: inner, Rel: "profiles/work/agents/main/skills"}}) {
+		t.Fatalf("two stars: %v", got)
+	}
+}
+
+func TestMatchPart(t *testing.T) {
+	for _, c := range []struct {
+		pat, name, star string
+		ok              bool
+	}{
+		{"*", "a", "a", true},
+		{"*", ".", "", false},
+		{"*", "..", "", false},
+		{"ws-*", "ws-a", "a", true},
+		{"ws-*", "ws-", "", false},
+		{"ws-*", "w", "", false},
+		{"ws-*", "x-ws-a", "", false},
+		{"*.d", "a.d", "a", true},
+		{"a*a", "a", "", false},
+		{"a*a", "aba", "b", true},
+		{"ws", "ws", "", false}, // no *
+		{"ws", "wsx", "", false},
+	} {
+		if star, ok := matchPart(c.pat, c.name); star != c.star || ok != c.ok {
+			t.Errorf("matchPart(%q, %q) = %q, %v, want %q, %v", c.pat, c.name, star, ok, c.star, c.ok)
+		}
+	}
+}
+
 // A * held by a variable is part of a folder's name, never matched.
 func TestFindStarInVariable(t *testing.T) {
 	home := t.TempDir()
@@ -177,6 +237,9 @@ func TestFindUnreadableFolder(t *testing.T) {
 	t.Cleanup(func() { os.Chmod(p, 0o755) })
 	if _, err := envOf(home, nil).Find(Path{From: "~/profiles/*/tool", To: "p/*"}); err == nil {
 		t.Fatal("Find read an unreadable folder")
+	}
+	if _, err := envOf(home, nil).Find(Path{From: "~/profiles/p-*", To: "p/*"}); err == nil {
+		t.Fatal("Find read an unreadable folder for a * inside a part")
 	}
 	if _, err := envOf(home, nil).Find(Path{From: "~/profiles/x", To: "p"}); err == nil {
 		t.Fatal("Find checked a path in an unreadable folder")

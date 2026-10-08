@@ -47,10 +47,11 @@ type Path struct {
 	// From is where it is on this machine. ${VAR} is the environment
 	// variable VAR, and the path is skipped when VAR is unset or empty.
 	// ${VAR:-DEFAULT} uses DEFAULT then. A leading ~ is the home folder. A
-	// part that is only * matches every folder there, such as each profile.
+	// part that is only * matches every folder there, such as each profile,
+	// and one such as tool-* matches each folder named tool- and more.
 	From string `json:"from"`
 	// To is the slash path it is backed up under. It has a * for each * in
-	// From, which takes the name that * matched.
+	// From, at most one in a part, which takes the text that * matched.
 	To string `json:"to"`
 }
 
@@ -180,7 +181,7 @@ func (p *Preset) check(name string) error {
 			return fmt.Errorf("the path %q cannot be used in the backup", x.To)
 		}
 		if strings.Count(x.From, "*") != stars(x.From) || stars(x.From) != stars(x.To) || strings.Count(x.To, "*") != stars(x.To) {
-			return fmt.Errorf("%s and %s must have the same number of *, each a whole part of the path", x.From, x.To)
+			return fmt.Errorf("%s and %s must have the same number of *, at most one in a part of the path", x.From, x.To)
 		}
 	}
 	for _, d := range p.Databases {
@@ -191,7 +192,7 @@ func (p *Preset) check(name string) error {
 			return errors.New("a database has no from")
 		}
 		if stars(d.From) > 0 {
-			return fmt.Errorf("the database %s cannot have a * part", d.From)
+			return fmt.Errorf("the database %s cannot have a *", d.From)
 		}
 		if err := checkFrom(d.From); err != nil {
 			return err
@@ -221,9 +222,10 @@ func (p *Preset) check(name string) error {
 
 // PlaceOf returns the place the backup path rel is in, among the paths and
 // databases the presets back up: as many of rel's first parts as a path's
-// or database's To has, each * in To standing for any one part. When such
-// places nest, the innermost is taken, so one missing inside another that
-// is found can be named. ok is false when no preset backs rel up.
+// or database's To has, each part holding a * in To matching the parts it
+// can fill. When such places nest, the innermost is taken, so one missing
+// inside another that is found can be named. ok is false when no preset
+// backs rel up.
 func PlaceOf(presets []*Preset, rel string) (place string, ok bool) {
 	parts := strings.Split(rel, "/")
 	n := 0
@@ -232,7 +234,10 @@ func PlaceOf(presets []*Preset, rel string) (place string, ok bool) {
 		if len(to) > len(parts) || (ok && len(to) <= n) {
 			return
 		}
-		if slices.EqualFunc(to, parts[:len(to)], func(t, part string) bool { return t == "*" || t == part }) {
+		if slices.EqualFunc(to, parts[:len(to)], func(t, part string) bool {
+			_, matched := matchPart(t, part)
+			return matched || t == part
+		}) {
 			place, ok, n = strings.Join(parts[:len(to)], "/"), true, len(to)
 		}
 	}
@@ -247,11 +252,11 @@ func PlaceOf(presets []*Preset, rel string) (place string, ok bool) {
 	return place, ok
 }
 
-// stars counts the parts of the slash path p that are only *.
+// stars counts the parts of the slash path p that hold a *.
 func stars(p string) int {
 	n := 0
 	for part := range strings.SplitSeq(p, "/") {
-		if part == "*" {
+		if strings.Contains(part, "*") {
 			n++
 		}
 	}

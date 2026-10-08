@@ -95,9 +95,12 @@ func TestParseRefusesBadPresets(t *testing.T) {
 		`"/a" cannot be used`:      `{"name": "t", "paths": [{"from": "/a", "to": "/a"}]}`,
 		`"a//b" cannot be used`:    `{"name": "t", "paths": [{"from": "/a", "to": "a//b"}]}`,
 		"same number of *":         `{"name": "t", "paths": [{"from": "/a/*", "to": "a"}]}`,
-		"same number of *, each":   `{"name": "t", "paths": [{"from": "/a/*", "to": "a/x*"}]}`,
-		"/a/p* and a/* must have":  `{"name": "t", "paths": [{"from": "/a/p*", "to": "a/*"}]}`,
+		"/a/x* and a must have":    `{"name": "t", "paths": [{"from": "/a/x*", "to": "a"}]}`,
+		"at most one in a part":    `{"name": "t", "paths": [{"from": "/a/p*q*", "to": "a/*/*"}]}`,
+		"/a/*/b and a/x*y* must":   `{"name": "t", "paths": [{"from": "/a/*/b", "to": "a/x*y*"}]}`,
 		"cannot start with *":      `{"name": "t", "paths": [{"from": "*/a", "to": "*/a"}]}`,
+		"p*/a cannot start with *": `{"name": "t", "paths": [{"from": "p*/a", "to": "*/a"}]}`,
+		"cannot hold a variable":   `{"name": "t", "paths": [{"from": "/a/${B}-*", "to": "a/*"}]}`,
 		"${A:-${B}}: a variable":   `{"name": "t", "paths": [{"from": "${A:-${B}}", "to": "a"}]}`,
 		"${A:-$B}/a: a variable":   `{"name": "t", "paths": [{"from": "${A:-$B}/a", "to": "a"}]}`,
 		"${A:-/x/*/y}: a variable": `{"name": "t", "paths": [{"from": "${A:-/x/*/y}", "to": "a/*"}]}`,
@@ -115,11 +118,13 @@ func TestParseRefusesBadPresets(t *testing.T) {
 		`"mysql" is not a kind of database a preset can name`:        `{"name": "t", "databases": [{"kind": "mysql", "from": "mysql://h/a", "to": "a.sql"}]}`,
 		`"" is not a kind of database a preset can name`:             `{"name": "t", "databases": [{"from": "postgresql://h/a", "to": "a.sql"}]}`,
 		"a database has no from":                                     `{"name": "t", "databases": [{"kind": "postgres", "to": "a.sql"}]}`,
-		"postgresql://h/* cannot have a * part":                      `{"name": "t", "databases": [{"kind": "postgres", "from": "postgresql://h/*", "to": "a.sql"}]}`,
+		"postgresql://h/* cannot have a *":                           `{"name": "t", "databases": [{"kind": "postgres", "from": "postgresql://h/*", "to": "a.sql"}]}`,
+		"postgresql://h/a* cannot have a *":                          `{"name": "t", "databases": [{"kind": "postgres", "from": "postgresql://h/a*", "to": "a.sql"}]}`,
 		"${A:-$B}: a variable":                                       `{"name": "t", "databases": [{"kind": "postgres", "from": "${A:-$B}", "to": "a.sql"}]}`,
 		`database path "../a.sql" cannot be used`:                    `{"name": "t", "databases": [{"kind": "postgres", "from": "${A}", "to": "../a.sql"}]}`,
 		`database path "a.sql/" cannot be used`:                      `{"name": "t", "databases": [{"kind": "postgres", "from": "${A}", "to": "a.sql/"}]}`,
 		`database path "a/*/b.sql" cannot be used`:                   `{"name": "t", "databases": [{"kind": "postgres", "from": "${A}", "to": "a/*/b.sql"}]}`,
+		`database path "a/b*.sql" cannot be used`:                    `{"name": "t", "databases": [{"kind": "postgres", "from": "${A}", "to": "a/b*.sql"}]}`,
 		`database path "" cannot be used`:                            `{"name": "t", "databases": [{"kind": "postgres", "from": "${A}"}]}`,
 		`unknown field "form"`:                                       `{"name": "t", "databases": [{"kind": "postgres", "form": "${A}", "to": "a.sql"}]}`,
 		// Settings are matched in lower case, so API_KEY would never match.
@@ -141,6 +146,11 @@ func TestParseGoodPreset(t *testing.T) {
 	if p.Paths[0].To != "x/*/data" || p.Skip[0] != "*.log" || p.Secrets[0].Keys[0] != "*api_key" {
 		t.Fatalf("Parse = %+v", p)
 	}
+	// A * may have text around it in a part, in From and in To, and be in a
+	// part of To that does not hold one in From.
+	if _, err := Parse("t", []byte(`{"name": "t", "paths": [{"from": "${X:-~/x}/.x-*/w-*.d", "to": "x/*/workspace-*"}]}`)); err != nil {
+		t.Fatal(err)
+	}
 	// A preset may name only databases. A connection's default may hold
 	// slashes, a colon and an @.
 	p, err = Parse("t", []byte(`{"name": "t", "databases": [{"kind": "postgres", "from": "${DB_URL:-postgresql://u:p@h:5432/db}", "to": "t/db.sql"}]}`))
@@ -152,11 +162,13 @@ func TestParseGoodPreset(t *testing.T) {
 	}
 }
 
-// A backup path is in the place a preset path's To names, each * matching
-// one part, and the innermost place when they nest.
+// A backup path is in the place a preset path's To names, each part holding
+// a * matching the parts it can fill, and the innermost place when they
+// nest.
 func TestPlaceOf(t *testing.T) {
 	p, err := Parse("t", []byte(`{"name": "t", "paths": [
 		{"from": "~/tool/profiles/*/data", "to": "tool/profiles/*/data"},
+		{"from": "~/tool/ws-*", "to": "tool/workspace-*"},
 		{"from": "~/tool/settings.yaml", "to": "tool/settings.yaml"},
 		{"from": "~/inner", "to": "outer/inner"},
 		{"from": "~/outer", "to": "outer"}],
@@ -168,6 +180,9 @@ func TestPlaceOf(t *testing.T) {
 		"tool/profiles/work/data/notes.md":  "tool/profiles/work/data",
 		"tool/profiles/work/data":           "tool/profiles/work/data",
 		"tool/settings.yaml":                "tool/settings.yaml",
+		"tool/workspace-a/MEMORY.md":        "tool/workspace-a",
+		"tool/workspace-/MEMORY.md":         "",
+		"tool/workspace/MEMORY.md":          "",
 		"outer/inner/a.md":                  "outer/inner",
 		"outer/b.md":                        "outer",
 		"tool/profiles/work/other/notes.md": "",
