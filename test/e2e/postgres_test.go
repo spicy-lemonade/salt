@@ -252,8 +252,9 @@ func TestSealPostgresPasswords(t *testing.T) {
 }
 
 // pg_dump is given keepalives, so a connection that dies part way through a
-// dump fails it. A connection's own settings are kept, and an older libpq is
-// not given tcp_user_timeout, which it would refuse.
+// dump fails it. A connection's own settings are kept, keepalives turned off
+// stay off, and an older libpq is not given tcp_user_timeout, which it would
+// refuse.
 func TestSealPostgresKeepalives(t *testing.T) {
 	e := newEnv(t)
 	b := newBackupRepo(t, e)
@@ -266,6 +267,7 @@ for a; do case "$a" in --dbname=*) printf '%s' "${a#--dbname=}" > "$SALT_TEST_CO
 		{"11.22", "postgresql://agent:s3cret@127.0.0.1/memory", "postgresql://agent@127.0.0.1/memory?keepalives_idle=30&keepalives_interval=10&keepalives_count=3"},
 		{"17.2", "host=127.0.0.1 dbname=memory keepalives_count=9", "host='127.0.0.1' dbname='memory' keepalives_count='9' keepalives_idle=30 keepalives_interval=10 tcp_user_timeout=60000"},
 		{"17.2", "service=agent dbname=memory", "service='agent' dbname='memory'"},
+		{"17.2", "postgresql://127.0.0.1/memory?keepalives=0", "postgresql://127.0.0.1/memory?keepalives=0"},
 	} {
 		salt, tmp := withTemp(t, e.with(stub, "SALT_TEST_VERSION="+tc.version, "SALT_TEST_CONN="+conn))
 		salt.must(b.base, "salt", "seal", "--postgres", tc.conn, b.src, b.dir)

@@ -574,11 +574,12 @@ connection that dies part way through a dump, such as when the server's
 container restarts or the laptop sleeps, then fails it after about a minute
 without a reply, instead of the two hours the system would wait, all the
 while holding the repo's lock. A busy server still answers, so a long dump
-is never stopped. A setting the connection gives itself is kept, and a
-connection that names a libpq service, or runs with `PGSERVICE` set, gets
-none, so the service file's own are kept. Messages show the connection
-without them. A dropped connection or any other `pg_dump` error stops salt before sealing, with
-`pg_dump`'s reason. A connection with no database name uses `PGDATABASE`, as
+is never stopped. A setting the connection gives itself is kept. A
+connection that sets `keepalives` itself, such as `keepalives=0`, gets none,
+and so does one that names a libpq service, or runs with `PGSERVICE` set, so
+the service file's own are kept. Messages show the connection without them.
+A dropped connection or any other `pg_dump` error stops salt before sealing,
+with `pg_dump`'s reason. A connection with no database name uses `PGDATABASE`, as
 libpq does. Without that it is refused, rather than letting `pg_dump` guess
 one.
 

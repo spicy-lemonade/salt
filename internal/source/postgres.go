@@ -55,10 +55,28 @@ type Postgres struct {
 	// conn is the connection without its password. pg_dump gets the
 	// password from PGPASSWORD, so it never shows in a process list.
 	conn, password, dbname string
-	// keys names the settings conn gives, and url is whether conn is a URL
-	// rather than settings.
-	keys []string
-	url  bool
+	// keys names the settings conn gives. isURL is whether conn is a URL
+	// rather than settings, and hasQuery whether that URL has settings.
+	keys            []string
+	isURL, hasQuery bool
+}
+
+// pgDump is what salt needs to know about the pg_dump it runs.
+type pgDump struct {
+	// restrictKey is whether pg_dump has --restrict-key.
+	restrictKey bool
+	// libpq is the major version of pg_dump's libpq, or 0 if unknown.
+	libpq int
+}
+
+// newPgDump reads pg_dump's --help and --version output. --version reads as
+// "pg_dump (PostgreSQL) 17.2", and pg_dump's libpq is at least as new.
+func newPgDump(help, version string) pgDump {
+	d := pgDump{restrictKey: strings.Contains(help, "--restrict-key")}
+	if _, v, ok := strings.Cut(version, ") "); ok {
+		fmt.Sscanf(v, "%d", &d.libpq)
+	}
+	return d
 }
 
 // NewPostgres returns the database a Postgres connection names. conn is a URL
@@ -137,7 +155,7 @@ func (p *Postgres) Copy(ctx context.Context, o CopyOptions) (Meta, error) {
 			return Meta{}, err
 		}
 	}
-	if err := proc.Run(ctx, pgDumpCommand(ctx, p, o, out[0].String(), out[1].String())); err != nil {
+	if err := proc.Run(ctx, pgDumpCommand(ctx, p, o, newPgDump(out[0].String(), out[1].String()))); err != nil {
 		return Meta{}, err
 	}
 	return Meta{Mode: 0o600}, nil
@@ -146,8 +164,8 @@ func (p *Postgres) Copy(ctx context.Context, o CopyOptions) (Meta, error) {
 // pgDumpCommand builds the pg_dump command that dumps p into o.Dst. It never
 // lets pg_dump ask for a password, which would stop a scheduled backup until
 // someone answers, and gives up on a table another program has locked after
-// waitTimeout instead of waiting forever. When help lists --restrict-key,
-// o.Key replaces the random key that pg_dump would write into every dump.
+// waitTimeout instead of waiting forever. When d has --restrict-key, o.Key
+// replaces the random key that pg_dump would write into every dump.
 //
 // The password goes in PGPASSWORD, where it wins over any already set, as it
 // would in the connection. Unless the person set their own
@@ -155,17 +173,17 @@ func (p *Postgres) Copy(ctx context.Context, o CopyOptions) (Meta, error) {
 // an unreachable server fails the backup instead of stopping it. The
 // connection gets keepalives (see dumpConn), so one that dies part way
 // through a dump fails it too.
-func pgDumpCommand(ctx context.Context, p *Postgres, o CopyOptions, help, version string) *exec.Cmd {
+func pgDumpCommand(ctx context.Context, p *Postgres, o CopyOptions, d pgDump) *exec.Cmd {
 	args := []string{
 		"--no-password",
 		"--format=plain",
 		"--lock-wait-timeout=" + strconv.FormatInt(waitTimeout.Milliseconds(), 10),
 		"--file=" + o.Dst,
 	}
-	if strings.Contains(help, "--restrict-key") {
+	if d.restrictKey {
 		args = append(args, "--restrict-key="+o.Key)
 	}
-	cmd := exec.CommandContext(ctx, "pg_dump", append(args, "--dbname="+p.dumpConn(version))...)
+	cmd := exec.CommandContext(ctx, "pg_dump", append(args, "--dbname="+p.dumpConn(d.libpq))...)
 	cmd.Env = os.Environ()
 	if p.password != "" {
 		cmd.Env = append(cmd.Env, "PGPASSWORD="+p.password)
@@ -177,18 +195,15 @@ func pgDumpCommand(ctx context.Context, p *Postgres, o CopyOptions, help, versio
 }
 
 // dumpConn is p's connection with each of keepalives it does not set itself
-// added, leaving out those that version, pg_dump --version's output, says its
-// libpq is too old for. A connection that names a libpq service, or runs
-// with PGSERVICE set, gets none, as the service file may set its own and the
-// connection's settings would win over them.
-func (p *Postgres) dumpConn(version string) string {
-	if _, set := os.LookupEnv("PGSERVICE"); set || slices.Contains(p.keys, "service") {
+// added, leaving out those libpq, pg_dump's libpq version, is too old for.
+// A connection that sets keepalives itself, such as keepalives=0, gets none.
+// Nor does one that names a libpq service, or runs with PGSERVICE set, as
+// the service file may set its own and the connection's settings would win
+// over them.
+func (p *Postgres) dumpConn(libpq int) string {
+	if _, set := os.LookupEnv("PGSERVICE"); set || slices.Contains(p.keys, "service") || slices.Contains(p.keys, "keepalives") {
 		return p.conn
 	}
-	// version reads as "pg_dump (PostgreSQL) 17.2", and its libpq is at
-	// least as new. A version that cannot be read is 0.
-	_, v, _ := strings.Cut(version, ") ")
-	libpq, _ := strconv.Atoi(v[:len(v)-len(strings.TrimLeft(v, "0123456789"))])
 	var add []string
 	for _, k := range keepalives {
 		if libpq >= k.since && !slices.Contains(p.keys, k.key) {
@@ -198,9 +213,9 @@ func (p *Postgres) dumpConn(version string) string {
 	switch {
 	case len(add) == 0:
 		return p.conn
-	case !p.url:
+	case !p.isURL:
 		return p.conn + " " + strings.Join(add, " ")
-	case strings.Contains(p.conn, "?"):
+	case p.hasQuery:
 		return p.conn + "&" + strings.Join(add, "&")
 	default:
 		return p.conn + "?" + strings.Join(add, "&")
@@ -209,23 +224,40 @@ func (p *Postgres) dumpConn(version string) string {
 
 // parseURL reads a URL in libpq's form. Everything but the password is kept
 // as written, so pg_dump reads the same connection.
+//
+// As in libpq, the user and password end at the first "@" before any "/",
+// so a password may hold "?". A later "@" before the "/", with no "?" in
+// between, ends them instead, so a password may hold "@" too. A host never
+// holds one, so libpq could not read such a URL anyway.
 func parseURL(s string) (p Postgres, err error) {
 	scheme, rest, _ := strings.Cut(s, "://")
 	if base, _, _ := strings.Cut(scheme, "+"); base != "postgresql" && base != "postgres" {
 		return Postgres{}, errNotPostgres
 	}
+	before, _, _ := strings.Cut(rest, "/")
+	at := strings.IndexByte(before, '@')
+	for at >= 0 {
+		next := strings.IndexAny(before[at+1:], "@?")
+		if next < 0 || before[at+1+next] != '@' {
+			break
+		}
+		at += 1 + next
+	}
+	var user string
+	if at >= 0 {
+		u, pw, ok := strings.Cut(rest[:at], ":")
+		if ok {
+			if p.password, err = url.PathUnescape(pw); err != nil {
+				return Postgres{}, errNotPostgres
+			}
+		}
+		user, rest = u+"@", rest[at+1:]
+	}
 	authority, tail := rest, ""
 	if i := strings.IndexAny(rest, "/?"); i >= 0 {
 		authority, tail = rest[:i], rest[i:]
 	}
-	if at := strings.LastIndex(authority, "@"); at >= 0 {
-		if user, pw, ok := strings.Cut(authority[:at], ":"); ok {
-			if p.password, err = url.PathUnescape(pw); err != nil {
-				return Postgres{}, errNotPostgres
-			}
-			authority = user + authority[at:]
-		}
-	}
+	authority = user + authority
 	path, query, _ := strings.Cut(tail, "?")
 	if p.dbname, err = url.PathUnescape(strings.TrimPrefix(path, "/")); err != nil {
 		return Postgres{}, errNotPostgres
@@ -250,10 +282,11 @@ func parseURL(s string) (p Postgres, err error) {
 		p.keys = append(p.keys, key)
 	}
 	p.conn = "postgresql://" + authority + path
-	if len(kept) > 0 {
+	p.hasQuery = len(kept) > 0
+	if p.hasQuery {
 		p.conn += "?" + strings.Join(kept, "&")
 	}
-	p.url = true
+	p.isURL = true
 	return p, nil
 }
 
