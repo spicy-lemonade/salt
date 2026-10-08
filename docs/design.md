@@ -1057,10 +1057,9 @@ Hindsight's LLM API keys, `config` and `cli-profiles` hold the Hindsight
 CLI's API keys in TOML, which salt cannot check, and `xai_oauth.json` and
 `control.token` hold logins. Nor are its logs, or the integrations' state
 folders, installed code and downloaded models, which are made again when
-needed. A
-hindsight-embed profile's settings are in its `.env` file, so after
-restoring, set Hindsight up again with the same embedding model as before,
-since the stored vectors were made with it.
+needed. A hindsight-embed profile's settings are in its `.env` file, so
+after restoring, set Hindsight up again with the same embedding model as
+before, since the stored vectors were made with it.
 
 | On the machine | In the backup |
 |---|---|
