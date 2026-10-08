@@ -149,7 +149,7 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 	lookedIn := map[*Preset][]string{}
 	for _, p := range presets {
 		for _, s := range p.Secrets {
-			w.secrets = append(w.secrets, Secret{Files: s.Files, Keys: slices.Concat(defaultSecretKeys, s.Keys)})
+			w.secrets = append(w.secrets, Secret{Files: s.Files, Keys: slices.Concat(defaultSecretKeys, s.Keys), Refs: s.Refs})
 		}
 		var looked []string
 		for _, x := range p.Paths {
@@ -433,7 +433,7 @@ func (w *walker) walk(s *spot, by []*Preset) (gone bool, err error) {
 			if !slices.ContainsFunc(names, func(n string) bool { return matchAny(sec.Files, n) }) {
 				continue
 			}
-			why, secret, num := secretIn(walked, sec.Keys)
+			why, secret, num := secretIn(walked, sec)
 			if why != "" {
 				w.f.LeftOut = append(w.f.LeftOut, LeftOut{Path: at, Why: why, Secret: secret})
 				return nil
@@ -490,12 +490,12 @@ func isSidecar(p string) (bool, error) {
 }
 
 // secretIn says why the file at p must be left out: one of the settings
-// keys names holds a value, and secret is true, or the file could not be
-// read as YAML to check. It returns "" when the file can be backed up, or
-// when it no longer exists, which the caller then finds and skips. number
-// is the first setting keys names that holds a number and no text, which is
-// not taken for a secret.
-func secretIn(p string, keys []string) (why string, secret bool, number string) {
+// sec's keys name holds a value, and secret is true, or the file could not
+// be read as YAML or JSON to check. It returns "" when the file can be
+// backed up, or when it no longer exists, which the caller then finds and
+// skips. number is the first setting sec's keys name that holds a number
+// and no text, which is not taken for a secret.
+func secretIn(p string, sec Secret) (why string, secret bool, number string) {
 	file, err := os.Open(p)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", false, ""
@@ -519,9 +519,12 @@ func secretIn(p string, keys []string) (why string, secret bool, number string) 
 			return "", false, number
 		}
 		if err != nil {
-			return "it could not be read as YAML to check it for secrets", false, ""
+			return "it could not be read as YAML or JSON to check it for secrets", false, ""
 		}
-		text, num := secretKeys(&doc, keys)
+		text, num, comment := secretKeys(&doc, sec)
+		if comment {
+			return "a comment in it stops it being checked for secrets", false, ""
+		}
 		if text != "" {
 			return fmt.Sprintf("its setting %s holds a secret", text), true, ""
 		}
@@ -530,37 +533,45 @@ func secretIn(p string, keys []string) (why string, secret bool, number string) 
 }
 
 // secretKeys returns the first setting in n, at any depth, whose name
-// matches keys in lower case and that holds a value, and the first such
-// setting that holds a number and no value, or "" for either.
-func secretKeys(n *yaml.Node, keys []string) (text, number string) {
+// matches sec's keys in lower case and that holds a value, and the first
+// such setting that holds a number and no value, or "" for either. comment
+// is true, and the others "", when a setting's name is not quoted and
+// starts with // or holds /*. A JSON5 comment read as YAML gives such a
+// name, joined to the name before or after it, which then matches no key,
+// so the file cannot be checked. A quoted name, such as package.json's "//"
+// or "src/*", is a name.
+func secretKeys(n *yaml.Node, sec Secret) (text, number string, comment bool) {
 	switch n.Kind {
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, c := range n.Content {
-			t, num := secretKeys(c, keys)
-			if t != "" {
-				return t, ""
+			t, num, com := secretKeys(c, sec)
+			if t != "" || com {
+				return t, "", com
 			}
 			number = cmp.Or(number, num)
 		}
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k, v := n.Content[i], n.Content[i+1]
-			if matchAny(keys, strings.ToLower(k.Value)) {
-				if hasValue(v) {
-					return k.Value, ""
+			if k.Style&(yaml.DoubleQuotedStyle|yaml.SingleQuotedStyle) == 0 && (strings.HasPrefix(k.Value, "//") || strings.Contains(k.Value, "/*")) {
+				return "", "", true
+			}
+			if matchAny(sec.Keys, strings.ToLower(k.Value)) {
+				if hasValue(v, sec.Refs) {
+					return k.Value, "", false
 				}
 				if hasNumber(v) {
 					number = cmp.Or(number, k.Value)
 				}
 			}
-			t, num := secretKeys(v, keys)
-			if t != "" {
-				return t, ""
+			t, num, com := secretKeys(v, sec)
+			if t != "" || com {
+				return t, "", com
 			}
 			number = cmp.Or(number, num)
 		}
 	}
-	return "", number
+	return "", number, false
 }
 
 // hasNumber reports whether n holds a number, an integer or a decimal, at
@@ -588,9 +599,10 @@ var envRef = regexp.MustCompile(`^\$\{(env:)?` + varName + `\}$`)
 // that is not empty, at any depth. A number, true or false, or null is a
 // setting, never a secret, so max_token: 512 is not taken for one. Nor is a
 // string that is only ${NAME} or ${env:NAME}, though one with anything more,
-// such as a default, is. An alias counts, since what it points to is not
-// followed.
-func hasValue(n *yaml.Node) bool {
+// such as a default, is, or an object refs names (see isRef). An alias
+// counts, since what it points to is not followed.
+func hasValue(n *yaml.Node, refs [][]string) bool {
+	has := func(c *yaml.Node) bool { return hasValue(c, refs) }
 	switch n.Kind {
 	case yaml.ScalarNode:
 		switch n.Tag {
@@ -603,12 +615,31 @@ func hasValue(n *yaml.Node) bool {
 	case yaml.AliasNode:
 		return true
 	case yaml.MappingNode:
+		if isRef(n, refs) {
+			return false
+		}
 		for i := 1; i < len(n.Content); i += 2 {
-			if hasValue(n.Content[i]) {
+			if has(n.Content[i]) {
 				return true
 			}
 		}
 		return false
 	}
-	return slices.ContainsFunc(n.Content, hasValue)
+	return slices.ContainsFunc(n.Content, has)
+}
+
+// isRef reports whether the mapping n names where a secret is kept, as
+// {source: env, id: NAME} can: it holds exactly the settings one of refs
+// lists, compared in lower case, and nothing but one value in each.
+func isRef(n *yaml.Node, refs [][]string) bool {
+	if slices.ContainsFunc(n.Content, func(c *yaml.Node) bool { return c.Kind != yaml.ScalarNode }) {
+		return false
+	}
+	names := make([]string, 0, len(n.Content)/2)
+	for i := 0; i < len(n.Content); i += 2 {
+		names = append(names, strings.ToLower(n.Content[i].Value))
+	}
+	return slices.ContainsFunc(refs, func(ref []string) bool {
+		return len(ref) == len(names) && !slices.ContainsFunc(ref, func(k string) bool { return !slices.Contains(names, k) })
+	})
 }

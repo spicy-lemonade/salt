@@ -47,10 +47,11 @@ type Path struct {
 	// From is where it is on this machine. ${VAR} is the environment
 	// variable VAR, and the path is skipped when VAR is unset or empty.
 	// ${VAR:-DEFAULT} uses DEFAULT then. A leading ~ is the home folder. A
-	// part that is only * matches every folder there, such as each profile.
+	// part that is only * matches every folder there, such as each profile,
+	// and one such as tool-* matches each folder named tool- and more.
 	From string `json:"from"`
 	// To is the slash path it is backed up under. It has a * for each * in
-	// From, which takes the name that * matched.
+	// From, at most one in a part, which takes the text that * matched.
 	To string `json:"to"`
 }
 
@@ -91,13 +92,20 @@ type Secret struct {
 	// compared in lower case at any depth in the file, beyond those in
 	// defaultSecretKeys, which are always checked.
 	Keys []string `json:"keys"`
+	// Refs lists, for each way the tool names where a secret is kept in an
+	// object, such as {"source": "env", "id": "NAME"}, the exact names of
+	// that object's settings in lower case, never patterns. An object
+	// holding exactly one such set of settings, each with one value, is not
+	// a secret, as ${NAME} is not.
+	Refs [][]string `json:"refs"`
 }
 
 // defaultSecretKeys lists name patterns (path.Match) of settings that hold
 // secrets in most tools' settings files. They are checked in every file a
 // secrets rule names, with that rule's own keys.
 var defaultSecretKeys = []string{
-	"*api_key", "*apikey", "*api-key", "*secret", "*secret_key", "*access_key", "*private_key",
+	"*api_key", "*apikey", "*api-key", "*secret", "*secret_key", "*secretkey", "*access_key", "*accesskey",
+	"*private_key", "*privatekey",
 	"*password", "*passphrase", "token", "*_token", "*-token", "authorization",
 }
 
@@ -180,7 +188,7 @@ func (p *Preset) check(name string) error {
 			return fmt.Errorf("the path %q cannot be used in the backup", x.To)
 		}
 		if strings.Count(x.From, "*") != stars(x.From) || stars(x.From) != stars(x.To) || strings.Count(x.To, "*") != stars(x.To) {
-			return fmt.Errorf("%s and %s must have the same number of *, each a whole part of the path", x.From, x.To)
+			return fmt.Errorf("%s and %s must have the same number of *, at most one in a part of the path", x.From, x.To)
 		}
 	}
 	for _, d := range p.Databases {
@@ -191,7 +199,7 @@ func (p *Preset) check(name string) error {
 			return errors.New("a database has no from")
 		}
 		if stars(d.From) > 0 {
-			return fmt.Errorf("the database %s cannot have a * part", d.From)
+			return fmt.Errorf("the database %s cannot have a *", d.From)
 		}
 		if err := checkFrom(d.From); err != nil {
 			return err
@@ -210,6 +218,16 @@ func (p *Preset) check(name string) error {
 				return fmt.Errorf("the secrets key %q must be in lower case, as settings are matched in lower case", k)
 			}
 		}
+		for _, ref := range s.Refs {
+			if len(ref) == 0 || len(slices.Compact(slices.Sorted(slices.Values(ref)))) != len(ref) {
+				return fmt.Errorf("the secrets ref %q must name settings, each once", ref)
+			}
+			for _, k := range ref {
+				if k != strings.ToLower(k) || strings.ContainsAny(k, `*?[\`) {
+					return fmt.Errorf("the secrets ref setting %q must be an exact name in lower case, as settings are matched by name in lower case", k)
+				}
+			}
+		}
 	}
 	for _, pat := range slices.Concat(p.Skip, secretPatterns(p.Secrets)) {
 		if _, err := path.Match(pat, ""); err != nil {
@@ -221,9 +239,10 @@ func (p *Preset) check(name string) error {
 
 // PlaceOf returns the place the backup path rel is in, among the paths and
 // databases the presets back up: as many of rel's first parts as a path's
-// or database's To has, each * in To standing for any one part. When such
-// places nest, the innermost is taken, so one missing inside another that
-// is found can be named. ok is false when no preset backs rel up.
+// or database's To has, each part holding a * in To matching the parts it
+// can fill. When such places nest, the innermost is taken, so one missing
+// inside another that is found can be named. ok is false when no preset
+// backs rel up.
 func PlaceOf(presets []*Preset, rel string) (place string, ok bool) {
 	parts := strings.Split(rel, "/")
 	n := 0
@@ -232,7 +251,10 @@ func PlaceOf(presets []*Preset, rel string) (place string, ok bool) {
 		if len(to) > len(parts) || (ok && len(to) <= n) {
 			return
 		}
-		if slices.EqualFunc(to, parts[:len(to)], func(t, part string) bool { return t == "*" || t == part }) {
+		if slices.EqualFunc(to, parts[:len(to)], func(t, part string) bool {
+			_, matched := matchPart(t, part)
+			return matched || t == part
+		}) {
 			place, ok, n = strings.Join(parts[:len(to)], "/"), true, len(to)
 		}
 	}
@@ -247,11 +269,11 @@ func PlaceOf(presets []*Preset, rel string) (place string, ok bool) {
 	return place, ok
 }
 
-// stars counts the parts of the slash path p that are only *.
+// stars counts the parts of the slash path p that hold a *.
 func stars(p string) int {
 	n := 0
 	for part := range strings.SplitSeq(p, "/") {
-		if part == "*" {
+		if strings.Contains(part, "*") {
 			n++
 		}
 	}

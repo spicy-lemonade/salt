@@ -91,12 +91,12 @@ func (e Env) getenv(name string) string {
 }
 
 // Find returns every place on this machine that the preset path x names and that
-// exists. Its parts that are only * are matched against folders, never
-// against what a variable holds, so a path holding * is taken as it is.
-// Following a place's symlinks tells both that it exists and where it
-// really is, in one step, so it cannot be deleted in between.
+// exists. Its parts holding a * are matched against folders, never against
+// what a variable holds, so a path holding * is taken as it is. Following a
+// place's symlinks tells both that it exists and where it really is, in one
+// step, so it cannot be deleted in between.
 func (e Env) Find(x Path) ([]Place, error) {
-	runs := splitStars(x.From)
+	runs, pats := splitStars(x.From)
 	first, ok := e.expand(runs[0])
 	if !ok {
 		return nil, nil
@@ -105,27 +105,27 @@ func (e Env) Find(x Path) ([]Place, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Each found place keeps the folder names its * parts matched.
+	// Each found place keeps the text each of its * matched.
 	type match struct {
 		abs   string
-		names []string
+		stars []string
 	}
 	places := []match{{abs: abs}}
-	for _, rest := range runs[1:] {
+	for i, rest := range runs[1:] {
 		tail, ok := e.expand(rest)
 		if !ok && rest != "" {
 			return nil, nil
 		}
 		var next []match
 		for _, pl := range places {
-			names, err := folders(pl.abs)
+			matched, err := folders(pl.abs, pats[i])
 			if err != nil {
 				return nil, err
 			}
-			for _, n := range names {
+			for _, f := range matched {
 				next = append(next, match{
-					abs:   filepath.Join(pl.abs, n, filepath.FromSlash(tail)),
-					names: append(slices.Clip(pl.names), n),
+					abs:   filepath.Join(pl.abs, f.name, filepath.FromSlash(tail)),
+					stars: append(slices.Clip(pl.stars), f.star),
 				})
 			}
 		}
@@ -136,7 +136,7 @@ func (e Env) Find(x Path) ([]Place, error) {
 		real, err := filepath.EvalSymlinks(pl.abs)
 		switch {
 		case err == nil:
-			found = append(found, Place{Abs: pl.abs, Rel: fill(x.To, pl.names), Real: real})
+			found = append(found, Place{Abs: pl.abs, Rel: fill(x.To, pl.stars), Real: real})
 		case !errors.Is(err, fs.ErrNotExist):
 			return nil, err
 		}
@@ -144,30 +144,35 @@ func (e Env) Find(x Path) ([]Place, error) {
 	return found, nil
 }
 
-// splitStars splits the template from at each part that is only *, into
-// the fixed runs between them.
-func splitStars(from string) []string {
-	var runs []string
+// splitStars splits the template from at each part holding a *, into the
+// fixed runs between them and those parts.
+func splitStars(from string) (runs, pats []string) {
 	run := []string{}
 	for _, part := range strings.Split(from, "/") {
-		if part == "*" {
+		if strings.Contains(part, "*") {
 			runs = append(runs, strings.Join(run, "/"))
+			pats = append(pats, part)
 			run = []string{}
 			continue
 		}
 		run = append(run, part)
 	}
-	return append(runs, strings.Join(run, "/"))
+	return append(runs, strings.Join(run, "/")), pats
 }
 
 // checkFrom refuses a template whose variables expand cannot read: one
 // nested in another's default, a $ that starts no variable, a * inside a
-// variable, or a * as the first part, which would match from the current
-// folder.
+// variable or in the same part as one, or a * in the first part, which
+// would match from the current folder.
 func checkFrom(from string) error {
-	runs := splitStars(from)
+	runs, pats := splitStars(from)
 	if runs[0] == "" {
-		return fmt.Errorf("%s cannot start with *", from)
+		return fmt.Errorf("%s: its first part cannot hold a *", from)
+	}
+	for _, pat := range pats {
+		if strings.ContainsAny(pat, "${}") {
+			return fmt.Errorf("%s: a part holding * cannot hold a variable", from)
+		}
 	}
 	for _, run := range runs {
 		bad := strings.ContainsAny(variable.ReplaceAllString(run, ""), "${}")
@@ -181,21 +186,39 @@ func checkFrom(from string) error {
 	return nil
 }
 
-// fill returns the slash path to with each part that is only * replaced by
-// the next of names.
-func fill(to string, names []string) string {
+// fill returns the slash path to with the * in each part holding one
+// replaced by the next of stars.
+func fill(to string, stars []string) string {
 	parts := strings.Split(to, "/")
 	for i, part := range parts {
-		if part == "*" {
-			parts[i], names = names[0], names[1:]
+		if strings.Contains(part, "*") {
+			parts[i], stars = strings.Replace(part, "*", stars[0], 1), stars[1:]
 		}
 	}
 	return strings.Join(parts, "/")
 }
 
-// folders lists the names of the folders in dir, leaving out hidden ones as
-// a shell's * does. A missing dir has none.
-func folders(dir string) ([]string, error) {
+// matchPart returns the text the * in the path part pat matches in name,
+// and whether pat holds a * and matches name. The * matches at least one
+// character, and never a whole . or .., so it can fill a part on its own.
+func matchPart(pat, name string) (star string, ok bool) {
+	before, after, found := strings.Cut(pat, "*")
+	if !found || len(name) <= len(before)+len(after) || !strings.HasPrefix(name, before) || !strings.HasSuffix(name, after) {
+		return "", false
+	}
+	if star = name[len(before) : len(name)-len(after)]; star == "." || star == ".." {
+		return "", false
+	}
+	return star, true
+}
+
+// folder is a folder a part holding a * matched, and the text the * matched.
+type folder struct{ name, star string }
+
+// folders lists the folders in dir that the part pat, which holds a *,
+// matches. Hidden folders are left out, as a shell's * leaves them out,
+// unless pat starts with a dot. A missing dir has none.
+func folders(dir, pat string) ([]folder, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -203,14 +226,16 @@ func folders(dir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var names []string
+	hidden := strings.HasPrefix(pat, ".")
+	var found []folder
 	for _, d := range entries {
-		if strings.HasPrefix(d.Name(), ".") {
+		star, ok := matchPart(pat, d.Name())
+		if !ok || (strings.HasPrefix(d.Name(), ".") && !hidden) {
 			continue
 		}
 		if fi, err := os.Stat(filepath.Join(dir, d.Name())); err == nil && fi.IsDir() {
-			names = append(names, d.Name())
+			found = append(found, folder{name: d.Name(), star: star})
 		}
 	}
-	return names, nil
+	return found, nil
 }

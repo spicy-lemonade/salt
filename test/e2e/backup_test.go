@@ -337,6 +337,105 @@ func TestBackupHolographic(t *testing.T) {
 	}
 }
 
+// salt backup --preset openclaw backs up each OpenClaw agent's workspace,
+// with a SQLite database kept in it, the wiki, LanceDB memory, skills and
+// settings, in OpenClaw's folder and in a profile's, while OpenClaw's own
+// databases are in use. It leaves those databases out, as they hold its
+// logins, and its credential files, sessions, logs, caches, the .env and
+// key files in a workspace, and a settings file holding a token, but backs
+// up one that only names where a token is kept, as a SecretRef. The
+// restored files are the same and the restored database opens and holds
+// every row. A second run with nothing changed makes no commit, and
+// OPENCLAW_STATE_DIR names another OpenClaw folder. Which files the preset
+// finds is tested in internal/preset.
+func TestBackupOpenClaw(t *testing.T) {
+	sqlite := realSQLite(t)
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	state := filepath.Join(e.home, ".openclaw")
+	// onDisk returns where the file backed up at rel is: a profile's under
+	// its own folder, and the rest under the home folder with a leading dot.
+	onDisk := func(rel string) string {
+		if r, ok := strings.CutPrefix(rel, "openclaw-profiles/work/"); ok {
+			return filepath.Join(e.home, ".openclaw-work", r)
+		}
+		return filepath.Join(e.home, "."+rel)
+	}
+	if err := os.MkdirAll(filepath.Join(state, "agents", "main", "agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	startAgent(t, e, sqlite, filepath.Join(state, "agents", "main", "agent", "openclaw-agent.sqlite"), 100)
+	makeDB(t, e, sqlite, filepath.Join(state, "state", "openclaw.sqlite"), 5)
+	makeDB(t, e, sqlite, filepath.Join(state, "workspace", "notes.db"), 4)
+	kept := map[string]string{
+		"openclaw/workspace/AGENTS.md":                                "Read MEMORY.md first.",
+		"openclaw/workspace/SOUL.md":                                  "You are Claw.",
+		"openclaw/workspace/MEMORY.md":                                "The user deploys on Fridays.",
+		"openclaw/workspace/memory/2026-10-07.md":                     "a daily note",
+		"openclaw/workspace/skills/notes/SKILL.md":                    "a workspace skill",
+		"openclaw/workspace/projects/plan.md":                         "the agent's own file",
+		"openclaw/workspace-coder/MEMORY.md":                          "The repo uses Go.",
+		"openclaw/wiki/main/index.md":                                 "a wiki page",
+		"openclaw/memory/lancedb/memories.lance/data/0.lance":         "lance data",
+		"openclaw/skills/shared/SKILL.md":                             "a shared skill",
+		"openclaw/agents/main/agent/workshop-skills/learned/SKILL.md": "a learned skill",
+		"openclaw-profiles/work/openclaw.json":                        `{"session": {"mainKey": "main"}, "channels": {"telegram": {"botToken": {"source": "env", "id": "TG_TOKEN"}}}}`,
+		"openclaw-profiles/work/workspace/MEMORY.md":                  "work memory",
+		"openclaw-profiles/work/workspace-ops/SOUL.md":                "ops soul",
+	}
+	for rel, content := range kept {
+		write(t, onDisk(rel), content)
+	}
+	for _, rel := range []string{
+		".env", "secrets.json", "gateway.token", "credentials/oauth.json", "identity/device.json",
+		"logs/commands.log", "agents/main/sessions/s1.jsonl", "agents/main/agent/codex-home/auth.json",
+		"workspace/.env", "workspace/deploy.pem", "workspace/.ssh/id_ed25519", "workspace/node_modules/x/index.js",
+	} {
+		write(t, filepath.Join(state, rel), "left out")
+	}
+	write(t, filepath.Join(e.home, ".openclaw-work", "credentials", "whatsapp", "creds.json"), "left out")
+	write(t, filepath.Join(state, "openclaw.json"), `{"gateway": {"auth": {"token": "tok-secret"}}}`)
+	commits := commitCount(e, b.remote)
+
+	out := e.must(b.base, "salt", "backup", "--preset", "openclaw", b.dir)
+	if want := "salt: left ~/.openclaw/openclaw.json out of the backup because its setting token holds a secret. Keep secrets in environment variables so the file can be backed up\n"; out != want {
+		t.Fatalf("backup printed:\n%s", out)
+	}
+	if got := commitCount(e, b.remote); got == commits {
+		t.Fatal("the backup was not pushed")
+	}
+	dest, files := restoredFiles(t, e, b)
+	wantFiles := slices.Sorted(slices.Values(append(slices.Collect(maps.Keys(kept)), "openclaw/workspace/notes.db")))
+	if !slices.Equal(files, wantFiles) {
+		t.Fatalf("restored %v, want %v", files, wantFiles)
+	}
+	for rel, content := range kept {
+		if got, err := os.ReadFile(filepath.Join(dest, rel)); err != nil || string(got) != content {
+			t.Errorf("restored %s holds %q, %v", rel, got, err)
+		}
+	}
+	assertDB(t, e, sqlite, filepath.Join(dest, "openclaw/workspace/notes.db"), 4)
+	// OpenClaw's live database is left in use as it was.
+	if _, err := os.Stat(filepath.Join(state, "agents", "main", "agent", "openclaw-agent.sqlite-wal")); err != nil {
+		t.Fatalf("the live -wal file: %v", err)
+	}
+
+	commits = commitCount(e, b.remote)
+	e.must(b.base, "salt", "backup", "--preset", "openclaw", b.dir)
+	if got := commitCount(e, b.remote); got != commits {
+		t.Fatalf("an unchanged backup made a commit: %s, then %s", commits, got)
+	}
+
+	// OPENCLAW_STATE_DIR names the OpenClaw folder in place of ~/.openclaw.
+	other := filepath.Join(t.TempDir(), "openclaw")
+	write(t, filepath.Join(other, "workspace", "MEMORY.md"), "another OpenClaw")
+	e.with("OPENCLAW_STATE_DIR="+other).must(b.base, "salt", "backup", "--preset", "openclaw", b.dir)
+	want := []string{"openclaw-profiles/work/openclaw.json", "openclaw-profiles/work/workspace-ops/SOUL.md", "openclaw-profiles/work/workspace/MEMORY.md", "openclaw/workspace/MEMORY.md"}
+	if _, files = restoredFiles(t, e, b); !slices.Equal(files, want) {
+		t.Fatalf("restored with OPENCLAW_STATE_DIR %v, want %v", files, want)
+	}
+}
+
 // salt backup --preset honcho dumps the database DB_CONNECTION_URI names,
 // written as Honcho writes it with its driver, and backs it up with
 // Honcho's settings in Hermes, leaving out a profile's settings holding an

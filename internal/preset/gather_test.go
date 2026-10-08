@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -49,6 +50,17 @@ func testPreset(t *testing.T) *Preset {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// leftOut lists the files f leaves out as "path: why", each path inside
+// base and relative to it, in order.
+func leftOut(f *Found, base string) []string {
+	var left []string
+	for _, l := range f.LeftOut {
+		left = append(left, strings.TrimPrefix(l.Path, base+string(filepath.Separator))+": "+l.Why)
+	}
+	slices.Sort(left)
+	return left
 }
 
 func rels(f *Found) (files, dbs []string) {
@@ -651,12 +663,7 @@ func TestGatherHoncho(t *testing.T) {
 	if got := f.Databases[0].String(); got != "postgresql://postgres@localhost:5432/postgres" {
 		t.Fatalf("default connection %s", got)
 	}
-	var left []string
-	for _, l := range f.LeftOut {
-		left = append(left, strings.TrimPrefix(l.Path, dir+string(filepath.Separator))+": "+l.Why)
-	}
-	slices.Sort(left)
-	if want := []string{
+	if left, want := leftOut(f, dir), []string{
 		"honcho.json: its setting refreshToken holds a secret",
 		filepath.Join("profiles", "coder", "honcho.json") + ": its setting apiKey holds a secret",
 	}; !slices.Equal(left, want) {
@@ -747,12 +754,7 @@ func TestGatherHindsight(t *testing.T) {
 	if got := f.Databases[0].String(); got != "postgresql://hindsight@localhost:5432/hindsight" {
 		t.Fatalf("default connection %s", got)
 	}
-	var left []string
-	for _, l := range f.LeftOut {
-		left = append(left, strings.TrimPrefix(l.Path, home+string(filepath.Separator))+": "+l.Why)
-	}
-	slices.Sort(left)
-	if want := []string{
+	if left, want := leftOut(f, home), []string{
 		filepath.Join(".hermes", "profiles", "coder", "hindsight", "config.json") + ": its setting api_key holds a secret",
 		filepath.Join(".hindsight", "codex.json") + ": its setting hindsightApiToken holds a secret",
 		filepath.Join(".hindsight", "coding-agent.json") + ": its setting apiToken holds a secret",
@@ -814,6 +816,164 @@ func TestGatherHindsight(t *testing.T) {
 	}
 }
 
+// The openclaw preset backs up each OpenClaw agent's workspace whole, the
+// wiki, LanceDB memory, shared and learned skills, and openclaw.json when it
+// holds no secret, in OpenClaw's folder and in each OpenClaw profile's. It
+// leaves out OpenClaw's databases, which hold its logins, credential files,
+// sessions and logs, and inside the folders it backs up, .env, key and
+// other credential files, caches and an agent database kept there. A key
+// kept as a SecretRef, an object naming where the key is, is not a secret,
+// and nor are settings such as mainKey that only end in key.
+// OPENCLAW_STATE_DIR names another folder, and OPENCLAW_WORKSPACE_DIR a
+// workspace elsewhere.
+func TestGatherOpenClaw(t *testing.T) {
+	openclaw, err := Get("openclaw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, work, rescue := filepath.Join(home, ".openclaw"), filepath.Join(home, ".openclaw-work"), filepath.Join(home, ".openclaw-rescue")
+	for _, rel := range []string{
+		"workspace/AGENTS.md", "workspace/SOUL.md", "workspace/USER.md", "workspace/MEMORY.md", "workspace/DREAMS.md",
+		"workspace/memory/2026-10-07.md", "workspace/skills/notes/SKILL.md", "workspace/.agents/skills/go/SKILL.md",
+		"workspace/projects/plan.md", "workspace-coder/MEMORY.md", "wiki/main/index.md",
+		"memory/lancedb/memories.lance/data/0.lance", "skills/shared/SKILL.md",
+		"agents/main/agent/workshop-skills/learned/SKILL.md",
+	} {
+		write(t, filepath.Join(state, rel), rel)
+	}
+	write(t, filepath.Join(state, "workspace", "notes.db"), sqliteFile)
+	write(t, filepath.Join(state, "workspace", "agent", "openclaw-agent.sqlite"), sqliteFile)
+	write(t, filepath.Join(state, "workspace", "agent", "openclaw-agent.sqlite-wal"), "wal")
+	write(t, filepath.Join(state, "state", "openclaw.sqlite"), sqliteFile)
+	write(t, filepath.Join(state, "agents", "main", "agent", "openclaw-agent.sqlite"), sqliteFile)
+	write(t, filepath.Join(state, "memory", "main.sqlite"), sqliteFile)
+	for _, rel := range []string{
+		".env", "secrets.json", "gateway.token", "credentials/oauth.json", "identity/device.json", "devices/paired.json",
+		"logs/commands.log", "agents/main/sessions/s1.jsonl", "agents/main/agent/codex-home/auth.json", "agents/main/qmd/index.bin",
+		"npm/node_modules/x/index.js", "extensions/x/index.js", "sandboxes/s/MEMORY.md", "openclaw.json.bak",
+		"workspace/.env", "workspace/prod.env", "workspace/deploy.pem", "workspace/id.key", "workspace/.git/HEAD",
+		"workspace/.ssh/id_ed25519", "workspace/keys/id_rsa", "workspace/keys/id_rsa_work", "workspace/keys/id_ed25519_sk",
+		"workspace/cert.p12", "workspace/cert.pfx", "workspace/repo/.docker/config.json", "workspace/repo/.kube/config",
+		"workspace/repo/.gnupg/private-keys-v1.d/k.key",
+		"workspace/repo/.aws/credentials", "workspace/repo/.netrc", "workspace/repo/.npmrc", "workspace/repo/.pypirc",
+		"workspace/repo/.git-credentials",
+		"workspace/node_modules/x/index.js", "workspace/skills/notes/.venv/lib/x.py", "workspace/skills/notes/__pycache__/x.pyc",
+	} {
+		write(t, filepath.Join(state, rel), "left out")
+	}
+	write(t, filepath.Join(state, "openclaw.json"), `{"gateway": {"auth": {"mode": "token", "token": "tok-1"}}}`)
+	write(t, filepath.Join(work, "openclaw.json"), `{"agents": {"defaults": {"model": "m"}}, "env": {"vars": {}},
+		"session": {"mainKey": "main"}, "hooks": {"defaultSessionKey": "hook:main"}, "cacheKey": "c", "publicKey": "pk",
+		"gateway": {"auth": {"token": "${GATEWAY_TOKEN}"}},
+		"channels": {"telegram": {"botToken": {"source": "env", "provider": "default", "id": "TG"}}, "slack": {"appToken": {"source": "file", "id": "/slack/app"}}}}`)
+	write(t, filepath.Join(work, "workspace", "MEMORY.md"), "work memory")
+	write(t, filepath.Join(work, "workspace-ops", "SOUL.md"), "ops soul")
+	write(t, filepath.Join(work, "credentials", "whatsapp", "creds.json"), `{"noiseKey": "nk-1"}`)
+	write(t, filepath.Join(rescue, "openclaw.json"), `{"channels": {"telegram": {"botToken": {"source": "env", "id": "TG"}}, "feishu": {"encryptKey": "ek-1"}}}`)
+	write(t, filepath.Join(home, ".openclaw-", "workspace", "MEMORY.md"), "a folder whose * matches nothing")
+	gather := func(vars map[string]string) *Found {
+		t.Helper()
+		f, err := envOf(home, vars).Gather([]*Preset{openclaw}, t.TempDir(), plain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+
+	f := gather(nil)
+	files, dbs := rels(f)
+	want := []string{
+		"openclaw-profiles/work/openclaw.json",
+		"openclaw-profiles/work/workspace-ops/SOUL.md",
+		"openclaw-profiles/work/workspace/MEMORY.md",
+		"openclaw/agents/main/agent/workshop-skills/learned/SKILL.md",
+		"openclaw/memory/lancedb/memories.lance/data/0.lance",
+		"openclaw/skills/shared/SKILL.md",
+		"openclaw/wiki/main/index.md",
+		"openclaw/workspace-coder/MEMORY.md",
+		"openclaw/workspace/.agents/skills/go/SKILL.md",
+		"openclaw/workspace/AGENTS.md",
+		"openclaw/workspace/DREAMS.md",
+		"openclaw/workspace/MEMORY.md",
+		"openclaw/workspace/SOUL.md",
+		"openclaw/workspace/USER.md",
+		"openclaw/workspace/memory/2026-10-07.md",
+		"openclaw/workspace/projects/plan.md",
+		"openclaw/workspace/skills/notes/SKILL.md",
+	}
+	if !slices.Equal(files, want) || !slices.Equal(dbs, []string{"openclaw/workspace/notes.db"}) {
+		t.Fatalf("files %v, databases %v", files, dbs)
+	}
+	if left, want := leftOut(f, home), []string{
+		filepath.Join(".openclaw-rescue", "openclaw.json") + ": its setting encryptKey holds a secret",
+		filepath.Join(".openclaw", "openclaw.json") + ": its setting token holds a secret",
+	}; !slices.Equal(left, want) || len(f.Numbers) != 0 || len(f.Skipped) != 0 {
+		t.Fatalf("left out %v, want %v, numbers %v, skipped %v", left, want, f.Numbers, f.Skipped)
+	}
+
+	// OPENCLAW_STATE_DIR naming a profile's folder backs it up once, under
+	// openclaw/, in place of ~/.openclaw, and OPENCLAW_WORKSPACE_DIR adds a
+	// workspace elsewhere.
+	elsewhere := filepath.Join(home, "elsewhere")
+	write(t, filepath.Join(elsewhere, "MEMORY.md"), "elsewhere")
+	f = gather(map[string]string{"OPENCLAW_STATE_DIR": work, "OPENCLAW_WORKSPACE_DIR": elsewhere})
+	got := slices.Sorted(slices.Values(f.Paths()))
+	if want := []string{"openclaw-workspace/MEMORY.md", "openclaw/openclaw.json", "openclaw/workspace-ops/SOUL.md", "openclaw/workspace/MEMORY.md"}; !slices.Equal(got, want) {
+		t.Fatalf("with variables: backed up %v, want %v", got, want)
+	}
+	for _, x := range f.Files {
+		if x.Rel == "openclaw/workspace/MEMORY.md" && filepath.Dir(filepath.Dir(x.Path)) != work {
+			t.Errorf("%s came from %s, want %s", x.Rel, x.Path, work)
+		}
+	}
+
+	// The settings OpenClaw keeps keys in are taken for secrets, in
+	// camelCase too, and those that only end in key are not.
+	sec := Secret{Keys: slices.Concat(defaultSecretKeys, openclaw.Secrets[0].Keys), Refs: openclaw.Secrets[0].Refs}
+	conf := filepath.Join(t.TempDir(), "openclaw.json")
+	for name, secret := range map[string]bool{
+		"apiKey": true, "key": true, "encryptKey": true, "privateKey": true, "sshPrivateKey": true, "signingKey": true,
+		"masterKey": true, "secretKey": true, "accessKey": true, "secretAccessKey": true, "botToken": true, "value": true,
+		"mainKey": false, "defaultSessionKey": false, "cacheKey": false, "sectionKey": false, "publicKey": false,
+	} {
+		write(t, conf, fmt.Sprintf(`{"x": {%q: "v-1"}}`, name))
+		if why, _, _ := secretIn(conf, sec); (why != "") != secret {
+			t.Errorf("%s: %q", name, why)
+		}
+	}
+
+	// Every openclaw.json the preset names is checked for its secrets, so a
+	// path added without its secrets rule fails here.
+	bare, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configs int
+	for _, x := range openclaw.Paths {
+		if path.Base(x.From) != "openclaw.json" {
+			continue
+		}
+		p, ok := envOf(bare, nil).expand(strings.ReplaceAll(x.From, "*", "p"))
+		if !ok {
+			t.Fatalf("%s did not expand", x.From)
+		}
+		write(t, p, `{"models": {"providers": {"x": {"request": {"auth": {"mode": "header", "value": "v-1"}}}}}}`)
+		configs++
+	}
+	write(t, filepath.Join(bare, ".openclaw", "workspace", "MEMORY.md"), "memory")
+	f, err = envOf(bare, nil).Gather([]*Preset{openclaw}, t.TempDir(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configs != 2 || len(f.Files) != 1 || len(f.LeftOut) != configs {
+		t.Fatalf("settings holding a secret: backed up %v, left out %d of %d", f.Files, len(f.LeftOut), configs)
+	}
+}
+
 func TestGatherUnreadable(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads every file")
@@ -844,7 +1004,7 @@ func TestGatherUnreadable(t *testing.T) {
 }
 
 func TestSecretIn(t *testing.T) {
-	keys := []string{"*api_key", "token"}
+	sec := Secret{Keys: []string{"*api_key", "token"}, Refs: [][]string{{"source", "id"}, {"source", "provider", "id"}}}
 	dir := t.TempDir()
 	for content, want := range map[string]string{
 		"level: 3\n":                              "",
@@ -872,9 +1032,50 @@ func TestSecretIn(t *testing.T) {
 		"base: &b sk-1\napi_key: *b\n":            "its setting api_key holds a secret",
 		"a: 1\n---\ntoken: abc\n":                 "its setting token holds a secret",
 		`{"token": "abc"}`:                        "its setting token holds a secret",
-		"api_key: [unclosed\n":                    "it could not be read as YAML to check it for secrets",
+		"api_key: [unclosed\n":                    "it could not be read as YAML or JSON to check it for secrets",
 		strings.Repeat("x", maxSecretsFile+1):     "it is too large to check for secrets",
-		strings.Repeat("a: 1\n", 10) + "\t- bad:": "it could not be read as YAML to check it for secrets",
+		strings.Repeat("a: 1\n", 10) + "\t- bad:": "it could not be read as YAML or JSON to check it for secrets",
+		// A JSON5 comment is not YAML. One that runs into the next setting
+		// stops the file being read. One that YAML reads as part of a
+		// setting's name, as before a setting or a closing brace or between
+		// a name and its colon, would hide that setting, so the file is left
+		// out too. So is a name not quoted that holds /*, as a YAML glob
+		// can, since it cannot be told from a comment. One after a value
+		// joins the value, which is then text, and one in a list joins the
+		// item. Unquoted keys and a trailing comma can be read.
+		"{\"a\": 1, /* note */ \"token\": \"sk-1\"}\n": "a comment in it stops it being checked for secrets",
+		"{/* note */ api_key: \"sk-1\"}\n":             "a comment in it stops it being checked for secrets",
+		"{\"a\": {/* note */ \"token\": \"sk-1\"}}\n":  "a comment in it stops it being checked for secrets",
+		"[{/* note */ \"token\": \"sk-1\"}]\n":         "a comment in it stops it being checked for secrets",
+		"{\"a\": 1,\n  // a note\n}\n":                 "a comment in it stops it being checked for secrets",
+		"{\"token\" /* note */: \"sk-1\"}\n":           "it could not be read as YAML or JSON to check it for secrets",
+		"{\"a\": 1 /* note */, \"token\": \"sk-1\"}\n": "its setting token holds a secret",
+		"{\"token\": 512 // a cap\n}\n":                "its setting token holds a secret",
+		"{\"a\": [1, /* note */ 2]}\n":                 "",
+		"{token /* note */: \"sk-1\"}\n":               "a comment in it stops it being checked for secrets",
+		"{api_key/* note */: \"sk-1\"}\n":              "a comment in it stops it being checked for secrets",
+		"src/*: lint\n":                                "a comment in it stops it being checked for secrets",
+		// A quoted name is never a comment, as package.json's "//", a glob
+		// and a URL are not.
+		"{\"src/*\": 1, \"a//b\": 2}\n":               "",
+		"{\"https://api.example.com\": 1}\n":          "",
+		"{\"//\": \"a note\", \"a\": 1}\n":            "",
+		"'/* x */': 1\n":                              "",
+		"{\"//\": \"a note\", \"token\": \"sk-1\"}\n": "its setting token holds a secret",
+		"{\n  // the keys\n  \"token\": \"\"\n}\n":    "it could not be read as YAML or JSON to check it for secrets",
+		"/* note */ {\"token\": \"\"}\n":              "it could not be read as YAML or JSON to check it for secrets",
+		"{token: \"abc\",}\n":                         "its setting token holds a secret",
+		// An object holding exactly the settings a ref lists names where the
+		// secret is kept, compared in lower case. One with more, less, or
+		// more than a value in a setting may hold a secret.
+		`{"token": {"source": "env", "id": "K"}}`:                        "",
+		`{"token": {"Source": "env", "provider": "default", "ID": "K"}}`: "",
+		"token:\n  source: exec\n  id: vault/k\n":                        "",
+		`{"token": {"source": "env", "id": "K", "extra": "sk-1"}}`:       "its setting token holds a secret",
+		`{"token": {"source": "env"}}`:                                   "its setting token holds a secret",
+		`{"token": {"source": "env", "id": {"v": "sk-1"}}}`:              "its setting token holds a secret",
+		`{"token": {"provider": "default", "id": "K"}}`:                  "its setting token holds a secret",
+		"r: &r {source: env, id: K}\ntoken: {source: env, id: *r}\n":     "its setting token holds a secret",
 		// Only ${NAME} names where the secret is kept. Anything more may
 		// hold one, as a default after :- can.
 		"api_key: ${MODEL_API_KEY}\n":  "",
@@ -903,9 +1104,15 @@ func TestSecretIn(t *testing.T) {
 	} {
 		p := filepath.Join(dir, "f.yaml")
 		write(t, p, content)
-		if got, secret, _ := secretIn(p, keys); got != want || secret != strings.HasSuffix(want, "holds a secret") {
+		if got, secret, _ := secretIn(p, sec); got != want || secret != strings.HasSuffix(want, "holds a secret") {
 			t.Errorf("secretIn(%.40q) = %q, want %q", content, got, want)
 		}
+	}
+	// Without refs, such an object is taken for a secret.
+	p := filepath.Join(dir, "f.yaml")
+	write(t, p, `{"token": {"source": "env", "id": "K"}}`)
+	if got, _, _ := secretIn(p, Secret{Keys: sec.Keys}); got != "its setting token holds a secret" {
+		t.Errorf("without refs: %q", got)
 	}
 	// A setting named like a secret that holds a number and no text is not
 	// taken for a secret, since secrets almost always mix letters and
@@ -926,15 +1133,15 @@ func TestSecretIn(t *testing.T) {
 	} {
 		p := filepath.Join(dir, "f.yaml")
 		write(t, p, content)
-		if _, _, got := secretIn(p, keys); got != want {
+		if _, _, got := secretIn(p, sec); got != want {
 			t.Errorf("secretIn(%q) names the number in %q, want %q", content, got, want)
 		}
 	}
 	// A file deleted since it was listed is for the caller to skip.
-	if got, secret, _ := secretIn(filepath.Join(dir, "missing"), keys); got != "" || secret {
+	if got, secret, _ := secretIn(filepath.Join(dir, "missing"), sec); got != "" || secret {
 		t.Errorf("missing file: %q", got)
 	}
-	if got, _, _ := secretIn(dir, keys); !strings.Contains(got, "could not be read") {
+	if got, _, _ := secretIn(dir, sec); !strings.Contains(got, "could not be read") {
 		t.Errorf("folder: %q", got)
 	}
 }

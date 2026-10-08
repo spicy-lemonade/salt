@@ -71,6 +71,20 @@ func TestDefaultSecretKeysAreValid(t *testing.T) {
 	}
 }
 
+// defaultSecretKeys catch a secret's setting written in snake_case or
+// camelCase, but not a setting that only ends in key.
+func TestDefaultSecretKeysMatch(t *testing.T) {
+	for name, want := range map[string]bool{
+		"api_key": true, "apikey": true, "secretkey": true, "secret_key": true, "accesskey": true,
+		"secretaccesskey": true, "aws_access_key": true, "privatekey": true, "sshprivatekey": true, "private_key": true,
+		"mainkey": false, "sessionkey": false, "publickey": false, "cachekey": false,
+	} {
+		if got := matchAny(defaultSecretKeys, name); got != want {
+			t.Errorf("%s: matched %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestGetUnknownPreset(t *testing.T) {
 	_, err := Get("nope")
 	if !errors.Is(err, ErrUnknown) || !strings.Contains(err.Error(), `"nope"`) || !strings.Contains(err.Error(), Names()[0]) {
@@ -86,25 +100,28 @@ func TestNamesAreSorted(t *testing.T) {
 
 func TestParseRefusesBadPresets(t *testing.T) {
 	for want, body := range map[string]string{
-		"unexpected EOF":           `{`,
-		"more after the preset":    `{"name": "t", "paths": [{"from": "/a", "to": "a"}]} {}`,
-		"not the file's name":      `{"name": "other", "paths": [{"from": "/a", "to": "a"}]}`,
-		"no paths":                 `{"name": "t"}`,
-		"has no from":              `{"name": "t", "paths": [{"to": "a"}]}`,
-		`"../a" cannot be used`:    `{"name": "t", "paths": [{"from": "/a", "to": "../a"}]}`,
-		`"/a" cannot be used`:      `{"name": "t", "paths": [{"from": "/a", "to": "/a"}]}`,
-		`"a//b" cannot be used`:    `{"name": "t", "paths": [{"from": "/a", "to": "a//b"}]}`,
-		"same number of *":         `{"name": "t", "paths": [{"from": "/a/*", "to": "a"}]}`,
-		"same number of *, each":   `{"name": "t", "paths": [{"from": "/a/*", "to": "a/x*"}]}`,
-		"/a/p* and a/* must have":  `{"name": "t", "paths": [{"from": "/a/p*", "to": "a/*"}]}`,
-		"cannot start with *":      `{"name": "t", "paths": [{"from": "*/a", "to": "*/a"}]}`,
-		"${A:-${B}}: a variable":   `{"name": "t", "paths": [{"from": "${A:-${B}}", "to": "a"}]}`,
-		"${A:-$B}/a: a variable":   `{"name": "t", "paths": [{"from": "${A:-$B}/a", "to": "a"}]}`,
-		"${A:-/x/*/y}: a variable": `{"name": "t", "paths": [{"from": "${A:-/x/*/y}", "to": "a/*"}]}`,
-		"/a/${B: a variable":       `{"name": "t", "paths": [{"from": "/a/${B", "to": "a"}]}`,
-		"rule needs files":         `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"keys": ["k"]}]}`,
-		`bad pattern "["`:          `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "skip": ["["]}`,
-		`bad pattern "[k"`:         `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["[k"]}]}`,
+		"unexpected EOF":                       `{`,
+		"more after the preset":                `{"name": "t", "paths": [{"from": "/a", "to": "a"}]} {}`,
+		"not the file's name":                  `{"name": "other", "paths": [{"from": "/a", "to": "a"}]}`,
+		"no paths":                             `{"name": "t"}`,
+		"has no from":                          `{"name": "t", "paths": [{"to": "a"}]}`,
+		`"../a" cannot be used`:                `{"name": "t", "paths": [{"from": "/a", "to": "../a"}]}`,
+		`"/a" cannot be used`:                  `{"name": "t", "paths": [{"from": "/a", "to": "/a"}]}`,
+		`"a//b" cannot be used`:                `{"name": "t", "paths": [{"from": "/a", "to": "a//b"}]}`,
+		"same number of *":                     `{"name": "t", "paths": [{"from": "/a/*", "to": "a"}]}`,
+		"/a/x* and a must have":                `{"name": "t", "paths": [{"from": "/a/x*", "to": "a"}]}`,
+		"at most one in a part":                `{"name": "t", "paths": [{"from": "/a/p*q*", "to": "a/*/*"}]}`,
+		"/a/*/b and a/x*y* must":               `{"name": "t", "paths": [{"from": "/a/*/b", "to": "a/x*y*"}]}`,
+		"*/a: its first part cannot hold a *":  `{"name": "t", "paths": [{"from": "*/a", "to": "*/a"}]}`,
+		"p*/a: its first part cannot hold a *": `{"name": "t", "paths": [{"from": "p*/a", "to": "*/a"}]}`,
+		"cannot hold a variable":               `{"name": "t", "paths": [{"from": "/a/${B}-*", "to": "a/*"}]}`,
+		"${A:-${B}}: a variable":               `{"name": "t", "paths": [{"from": "${A:-${B}}", "to": "a"}]}`,
+		"${A:-$B}/a: a variable":               `{"name": "t", "paths": [{"from": "${A:-$B}/a", "to": "a"}]}`,
+		"${A:-/x/*/y}: a variable":             `{"name": "t", "paths": [{"from": "${A:-/x/*/y}", "to": "a/*"}]}`,
+		"/a/${B: a variable":                   `{"name": "t", "paths": [{"from": "/a/${B", "to": "a"}]}`,
+		"rule needs files":                     `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"keys": ["k"]}]}`,
+		`bad pattern "["`:                      `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "skip": ["["]}`,
+		`bad pattern "[k"`:                     `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["[k"]}]}`,
 		// A misspelt field would otherwise be dropped, and with it a rule.
 		`unknown field "secret"`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secret": [{"files": ["x"], "keys": ["k"]}]}`,
 		`unknown field "key"`:    `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "key": ["k"]}]}`,
@@ -115,15 +132,22 @@ func TestParseRefusesBadPresets(t *testing.T) {
 		`"mysql" is not a kind of database a preset can name`:        `{"name": "t", "databases": [{"kind": "mysql", "from": "mysql://h/a", "to": "a.sql"}]}`,
 		`"" is not a kind of database a preset can name`:             `{"name": "t", "databases": [{"from": "postgresql://h/a", "to": "a.sql"}]}`,
 		"a database has no from":                                     `{"name": "t", "databases": [{"kind": "postgres", "to": "a.sql"}]}`,
-		"postgresql://h/* cannot have a * part":                      `{"name": "t", "databases": [{"kind": "postgres", "from": "postgresql://h/*", "to": "a.sql"}]}`,
+		"postgresql://h/* cannot have a *":                           `{"name": "t", "databases": [{"kind": "postgres", "from": "postgresql://h/*", "to": "a.sql"}]}`,
+		"postgresql://h/a* cannot have a *":                          `{"name": "t", "databases": [{"kind": "postgres", "from": "postgresql://h/a*", "to": "a.sql"}]}`,
 		"${A:-$B}: a variable":                                       `{"name": "t", "databases": [{"kind": "postgres", "from": "${A:-$B}", "to": "a.sql"}]}`,
 		`database path "../a.sql" cannot be used`:                    `{"name": "t", "databases": [{"kind": "postgres", "from": "${A}", "to": "../a.sql"}]}`,
 		`database path "a.sql/" cannot be used`:                      `{"name": "t", "databases": [{"kind": "postgres", "from": "${A}", "to": "a.sql/"}]}`,
 		`database path "a/*/b.sql" cannot be used`:                   `{"name": "t", "databases": [{"kind": "postgres", "from": "${A}", "to": "a/*/b.sql"}]}`,
+		`database path "a/b*.sql" cannot be used`:                    `{"name": "t", "databases": [{"kind": "postgres", "from": "${A}", "to": "a/b*.sql"}]}`,
 		`database path "" cannot be used`:                            `{"name": "t", "databases": [{"kind": "postgres", "from": "${A}"}]}`,
 		`unknown field "form"`:                                       `{"name": "t", "databases": [{"kind": "postgres", "form": "${A}", "to": "a.sql"}]}`,
 		// Settings are matched in lower case, so API_KEY would never match.
-		`"*API_KEY" must be in lower case`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["*API_KEY"]}]}`,
+		`"*API_KEY" must be in lower case`:                      `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["*API_KEY"]}]}`,
+		`ref setting "ID" must be an exact name in lower case`:  `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["source", "ID"]]}]}`,
+		`ref setting "*id" must be an exact name in lower case`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["source", "*id"]]}]}`,
+		`ref setting "i[d" must be an exact name in lower case`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["source", "i[d"]]}]}`,
+		`ref [] must name settings`:                             `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [[]]}]}`,
+		`ref ["id" "id"] must name settings, each once`:         `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["id", "id"]]}]}`,
 	} {
 		_, err := Parse("t", []byte(body))
 		if err == nil || !strings.Contains(err.Error(), want) || !strings.HasPrefix(err.Error(), "preset t: ") {
@@ -134,12 +158,17 @@ func TestParseRefusesBadPresets(t *testing.T) {
 
 func TestParseGoodPreset(t *testing.T) {
 	p, err := Parse("t", []byte(`{"name": "t", "about": "test", "paths": [{"from": "${HOME_X:-~/x}/*/data", "to": "x/*/data"}],
-		"skip": ["*.log"], "secrets": [{"files": ["*.yaml"], "keys": ["*api_key"]}]}`))
+		"skip": ["*.log"], "secrets": [{"files": ["*.yaml"], "keys": ["*api_key"], "refs": [["source", "id"]]}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Paths[0].To != "x/*/data" || p.Skip[0] != "*.log" || p.Secrets[0].Keys[0] != "*api_key" {
+	if p.Paths[0].To != "x/*/data" || p.Skip[0] != "*.log" || p.Secrets[0].Keys[0] != "*api_key" || !slices.Equal(p.Secrets[0].Refs[0], []string{"source", "id"}) {
 		t.Fatalf("Parse = %+v", p)
+	}
+	// A * may have text around it in a part, in From and in To, and be in a
+	// part of To that does not hold one in From.
+	if _, err := Parse("t", []byte(`{"name": "t", "paths": [{"from": "${X:-~/x}/.x-*/w-*.d", "to": "x/*/workspace-*"}]}`)); err != nil {
+		t.Fatal(err)
 	}
 	// A preset may name only databases. A connection's default may hold
 	// slashes, a colon and an @.
@@ -152,11 +181,13 @@ func TestParseGoodPreset(t *testing.T) {
 	}
 }
 
-// A backup path is in the place a preset path's To names, each * matching
-// one part, and the innermost place when they nest.
+// A backup path is in the place a preset path's To names, each part holding
+// a * matching the parts it can fill, and the innermost place when they
+// nest.
 func TestPlaceOf(t *testing.T) {
 	p, err := Parse("t", []byte(`{"name": "t", "paths": [
 		{"from": "~/tool/profiles/*/data", "to": "tool/profiles/*/data"},
+		{"from": "~/tool/ws-*", "to": "tool/workspace-*"},
 		{"from": "~/tool/settings.yaml", "to": "tool/settings.yaml"},
 		{"from": "~/inner", "to": "outer/inner"},
 		{"from": "~/outer", "to": "outer"}],
@@ -168,6 +199,9 @@ func TestPlaceOf(t *testing.T) {
 		"tool/profiles/work/data/notes.md":  "tool/profiles/work/data",
 		"tool/profiles/work/data":           "tool/profiles/work/data",
 		"tool/settings.yaml":                "tool/settings.yaml",
+		"tool/workspace-a/MEMORY.md":        "tool/workspace-a",
+		"tool/workspace-/MEMORY.md":         "",
+		"tool/workspace/MEMORY.md":          "",
 		"outer/inner/a.md":                  "outer/inner",
 		"outer/b.md":                        "outer",
 		"tool/profiles/work/other/notes.md": "",
