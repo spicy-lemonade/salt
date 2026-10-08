@@ -111,6 +111,8 @@ go test ./internal/seal -run TestRoundTrip
 - `salt seal --sqlite DB` makes a safe copy of a live SQLite database itself (`internal/source` runs `sqlite3 .backup`). `salt seal --postgres CONN` (or `--postgres-env VAR`) dumps a Postgres database as plain SQL with `pg_dump`, with the password passed in `PGPASSWORD` and never shown. See `docs/design.md`, "Databases".
 - `salt backup --preset NAME REPO` gathers what the presets name, seals it (the repo then holds only that), commits with hooks off after running the `salt check` logic in-process, prunes and pushes with `--force-with-lease`. It prints nothing on success. See `docs/design.md`, "One-command backup".
 - Not yet built: OpenViking support, and presets other than `hermes`, `hindsight`, `holographic`, `honcho` and `mnemosyne` (OpenClaw).
+  - When the next preset with a Postgres database is added, move what `TestBackupHoncho` and `TestBackupHindsight` in `test/e2e/backup_test.go` share into one helper, starting with the check that a server that cannot be reached stops the backup with nothing committed and no password shown. They are left as two copies until a third test needs them.
+  - When the next preset test lists the files left out for secrets, add a helper in `internal/preset/gather_test.go` that writes `f.LeftOut` as "path: why" lines, which `TestGatherHoncho` and `TestGatherHindsight` both do by hand today.
 
 ### Agent contributing rules
 
