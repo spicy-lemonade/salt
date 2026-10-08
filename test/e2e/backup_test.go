@@ -343,9 +343,9 @@ func TestBackupHolographic(t *testing.T) {
 // databases are in use. It leaves those databases out, as they hold its
 // logins, and its credential files, sessions, logs, caches, the .env and
 // key files in a workspace, and a settings file holding a token, but backs
-// up one that only names the variable a token is kept in. The restored
-// files are the same and the restored database opens and holds every row.
-// A second run with nothing changed makes no commit, and
+// up one that only names where a token is kept, as a SecretRef. The
+// restored files are the same and the restored database opens and holds
+// every row. A second run with nothing changed makes no commit, and
 // OPENCLAW_STATE_DIR names another OpenClaw folder. Which files the preset
 // finds is tested in internal/preset.
 func TestBackupOpenClaw(t *testing.T) {
@@ -379,7 +379,7 @@ func TestBackupOpenClaw(t *testing.T) {
 		"openclaw/memory/lancedb/memories.lance/data/0.lance":         "lance data",
 		"openclaw/skills/shared/SKILL.md":                             "a shared skill",
 		"openclaw/agents/main/agent/workshop-skills/learned/SKILL.md": "a learned skill",
-		"openclaw-profiles/work/openclaw.json":                        `{"channels": {"telegram": {"botToken": "${TG_TOKEN}"}}}`,
+		"openclaw-profiles/work/openclaw.json":                        `{"session": {"mainKey": "main"}, "channels": {"telegram": {"botToken": {"source": "env", "id": "TG_TOKEN"}}}}`,
 		"openclaw-profiles/work/workspace/MEMORY.md":                  "work memory",
 		"openclaw-profiles/work/workspace-ops/SOUL.md":                "ops soul",
 	}
@@ -389,7 +389,7 @@ func TestBackupOpenClaw(t *testing.T) {
 	for _, rel := range []string{
 		".env", "secrets.json", "gateway.token", "credentials/oauth.json", "identity/device.json",
 		"logs/commands.log", "agents/main/sessions/s1.jsonl", "agents/main/agent/codex-home/auth.json",
-		"workspace/.env", "workspace/deploy.pem", "workspace/node_modules/x/index.js",
+		"workspace/.env", "workspace/deploy.pem", "workspace/.ssh/id_ed25519", "workspace/node_modules/x/index.js",
 	} {
 		write(t, filepath.Join(state, rel), "left out")
 	}
