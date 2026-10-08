@@ -800,8 +800,9 @@ code reads them all, so adding a tool means adding one file:
   it. Every setting at any depth is checked by its name in lower case, so
   `keys` are written in lower case too. Salt always checks the settings most
   tools keep secrets in (`*api_key`, `*apikey`, `*api-key`, `*secret`,
-  `*secret_key`, `*access_key`, `*private_key`, `*password`, `*passphrase`,
-  `token`, `*_token`, `*-token` and `authorization`). `keys` adds the tool's
+  `*secret_key`, `*secretkey`, `*access_key`, `*accesskey`, `*private_key`,
+  `*privatekey`, `*password`, `*passphrase`, `token`, `*_token`, `*-token`
+  and `authorization`), in snake_case and camelCase. `keys` adds the tool's
   own, so it can be left out. If one of these holds text (a non-empty string
   at any depth below the setting, or a YAML alias, which salt does not
   follow), the file is left out. Salt prints one line naming the file and the
@@ -816,12 +817,15 @@ code reads them all, so adding a tool means adding one file:
   the file and the setting, never its value. It says to keep it in an
   environment variable if it is a secret. A file that
   cannot be read, cannot be read as YAML or JSON, or is over 1 MiB is left
-  out too. A comment on a line of its own, as JSON5 allows, is not YAML, so
-  a JSON5 file holding one is left out. Salt never changes the file to
-  remove the secret.
+  out too. A comment, as JSON5 allows, is not YAML. It usually stops salt
+  reading the file, which is then left out, and a comment after a value
+  becomes part of it, so the setting holds text. Remove comments from such a
+  file to be sure it is checked as written and backed up. Salt never changes
+  the file to remove the secret.
 - `refs` in a secrets rule lists the ways the tool names where a secret is
-  kept in an object, each as the names of that object's settings in lower
-  case, such as `[["source", "id"], ["source", "provider", "id"]]`. An
+  kept in an object, each as the exact names of that object's settings in
+  lower case, never patterns, such as
+  `[["source", "id"], ["source", "provider", "id"]]`. An
   object holding exactly one of these sets of settings, with one value in
   each, names where the secret is, as `${NAME}` does, so it never counts as
   a secret. An object with any other setting, or with more than one value in
@@ -1132,29 +1136,32 @@ credential files (`.env`, `credentials`, `secrets.json`, `gateway.token`,
 the old `sessions` folders, logs, sandboxes, installed plugins and tools,
 downloaded models and caches. Inside the folders it backs up, it leaves out
 `.env` files, key files (`*.key`, `*.pem`, `*.p12`, `*.pfx`, and SSH keys
-named `id_rsa`, `id_dsa`, `id_ecdsa` or `id_ed25519`), the credentials a
-repository the agent works on can hold (`.ssh`, `.aws`, `.netrc`, `.npmrc`,
-`.pypirc` and `.git-credentials`), an OpenClaw database kept there, and the
-Python and Node caches and packages a skill or project can hold, which are
-installed again when needed. Any other SQLite database in a workspace gets a
-safe copy.
+whose names start with `id_rsa`, `id_dsa`, `id_ecdsa` or `id_ed25519`), the
+credentials a repository the agent works on can hold (`.ssh`, `.aws`,
+`.docker`, `.kube`, `.gnupg`, `.netrc`, `.npmrc`, `.pypirc` and
+`.git-credentials`), an OpenClaw database kept there, and the Python and
+Node caches and packages a skill or project can hold, which are installed
+again when needed. Any other SQLite database in a workspace gets a safe
+copy.
 
 `openclaw.json` can hold API keys and tokens, such as the gateway's
 `gateway.auth.token`, which OpenClaw's setup writes there by default, a
 channel's `botToken`, or a key in `env.vars`. So it is checked for them, with
-`key`, `privatekey`, `encryptkey`, `*token`, `authtag`, `serviceaccount`,
-`value` and `vars` checked as well as salt's usual settings. These are the
-settings OpenClaw lists as able to hold a key, so a setting that only ends
-in `key`, such as `session.mainKey`, is not taken for one. A file holding
-one is left out, and salt names it. A key written as `${NAME}` names a
-variable, not a key, and a key kept as an OpenClaw SecretRef, such as
+`key`, `encryptkey`, `*signingkey`, `*masterkey`, `*token`, `authtag`,
+`serviceaccount`, `value` and `vars` checked as well as salt's usual
+settings, which include `*privatekey`, `*secretkey` and `*accesskey`. These
+are the settings OpenClaw lists as able to hold a key, and the usual names
+of keys, so a setting that only ends in `key`, such as `session.mainKey`, is
+not taken for one. A file holding one is left out, and salt names it. A key
+written as `${NAME}` names a variable, not a key, and a key kept as an
+OpenClaw SecretRef, such as
 `{"source": "env", "provider": "default", "id": "NAME"}`, names where the
 key is. Neither counts as a secret, so a file holding only such keys is
 backed up. OpenClaw reads its settings as JSON5, but writes them as plain
-JSON. A comment on a line of its own, which OpenClaw drops whenever it
-writes the file, keeps the file out of the backup, since salt cannot read
-it to check it. After restoring, set up OpenClaw's logins and keys again, as
-on a new machine.
+JSON, dropping any comment. A comment usually stops salt reading the file
+to check it, which then keeps it out of the backup, so remove comments to be
+sure it is backed up. After restoring, set up OpenClaw's logins and keys
+again, as on a new machine.
 
 | On the machine | In the backup |
 |---|---|
