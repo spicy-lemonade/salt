@@ -856,7 +856,9 @@ func TestGatherOpenClaw(t *testing.T) {
 		"logs/commands.log", "agents/main/sessions/s1.jsonl", "agents/main/agent/codex-home/auth.json", "agents/main/qmd/index.bin",
 		"npm/node_modules/x/index.js", "extensions/x/index.js", "sandboxes/s/MEMORY.md", "openclaw.json.bak",
 		"workspace/.env", "workspace/prod.env", "workspace/deploy.pem", "workspace/id.key", "workspace/.git/HEAD",
-		"workspace/.ssh/id_ed25519", "workspace/keys/id_rsa", "workspace/cert.p12", "workspace/cert.pfx",
+		"workspace/.ssh/id_ed25519", "workspace/keys/id_rsa", "workspace/keys/id_rsa_work", "workspace/keys/id_ed25519_sk",
+		"workspace/cert.p12", "workspace/cert.pfx", "workspace/repo/.docker/config.json", "workspace/repo/.kube/config",
+		"workspace/repo/.gnupg/private-keys-v1.d/k.key",
 		"workspace/repo/.aws/credentials", "workspace/repo/.netrc", "workspace/repo/.npmrc", "workspace/repo/.pypirc",
 		"workspace/repo/.git-credentials",
 		"workspace/node_modules/x/index.js", "workspace/skills/notes/.venv/lib/x.py", "workspace/skills/notes/__pycache__/x.pyc",
@@ -926,6 +928,21 @@ func TestGatherOpenClaw(t *testing.T) {
 	for _, x := range f.Files {
 		if x.Rel == "openclaw/workspace/MEMORY.md" && filepath.Dir(filepath.Dir(x.Path)) != work {
 			t.Errorf("%s came from %s, want %s", x.Rel, x.Path, work)
+		}
+	}
+
+	// The settings OpenClaw keeps keys in are taken for secrets, in
+	// camelCase too, and those that only end in key are not.
+	sec := Secret{Keys: slices.Concat(defaultSecretKeys, openclaw.Secrets[0].Keys), Refs: openclaw.Secrets[0].Refs}
+	conf := filepath.Join(t.TempDir(), "openclaw.json")
+	for name, secret := range map[string]bool{
+		"apiKey": true, "key": true, "encryptKey": true, "privateKey": true, "sshPrivateKey": true, "signingKey": true,
+		"masterKey": true, "secretKey": true, "accessKey": true, "secretAccessKey": true, "botToken": true, "value": true,
+		"mainKey": false, "defaultSessionKey": false, "cacheKey": false, "sectionKey": false, "publicKey": false,
+	} {
+		write(t, conf, fmt.Sprintf(`{"x": {%q: "v-1"}}`, name))
+		if why, _, _ := secretIn(conf, sec); (why != "") != secret {
+			t.Errorf("%s: %q", name, why)
 		}
 	}
 
@@ -1018,8 +1035,13 @@ func TestSecretIn(t *testing.T) {
 		"api_key: [unclosed\n":                    "it could not be read as YAML or JSON to check it for secrets",
 		strings.Repeat("x", maxSecretsFile+1):     "it is too large to check for secrets",
 		strings.Repeat("a: 1\n", 10) + "\t- bad:": "it could not be read as YAML or JSON to check it for secrets",
-		// A comment on a line of its own in JSON5 is not YAML, so the file
-		// cannot be checked. Unquoted keys and a trailing comma can be.
+		// A JSON5 comment is not YAML. One that runs into the next setting
+		// stops the file being read, so it cannot be checked. One just
+		// before a closing brace is read as a setting, and one after a value
+		// joins the value, which is then text. Unquoted keys and a trailing
+		// comma can be read.
+		"{\"a\": 1,\n  // a note\n}\n":             "",
+		"{\"token\": 512 // a cap\n}\n":            "its setting token holds a secret",
 		"{\n  // the keys\n  \"token\": \"\"\n}\n": "it could not be read as YAML or JSON to check it for secrets",
 		"/* note */ {\"token\": \"\"}\n":           "it could not be read as YAML or JSON to check it for secrets",
 		"{token: \"abc\",}\n":                      "its setting token holds a secret",

@@ -19,15 +19,16 @@
     {"from": "~/.openclaw-*/agents/*/agent/workshop-skills", "to": "openclaw-profiles/*/agents/*/agent/workshop-skills"}
   ],
   "skip": [
-    ".env", "*.env", "*.key", "*.pem", "*.p12", "*.pfx", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
-    ".ssh", ".aws", ".netrc", ".npmrc", ".pypirc", ".git-credentials", "openclaw.sqlite*", "openclaw-agent.sqlite*",
+    ".env", "*.env", "*.key", "*.pem", "*.p12", "*.pfx", "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*",
+    ".ssh", ".aws", ".docker", ".kube", ".gnupg", ".netrc", ".npmrc", ".pypirc", ".git-credentials",
+    "openclaw.sqlite*", "openclaw-agent.sqlite*",
     "__pycache__", "*.pyc", "*.pyo", "node_modules", ".venv", "venv", "site-packages",
     ".cache", ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache"
   ],
   "secrets": [
     {
       "files": ["openclaw.json"],
-      "keys": ["key", "privatekey", "encryptkey", "*token", "authtag", "serviceaccount", "value", "vars"],
+      "keys": ["key", "encryptkey", "*signingkey", "*masterkey", "*token", "authtag", "serviceaccount", "value", "vars"],
       "refs": [["source", "id"], ["source", "provider", "id"]]
     }
   ]

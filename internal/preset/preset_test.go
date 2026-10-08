@@ -71,6 +71,20 @@ func TestDefaultSecretKeysAreValid(t *testing.T) {
 	}
 }
 
+// defaultSecretKeys catch a secret's setting written in snake_case or
+// camelCase, but not a setting that only ends in key.
+func TestDefaultSecretKeysMatch(t *testing.T) {
+	for name, want := range map[string]bool{
+		"api_key": true, "apikey": true, "secretkey": true, "secret_key": true, "accesskey": true,
+		"secretaccesskey": true, "aws_access_key": true, "privatekey": true, "sshprivatekey": true, "private_key": true,
+		"mainkey": false, "sessionkey": false, "publickey": false, "cachekey": false,
+	} {
+		if got := matchAny(defaultSecretKeys, name); got != want {
+			t.Errorf("%s: matched %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestGetUnknownPreset(t *testing.T) {
 	_, err := Get("nope")
 	if !errors.Is(err, ErrUnknown) || !strings.Contains(err.Error(), `"nope"`) || !strings.Contains(err.Error(), Names()[0]) {
@@ -128,10 +142,12 @@ func TestParseRefusesBadPresets(t *testing.T) {
 		`database path "" cannot be used`:                            `{"name": "t", "databases": [{"kind": "postgres", "from": "${A}"}]}`,
 		`unknown field "form"`:                                       `{"name": "t", "databases": [{"kind": "postgres", "form": "${A}", "to": "a.sql"}]}`,
 		// Settings are matched in lower case, so API_KEY would never match.
-		`"*API_KEY" must be in lower case`:              `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["*API_KEY"]}]}`,
-		`"ID" must be in lower case`:                    `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["source", "ID"]]}]}`,
-		`ref [] must name settings`:                     `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [[]]}]}`,
-		`ref ["id" "id"] must name settings, each once`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["id", "id"]]}]}`,
+		`"*API_KEY" must be in lower case`:                      `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["*API_KEY"]}]}`,
+		`ref setting "ID" must be an exact name in lower case`:  `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["source", "ID"]]}]}`,
+		`ref setting "*id" must be an exact name in lower case`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["source", "*id"]]}]}`,
+		`ref setting "i[d" must be an exact name in lower case`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["source", "i[d"]]}]}`,
+		`ref [] must name settings`:                             `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [[]]}]}`,
+		`ref ["id" "id"] must name settings, each once`:         `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["id", "id"]]}]}`,
 	} {
 		_, err := Parse("t", []byte(body))
 		if err == nil || !strings.Contains(err.Error(), want) || !strings.HasPrefix(err.Error(), "preset t: ") {

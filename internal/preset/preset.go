@@ -93,10 +93,10 @@ type Secret struct {
 	// defaultSecretKeys, which are always checked.
 	Keys []string `json:"keys"`
 	// Refs lists, for each way the tool names where a secret is kept in an
-	// object, such as {"source": "env", "id": "NAME"}, the names of that
-	// object's settings in lower case. An object holding exactly one such
-	// set of settings, each with one value, is not a secret, as ${NAME} is
-	// not.
+	// object, such as {"source": "env", "id": "NAME"}, the exact names of
+	// that object's settings in lower case, never patterns. An object
+	// holding exactly one such set of settings, each with one value, is not
+	// a secret, as ${NAME} is not.
 	Refs [][]string `json:"refs"`
 }
 
@@ -104,7 +104,8 @@ type Secret struct {
 // secrets in most tools' settings files. They are checked in every file a
 // secrets rule names, with that rule's own keys.
 var defaultSecretKeys = []string{
-	"*api_key", "*apikey", "*api-key", "*secret", "*secret_key", "*access_key", "*private_key",
+	"*api_key", "*apikey", "*api-key", "*secret", "*secret_key", "*secretkey", "*access_key", "*accesskey",
+	"*private_key", "*privatekey",
 	"*password", "*passphrase", "token", "*_token", "*-token", "authorization",
 }
 
@@ -212,7 +213,7 @@ func (p *Preset) check(name string) error {
 		if len(s.Files) == 0 {
 			return errors.New("a secrets rule needs files")
 		}
-		for _, k := range slices.Concat(s.Keys, slices.Concat(s.Refs...)) {
+		for _, k := range s.Keys {
 			if k != strings.ToLower(k) {
 				return fmt.Errorf("the secrets key %q must be in lower case, as settings are matched in lower case", k)
 			}
@@ -220,6 +221,11 @@ func (p *Preset) check(name string) error {
 		for _, ref := range s.Refs {
 			if len(ref) == 0 || len(slices.Compact(slices.Sorted(slices.Values(ref)))) != len(ref) {
 				return fmt.Errorf("the secrets ref %q must name settings, each once", ref)
+			}
+			for _, k := range ref {
+				if k != strings.ToLower(k) || strings.ContainsAny(k, `*?[\`) {
+					return fmt.Errorf("the secrets ref setting %q must be an exact name in lower case, as settings are matched by name in lower case", k)
+				}
 			}
 		}
 	}
