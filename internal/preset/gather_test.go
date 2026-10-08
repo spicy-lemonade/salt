@@ -1037,8 +1037,10 @@ func TestSecretIn(t *testing.T) {
 		strings.Repeat("a: 1\n", 10) + "\t- bad:": "it could not be read as YAML or JSON to check it for secrets",
 		// A JSON5 comment is not YAML. One that runs into the next setting
 		// stops the file being read. One that YAML reads as part of a
-		// setting's name, as before a setting or a closing brace, would hide
-		// that setting, so the file is left out too. One after a value
+		// setting's name, as before a setting or a closing brace or between
+		// a name and its colon, would hide that setting, so the file is left
+		// out too. So is a name not quoted that holds /*, as a YAML glob
+		// can, since it cannot be told from a comment. One after a value
 		// joins the value, which is then text, and one in a list joins the
 		// item. Unquoted keys and a trailing comma can be read.
 		"{\"a\": 1, /* note */ \"token\": \"sk-1\"}\n": "a comment in it stops it being checked for secrets",
@@ -1050,7 +1052,13 @@ func TestSecretIn(t *testing.T) {
 		"{\"a\": 1 /* note */, \"token\": \"sk-1\"}\n": "its setting token holds a secret",
 		"{\"token\": 512 // a cap\n}\n":                "its setting token holds a secret",
 		"{\"a\": [1, /* note */ 2]}\n":                 "",
-		// A quoted name is never a comment, as package.json's "//" is not.
+		"{token /* note */: \"sk-1\"}\n":               "a comment in it stops it being checked for secrets",
+		"{api_key/* note */: \"sk-1\"}\n":              "a comment in it stops it being checked for secrets",
+		"src/*: lint\n":                                "a comment in it stops it being checked for secrets",
+		// A quoted name is never a comment, as package.json's "//", a glob
+		// and a URL are not.
+		"{\"src/*\": 1, \"a//b\": 2}\n":               "",
+		"{\"https://api.example.com\": 1}\n":          "",
 		"{\"//\": \"a note\", \"a\": 1}\n":            "",
 		"'/* x */': 1\n":                              "",
 		"{\"//\": \"a note\", \"token\": \"sk-1\"}\n": "its setting token holds a secret",

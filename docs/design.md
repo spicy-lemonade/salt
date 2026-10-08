@@ -818,11 +818,14 @@ code reads them all, so adding a tool means adding one file:
   environment variable if it is a secret. A file that
   cannot be read, cannot be read as YAML or JSON, or is over 1 MiB is left
   out too. A comment, as JSON5 allows, is not YAML. One that stops salt
-  reading the file, or that salt would read as the start of a setting's
-  name, as before a setting or a closing brace, keeps the file out, since it
-  would hide the setting after it from the check. A quoted name that starts
-  with `//` or `/*`, such as the `"//"` some JSON files use for a note, is a
-  name, not a comment, and is checked like any other. A comment after a value
+  reading the file, or that salt would read as part of a setting's name, as
+  before a setting or a closing brace, or between a name and its colon,
+  keeps the file out, since it would hide that setting from the check. Salt
+  takes a name that is not quoted for a comment when it starts with `//` or
+  holds `/*`, so a YAML name such as `src/*` keeps the file out unless it is
+  quoted. A quoted name, such as the `"//"` some JSON files use for a
+  note, `"src/*"` or a URL, is a name, not a comment, and is checked like any
+  other. A comment after a value
   becomes part of the value, so the setting holds text. Remove comments from
   such a file to be sure it is checked as written and backed up. Salt never
   changes the file to remove the secret.
