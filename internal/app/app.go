@@ -255,7 +255,7 @@ func (a *App) openToSeal(path string) (*repo.Repo, ed25519.PrivateKey, error) {
 // database deleted before it was copied is listed in the result's Gone, as
 // a live file deleted before it was read is.
 func (a *App) seal(r *repo.Repo, signer ed25519.PrivateKey, o SealOptions) (*seal.Result, error) {
-	extra, cleanup, err := a.copyDatabases(o.Context, r, o.Databases, o.Live)
+	extra, gone, cleanup, err := a.copyDatabases(o.Context, r, o.Databases, o.Live)
 	if err != nil {
 		return nil, err
 	}
@@ -272,22 +272,17 @@ func (a *App) seal(r *repo.Repo, signer ed25519.PrivateKey, o SealOptions) (*sea
 	if o.Context != nil && o.Context.Err() != nil {
 		return nil, fmt.Errorf("seal %w: the backup was sealed and the database copies were removed, but do not commit it without checking", ErrInterrupted)
 	}
-	// Each copy is sealed under its database's name, and the names are
-	// unique, so one with no copy was left out.
-	for _, db := range o.Databases {
-		if !slices.ContainsFunc(extra, func(x seal.Extra) bool { return x.Rel == db.Name() }) {
-			res.Gone = append(res.Gone, db.Name())
-		}
-	}
+	res.Gone = append(res.Gone, gone...)
 	return res, nil
 }
 
 // copyDatabases makes a safe copy of each live database in a new private
 // temporary folder, and returns them as files to seal. cleanup removes the
-// folder. With skipGone, a database that no longer exists is left out.
-func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Database, skipGone bool) (extra []seal.Extra, cleanup func(), err error) {
+// folder. With skipGone, a database that no longer exists is left out, and
+// its name listed in gone.
+func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Database, skipGone bool) (extra []seal.Extra, gone []string, cleanup func(), err error) {
 	if len(dbs) == 0 {
-		return nil, func() {}, nil
+		return nil, nil, func() {}, nil
 	}
 	// Two databases whose names clash are refused before any copy is made,
 	// since a copy can take a long time. A clash with a source file is only
@@ -299,17 +294,17 @@ func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Data
 	if i, j, ok := seal.FirstClash(names, !r.Format.EncryptPaths); ok {
 		prev, db := dbs[j], dbs[i]
 		if prev.String() == db.String() && prev.Name() == db.Name() {
-			return nil, nil, fmt.Errorf("the database %s is given twice. Give it once", a.short(db.String()))
+			return nil, nil, nil, fmt.Errorf("the database %s is given twice. Give it once", a.short(db.String()))
 		}
 		if prev.Name() == db.Name() {
-			return nil, nil, fmt.Errorf("the databases %s and %s would both be backed up as %s. Give one of them another name with --name NAME before its %s",
+			return nil, nil, nil, fmt.Errorf("the databases %s and %s would both be backed up as %s. Give one of them another name with --name NAME before its %s",
 				a.short(prev.String()), a.short(db.String()), db.Name(), db.Flag())
 		}
 		why := "a file cannot also be a folder"
 		if !seal.Clash(prev.Name(), db.Name()) {
 			why = "they differ only by case, and with --plain-paths the repo would keep them as one file on macOS and Windows"
 		}
-		return nil, nil, fmt.Errorf("the databases %s and %s would be backed up as %s and %s, which clash because %s. Give one of them another name with --name NAME before its %s",
+		return nil, nil, nil, fmt.Errorf("the databases %s and %s would be backed up as %s and %s, which clash because %s. Give one of them another name with --name NAME before its %s",
 			a.short(prev.String()), a.short(db.String()), prev.Name(), db.Name(), why, db.Flag())
 	}
 	if ctx == nil {
@@ -317,32 +312,33 @@ func (a *App) copyDatabases(ctx context.Context, r *repo.Repo, dbs []source.Data
 	}
 	key, err := seal.CopyKey(a.CacheDir, r.Root)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	tmp, err := os.MkdirTemp("", "salt-db-")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	cleanup = func() { os.RemoveAll(tmp) }
 	for i, db := range dbs {
 		dst := filepath.Join(tmp, strconv.Itoa(i))
 		meta, err := db.Copy(ctx, source.CopyOptions{Dst: dst, Key: key})
 		if skipGone && errors.Is(err, fs.ErrNotExist) && ctx.Err() == nil {
+			gone = append(gone, db.Name())
 			continue // cleanup removes any part of a copy it made
 		}
 		if err != nil {
 			cleanup()
 			switch {
 			case ctx.Err() != nil || errors.Is(err, context.Canceled):
-				return nil, nil, fmt.Errorf("seal %w: the database copies were removed and nothing was sealed", ErrInterrupted)
+				return nil, nil, nil, fmt.Errorf("seal %w: the database copies were removed and nothing was sealed", ErrInterrupted)
 			case errors.Is(err, fs.ErrNotExist):
-				return nil, nil, fmt.Errorf("the database %s does not exist; check the path given to %s", a.short(db.String()), db.Flag())
+				return nil, nil, nil, fmt.Errorf("the database %s does not exist; check the path given to %s", a.short(db.String()), db.Flag())
 			}
-			return nil, nil, fmt.Errorf("copying the database %s: %w", a.short(db.String()), err)
+			return nil, nil, nil, fmt.Errorf("copying the database %s: %w", a.short(db.String()), err)
 		}
 		extra = append(extra, seal.Extra{Rel: db.Name(), Path: dst, Mode: meta.Mode, ModTime: meta.ModTime})
 	}
-	return extra, cleanup, nil
+	return extra, gone, cleanup, nil
 }
 
 // checkStorage refuses when git would not store salt's files as written.
