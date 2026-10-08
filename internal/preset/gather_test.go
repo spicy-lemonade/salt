@@ -179,6 +179,47 @@ func TestGatherDefaultSecretKeys(t *testing.T) {
 	}
 }
 
+// A secrets file pattern that names folders is matched against as many of
+// the last parts of the file's path, at any depth, through the place's path
+// as the preset names it or its real path, so the same name elsewhere is not
+// checked.
+func TestGatherSecretsFolderPatterns(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := Parse("t", []byte(`{"name": "t", "paths": [{"from": "~/tool", "to": "tool"}, {"from": "~/link", "to": "link"}],
+		"secrets": [{"files": ["conf/*.yaml", "tool/top.yaml", "link/top.yaml", "real/deep.yaml"]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{
+		"tool/conf/a.yaml", "tool/other/conf/b.yaml", "tool/top.yaml", "tool/a.yaml", "tool/deep.yaml",
+		"elsewhere/real/top.yaml", "elsewhere/real/deep.yaml",
+	} {
+		write(t, filepath.Join(home, rel), "password: hunter2\n")
+	}
+	if err := os.Symlink(filepath.Join(home, "elsewhere", "real"), filepath.Join(home, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := envOf(home, nil).Gather([]*Preset{p}, t.TempDir(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files, _ := rels(f); !slices.Equal(files, []string{"tool/a.yaml", "tool/deep.yaml"}) {
+		t.Errorf("files = %v", files)
+	}
+	why := ": its setting password holds a secret"
+	if left, want := leftOut(f, home), []string{
+		filepath.Join("link", "deep.yaml") + why, filepath.Join("link", "top.yaml") + why,
+		filepath.Join("tool", "conf", "a.yaml") + why, filepath.Join("tool", "other", "conf", "b.yaml") + why,
+		filepath.Join("tool", "top.yaml") + why,
+	}; !slices.Equal(left, want) {
+		t.Errorf("left out %v, want %v", left, want)
+	}
+}
+
 // A place that holds the backup repo, or is inside it, is refused before
 // anything in it is read, comparing real paths.
 func TestGatherRefusesTheRepo(t *testing.T) {
@@ -971,6 +1012,183 @@ func TestGatherOpenClaw(t *testing.T) {
 	}
 	if configs != 2 || len(f.Files) != 1 || len(f.LeftOut) != configs {
 		t.Fatalf("settings holding a secret: backed up %v, left out %d of %d", f.Files, len(f.LeftOut), configs)
+	}
+}
+
+// The openviking preset backs up OpenViking's memory, resources and skills
+// and its snapshot history, in OpenViking's folder and in the Hermes folder
+// and each Hermes profile, with the client settings and each workspace's
+// settings, and Hermes's record of the memories it copied. A folder in the
+// memory named like one OpenViking keeps beside it, such as log, is backed
+// up. It leaves out the vector index, the job queue, logs, caches, locks,
+// downloaded models, keys and logins, and a settings, users or account
+// file holding a secret. Its secrets rules check those files only in
+// OpenViking's own folders, so a resource with the same name is backed up,
+// and given with another preset, such as openclaw, it changes nothing that
+// preset backs up. HERMES_HOME names another folder. Given with hermes, it
+// adds only its own files, and it finds nothing when its only file holds a
+// secret.
+func TestGatherOpenViking(t *testing.T) {
+	presets, err := GetAll([]string{"hermes", "openviking"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hermes, openviking := presets[0], presets[1]
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := map[string]string{
+		".openviking/ovcli.conf":                                                           `{"url": "http://127.0.0.1:1933", "timeout": 60, "plugin": {"recallLimit": 8}}`,
+		".openviking/workspaces/salt-1a2b.json":                                            `{"version": 1, "peer": {"id": "salt"}}`,
+		".openviking/data/viking/_system/accounts.json":                                    `{"accounts": {"default": {}}}`,
+		".openviking/data/viking/default/_system/setting.json":                             `{"vlm": {"model": "m"}}`,
+		".openviking/data/viking/default/user/u/memories/profile.md":                       "The user deploys on Fridays.",
+		".openviking/data/viking/default/user/u/memories/.abstract.md":                     "a summary",
+		".openviking/data/viking/default/resources/docs/guide.md":                          "a resource",
+		".openviking/data/viking/default/resources/log/temp.md":                            "a resource folder named like a log",
+		".openviking/data/viking/default/resources/app/users.json":                         `{"users": {"u": {"key": "a resource"}}}`,
+		".openviking/data/viking/default/resources/app/_system/setting.json":               `{"sk": "a resource"}`,
+		".openviking/data/.ovgit/default/HEAD":                                             "ref: refs/heads/main",
+		".openviking/data/.ovgit/default/objects/ab/cdef":                                  "an object",
+		".hermes/openviking/memory_mirror_registry.json":                                   `{"entries": {}}`,
+		".hermes/openviking/data/viking/default/user/default/memories/m.md":                "hermes memory",
+		".hermes/profiles/coder/openviking/data/viking/default/user/default/memories/m.md": "coder memory",
+		".hermes/profiles/coder/openviking/data/.ovgit/default/HEAD":                       "ref: refs/heads/main",
+	}
+	for rel, content := range kept {
+		write(t, filepath.Join(home, rel), content)
+	}
+	for _, rel := range []string{
+		".openviking/master.key", ".openviking/openviking-volcengine-root-key.enc", ".openviking/codex_auth.json",
+		".openviking/context-gateway.env", ".openviking/ov.conf.bak", ".openviking/ovcli.conf.work", ".openviking/server.pid",
+		".openviking/logs/cc-hooks.log", ".openviking/state/last-recall.json", ".openviking/pending/1.json",
+		".openviking/codex-plugin-state/s.json", ".openviking/ov-venv/bin/python",
+		".openviking/data/.openviking.lock", ".openviking/data/vectordb/context/000001.sst", ".openviking/data/log/openviking.log",
+		".openviking/data/temp/upload/x.md", ".openviking/data/bot/workspace/MEMORY.md",
+		".openviking/data/viking/default/resources/docs/.path.ovlock", ".openviking/data/viking/default/resources/docs/.exact.ovlock.42",
+		".hermes/openviking/ov.conf", ".hermes/openviking/ovcli.conf", ".hermes/openviking/.restart-required",
+		".hermes/openviking/runtime/bin/openviking-server", ".hermes/openviking/models/bge.gguf",
+		".hermes/openviking/pending_sessions/s.json", ".hermes/openviking/data/vectordb/context/000001.sst",
+		".hermes/logs/openviking-server.log",
+	} {
+		write(t, filepath.Join(home, rel), "left out")
+	}
+	for _, rel := range []string{".openviking/ingest/state.db", ".openviking/data/_system/queue/queue.db", ".openviking/data/_system/usage_audit/usage_audit.sqlite3"} {
+		write(t, filepath.Join(home, rel), sqliteFile)
+	}
+	write(t, filepath.Join(home, ".openviking", "ov.conf"), `{"storage": {"workspace": "~/.openviking/data"}, "embedding": {"dense": {"api_key": "sk-1"}}}`)
+	write(t, filepath.Join(home, ".openviking", "data", "viking", "_system", "runtime_config", "cluster.json"), `{"rerank": {"ak": "", "sk": "sk-2"}}`)
+	write(t, filepath.Join(home, ".openviking", "data", "viking", "default", "_system", "users.json"), `{"users": {"u": {"role": "admin", "key": "ok-1"}}}`)
+	write(t, filepath.Join(home, ".hermes", "profiles", "coder", "openviking", "data", "viking", "default", "_system", "setting.backup.json"), `{"embedding": {"dense": {"ak": "ak-1", "sk": ""}}}`)
+	write(t, filepath.Join(home, ".hermes", "SOUL.md"), "soul")
+	gather := func(vars map[string]string, presets ...*Preset) *Found {
+		t.Helper()
+		f, err := envOf(home, vars).Gather(presets, t.TempDir(), plain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+
+	f := gather(nil, openviking)
+	files, dbs := rels(f)
+	var want []string
+	for rel := range kept {
+		want = append(want, strings.TrimPrefix(rel, "."))
+	}
+	slices.Sort(want)
+	if !slices.Equal(files, want) || dbs != nil {
+		t.Fatalf("files %v, databases %v, want files %v", files, dbs, want)
+	}
+	if left, want := leftOut(f, home), []string{
+		filepath.Join(".hermes", "profiles", "coder", "openviking", "data", "viking", "default", "_system", "setting.backup.json") + ": its setting ak holds a secret",
+		filepath.Join(".openviking", "data", "viking", "_system", "runtime_config", "cluster.json") + ": its setting sk holds a secret",
+		filepath.Join(".openviking", "data", "viking", "default", "_system", "users.json") + ": its setting key holds a secret",
+		filepath.Join(".openviking", "ov.conf") + ": its setting api_key holds a secret",
+	}; !slices.Equal(left, want) || len(f.Numbers) != 0 || len(f.Skipped) != 0 {
+		t.Fatalf("left out %v, want %v, numbers %v, skipped %v", left, want, f.Numbers, f.Skipped)
+	}
+
+	f = gather(nil, hermes, openviking)
+	if got, want := slices.Sorted(slices.Values(f.Paths())), slices.Sorted(slices.Values(append(slices.Clone(want), "hermes/SOUL.md"))); !slices.Equal(got, want) {
+		t.Fatalf("hermes and openviking backed up %v, want %v", got, want)
+	}
+
+	// HERMES_HOME names the Hermes folder in place of ~/.hermes.
+	hermesHome := filepath.Join(home, "hermes-home")
+	write(t, filepath.Join(hermesHome, "openviking", "data", "viking", "default", "user", "default", "memories", "m.md"), "another Hermes")
+	f = gather(map[string]string{"HERMES_HOME": hermesHome}, openviking)
+	files, _ = rels(f)
+	want = slices.DeleteFunc(want, func(rel string) bool { return strings.HasPrefix(rel, "hermes/") })
+	want = slices.Sorted(slices.Values(append(want, "hermes/openviking/data/viking/default/user/default/memories/m.md")))
+	if !slices.Equal(files, want) {
+		t.Fatalf("with HERMES_HOME: files %v, want %v", files, want)
+	}
+	for _, x := range f.Files {
+		if strings.HasPrefix(x.Rel, "hermes/") && !strings.HasPrefix(x.Path, hermesHome+string(filepath.Separator)) {
+			t.Errorf("%s came from %s, want inside %s", x.Rel, x.Path, hermesHome)
+		}
+	}
+
+	// Each rule checks only the settings OpenViking keeps keys in, beyond
+	// salt's usual ones, so a setting that only names a key is not taken
+	// for one.
+	conf := filepath.Join(t.TempDir(), "ov.conf")
+	for i, cases := range []map[string]bool{
+		{"ak": true, "sk": true, "key": false, "key_file": false, "key_id": false},
+		{"key": true, "key_prefix": false, "role": false},
+	} {
+		sec := Secret{Keys: slices.Concat(defaultSecretKeys, openviking.Secrets[i].Keys)}
+		for name, secret := range cases {
+			write(t, conf, fmt.Sprintf(`{"x": {%q: "v-1"}}`, name))
+			if why, _, _ := secretIn(conf, sec); (why != "") != secret {
+				t.Errorf("rule %d, %s: %q", i, name, why)
+			}
+		}
+	}
+
+	// Given with another preset, it changes nothing that preset backs up,
+	// as its secrets rules name OpenViking's own folders.
+	openclaw, err := Get("openclaw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rel, content := range map[string]string{
+		"MEMORY.md":                   "memory",
+		"setting.json":                `{"locales": {"sk": "Slovenčina"}}`,
+		"users.json":                  `{"users": [{"name": "a", "key": "id-1"}]}`,
+		"_system/users.json":          `{"key": "id-2"}`,
+		"runtime_config/cluster.json": `{"ak": "a-1"}`,
+	} {
+		write(t, filepath.Join(home, ".openclaw", "workspace", rel), content)
+	}
+	alone := gather(nil, openclaw)
+	both := gather(nil, openclaw, openviking)
+	ofOpenClaw := slices.DeleteFunc(slices.Sorted(slices.Values(both.Paths())), func(rel string) bool { return !strings.HasPrefix(rel, "openclaw/") })
+	if got := slices.Sorted(slices.Values(alone.Paths())); !slices.Equal(ofOpenClaw, got) || len(alone.LeftOut) != 0 || len(got) != 5 {
+		t.Fatalf("openclaw backed up %v alone, left out %v, and %v with openviking", got, alone.LeftOut, ofOpenClaw)
+	}
+	if len(both.LeftOut) != 4 {
+		t.Fatalf("openclaw and openviking left out %v", leftOut(both, home))
+	}
+
+	// With nothing to back up, or only a settings file holding a secret, as
+	// with a server elsewhere, the preset finds nothing and says where it
+	// looks.
+	for _, files := range [][]string{nil, {".openviking/ovcli.conf"}} {
+		bare, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, rel := range files {
+			write(t, filepath.Join(bare, rel), `{"url": "https://openviking.example", "api_key": "ok-2"}`)
+		}
+		_, err = envOf(bare, nil).Gather([]*Preset{openviking}, t.TempDir(), plain)
+		if !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), filepath.Join(bare, ".openviking", "data", "viking")) ||
+			!strings.Contains(err.Error(), filepath.Join(bare, ".hermes", "profiles", "*", "openviking", "data", "viking")) {
+			t.Fatalf("with %v: Gather = %v", files, err)
+		}
 	}
 }
 

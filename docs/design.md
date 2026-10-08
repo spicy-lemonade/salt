@@ -1,7 +1,7 @@
 # Salt design
 
-Salt encrypts AI-agent memory, such as Hermes, Mnemosyne, Honcho and
-Hindsight today and OpenViking later, before it is backed up to Git.
+Salt encrypts AI-agent memory, such as Hermes, Mnemosyne, Honcho, Hindsight
+and OpenViking, before it is backed up to Git.
 
 ## Principles
 
@@ -796,8 +796,12 @@ code reads them all, so adding a tool means adding one file:
   caches, logs and downloaded models. `.DS_Store` and `.git` are always
   skipped, as in `salt seal`.
 - `secrets` lists files that may hold secrets, and the settings in them that
-  do. Such a file is read as YAML (which includes JSON), every document in
-  it. Every setting at any depth is checked by its name in lower case, so
+  do. A file is named by a name pattern, such as `config.yaml`, or by the
+  folders it is in and its name, joined by `/`, such as
+  `_system/users.json`. Such a pattern is matched against as many of the
+  last parts of the file's path, at any depth, so a file with the same name
+  in any other folder is not checked. Such a file is read as YAML (which
+  includes JSON), every document in it. Every setting at any depth is checked by its name in lower case, so
   `keys` are written in lower case too. Salt always checks the settings most
   tools keep secrets in (`*api_key`, `*apikey`, `*api-key`, `*secret`,
   `*secret_key`, `*secretkey`, `*access_key`, `*accesskey`, `*private_key`,
@@ -872,7 +876,9 @@ the folder around it leaves it out. Where presets overlap, a file is backed
 up if any preset that reaches it would back it up, so adding a preset never
 drops a file another one backs up. A preset reaches a place inside its own
 unless it skips a folder on the way. Every preset's secrets rules apply to
-every file. So nothing is backed up twice, and the backup is the same
+every file, so a rule that names only a file's name reaches the same name
+in every preset's places. A rule that also names its folders reaches only
+files in such folders. So nothing is backed up twice, and the backup is the same
 whatever order the presets are given in.
 
 Two places backed up at the same path are refused before anything is copied.
@@ -1190,6 +1196,118 @@ To get OpenClaw's memory back, restore into a new folder, stop OpenClaw, and
 copy `openclaw/` to `~/.openclaw/` and each `openclaw-profiles/<profile>/` to
 `~/.openclaw-<profile>/`.
 
+The `openviking` preset covers self-hosted
+[OpenViking](https://github.com/volcengine/OpenViking). OpenViking runs as a
+server and keeps its memory as files in its workspace folder, in `viking`.
+These are each user's memories, the resources and skills given to it, its
+sessions, the summaries it writes beside them (`.abstract.md` and
+`.overview.md`), and its accounts and their settings. Its snapshot history
+is in `.ovgit` beside them, unless `git.local.base_dir` in `ov.conf` moves it
+somewhere else, where it is not found. The preset backs up both, from
+`~/.openviking/data`, which is where OpenViking's setup
+(`openviking-server init`) and its Docker image keep the workspace. It also
+backs up the server's settings (`ov.conf`), the settings that point the `ov`
+CLI and each agent's OpenViking plugin at the server (`ovcli.conf`), which
+Claude Code, Codex, Cursor, OpenCode and other agents share, and the
+settings each repository's agent uses for its memory (`workspaces`).
+OpenViking's plugins ignore any key written in a `workspaces` file, so those
+files are not checked for secrets.
+
+Hermes's OpenViking plugin can run a server of its own (Quick Local), with
+its workspace in `openviking/data` in the Hermes folder and in each Hermes
+profile. The preset backs up its `viking` and `.ovgit` folders there too,
+and `memory_mirror_registry.json`, which records where in OpenViking each
+entry of Hermes's own memory was copied, so Hermes can go on changing them.
+That server's `ov.conf` and `ovcli.conf` always hold its key, and Hermes's
+setup writes them again, so they are not backed up. OpenClaw's OpenViking
+plugin keeps its settings in `openclaw.json`, which the `openclaw` preset
+backs up, and its memory in the server's workspace, which this one does.
+
+OpenViking's vector index (`vectordb`) is not backed up. It holds an
+embedding of each file in `viking`, which OpenViking can make again from
+them. It is also a database the server keeps rewriting, which a copy made
+file by file while the server runs can break, and its large files would
+change the backup repo every day. Nor are OpenViking's job queue, logs,
+temporary uploads or lock files (`.openviking.lock`, `.path.ovlock` and
+`.exact.ovlock.*`) backed up, or the `bot` folder of VikingBot, the agent
+OpenViking ships. Nothing else in `~/.openviking` is backed up. That leaves
+out the encryption key (`master.key`, or a KMS-wrapped `*-root-key.enc`),
+Codex logins (`codex_auth.json`), the Context Gateway's `.env` file, saved
+CLI profiles (`ovcli.conf.<name>`), old copies of the settings
+(`ov.conf.bak`), the installed server and plugins, and the plugins' logs,
+state and queues of unsent messages. In the Hermes folder, the Quick Local
+server's runtime and downloaded models, and the markers of sessions still to
+be committed, are left out.
+
+`ov.conf` can hold API keys, such as each model's `api_key`, the server's
+`root_api_key`, or a rerank service's `ak` and `sk`, and `ovcli.conf` can
+hold an `api_key`. In the workspace, each account's settings
+(`viking/<account>/_system/setting.json` and its `.backup.json` copy) and
+the runtime settings (`viking/_system/runtime_config/cluster.json` and its
+copy) can hold model keys. So these are checked, with `ak` and `sk` checked
+as well as salt's usual settings. Each account's
+`viking/<account>/_system/users.json` holds its users' API keys when the
+server checks keys (`auth_mode` set to `api_key`, which Docker needs), so it
+is checked with `key` as well as salt's usual settings. A file holding one
+is left out, and salt names it. The rules name these folders, so a file
+with the same name elsewhere, such as in a resource given to OpenViking or
+in another preset's folder, is not checked. A server that checks keys
+always has them in `users.json`, so salt names it in every backup, and after
+restoring, its users are registered again with `ov admin`.
+
+With OpenViking's encryption on, the files in `viking` are encrypted with
+the key in `master.key`, or with a wrapped key and the KMS or Vault key that
+opens it. Salt does not back these up, and the backup cannot be read
+without them, so keep a copy somewhere safe. The settings and users files
+are encrypted too, so salt cannot read them to check them. They are left
+out, and salt names them in every backup. After restoring, set each
+account's model settings up again.
+
+OpenViking saves a snapshot by writing its objects into `.ovgit` first and
+then pointing the account's branch (`.ovgit/<account>/refs/heads/main`) at
+the newest one. Salt reads files in order of their path, so it reads the
+snapshot objects before the branch. A snapshot saved while salt backs up can
+then leave the backup's branch pointing at a snapshot whose objects it does
+not hold. OpenViking reaches every snapshot through the branch, so after
+restoring such a backup it can neither save a new snapshot nor list or go
+back to older ones for that account, until its `refs/heads/main` is pointed
+back at an earlier snapshot by hand. The memory in `viking` is not affected,
+and the next backup holds the whole history again. OpenViking advises
+pausing writes while its workspace is copied, so run `salt backup` when
+OpenViking is not saving snapshots, or with it stopped.
+
+A workspace set somewhere else in `ov.conf` (`storage.workspace`), such as a
+systemd service's `/var/lib/openviking/data` or the `./data` of a
+hand-written `ov.conf`, is not found. Nor is a settings file that
+`OPENVIKING_CONFIG_FILE` or `OPENVIKING_CLI_CONFIG_FILE` names, or one in
+`/etc/openviking`, since secrets are checked only in files named `ov.conf`
+and `ovcli.conf`. Back such a workspace's `viking` folder up with
+`salt seal` into a repo of its own. Content OpenViking keeps in S3
+(`storage.agfs.backend` set to `s3`), a vector database on another server
+and the memory in OpenViking's cloud service are not backed up. With no
+workspace for the preset to find, and settings that hold a key, the preset
+finds nothing and every backup stops, so it does not suit that setup.
+
+| On the machine | In the backup |
+|---|---|
+| `~/.openviking/ov.conf`, `ovcli.conf` and `workspaces/` | `openviking/` |
+| `~/.openviking/data/viking/` and `data/.ovgit/` | `openviking/data/` |
+| `~/.hermes/openviking/data/viking/`, `data/.ovgit/` and `memory_mirror_registry.json` (or under `$HERMES_HOME`) | `hermes/openviking/` |
+| the same in `~/.hermes/profiles/<name>/openviking/` | `hermes/profiles/<name>/openviking/` |
+
+To get OpenViking's memory back, restore into a new folder, stop OpenViking,
+and copy `openviking/` to `~/.openviking/`, and `hermes/openviking/` and each
+`hermes/profiles/<name>/openviking/` to the same place in the Hermes folder.
+For Hermes's own server, run Hermes's OpenViking setup again to install it.
+Set up any settings that were left out again, start OpenViking, and run
+`ov reindex viking://`, with an admin key when the server checks keys, to
+make the vector index again. Until it finishes, memories can be read and
+browsed but not found by meaning. It embeds every file with the model
+`ov.conf` names, which with a paid model costs about as much as adding them
+all again. Tags set with `set_tags`, the memory type that ranks older events
+lower, and how often each memory was used are kept only in the vector index,
+so they are lost.
+
 Hermes sets `HERMES_HOME` to a profile's folder while it runs that profile.
 A `salt backup` started from inside Hermes, such as from one of its
 scheduled jobs, then sees only that profile. It backs that profile up as the
@@ -1209,5 +1327,4 @@ Touch ID, and switching recovery method.
 
 ## Still to build
 
-- OpenViking support. Its data format has not been checked yet.
 - Presets for more tools.

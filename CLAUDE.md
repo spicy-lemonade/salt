@@ -19,10 +19,11 @@
 - Read existing files before writing any output.
 - Do not re-read files unless they have been changed.
 - Use gitmoji when commiting, by running `gitmoji -c` and selecting an appropriate emoji.
+- PR descriptions should be short, written in plain English, in short sentences, and free from jargon.
 
 ## Project Overview
 
-Salt is an open-source Go CLI that encrypts AI-agent memory backups before they are pushed to Git. Examples are Hermes with Mnemosyne SQLite databases and Markdown files such as USER.md, MEMORY.md, SOUL.md and SKILL.md. It also covers Postgres databases such as Honcho and Hindsight (Postgres + pgvector), and will later cover OpenViking. An example usage is a nightly backup script which saves a snapshot of the agent files, but runs `salt seal` to encrypt them before they reach the git repo. A pre-commit hook (`salt check`) then refuses any commit containing a file that is not encrypted. Salt is distributed through a Homebrew tap. The full design is in `docs/design.md`.
+Salt is an open-source Go CLI that encrypts AI-agent memory backups before they are pushed to Git. Examples are Hermes with Mnemosyne SQLite databases and Markdown files such as USER.md, MEMORY.md, SOUL.md and SKILL.md. It also covers Postgres databases such as Honcho and Hindsight (Postgres + pgvector), and file-based memory servers such as OpenViking. An example usage is a nightly backup script which saves a snapshot of the agent files, but runs `salt seal` to encrypt them before they reach the git repo. A pre-commit hook (`salt check`) then refuses any commit containing a file that is not encrypted. Salt is distributed through a Homebrew tap. The full design is in `docs/design.md`.
 
 Salt is a general-purpose open-source tool for public release. Write code, defaults, messages and docs for any user and any setup.
 
@@ -110,7 +111,7 @@ go test ./internal/seal -run TestRoundTrip
 - Decided out of scope is Touch ID gating, and switching recovery method from the 12 word passphrase to the user chosen passphrase or vice versa.
 - `salt seal --sqlite DB` makes a safe copy of a live SQLite database itself (`internal/source` runs `sqlite3 .backup`). `salt seal --postgres CONN` (or `--postgres-env VAR`) dumps a Postgres database as plain SQL with `pg_dump`, with the password passed in `PGPASSWORD` and never shown. See `docs/design.md`, "Databases".
 - `salt backup --preset NAME REPO` gathers what the presets name, seals it (the repo then holds only that), commits with hooks off after running the `salt check` logic in-process, prunes and pushes with `--force-with-lease`. It prints nothing on success. See `docs/design.md`, "One-command backup".
-- Not yet built: OpenViking support, and presets other than `hermes`, `hindsight`, `holographic`, `honcho`, `mnemosyne` and `openclaw`.
+- Not yet built: presets other than `hermes`, `hindsight`, `holographic`, `honcho`, `mnemosyne`, `openclaw` and `openviking`.
   - When the next preset with a Postgres database is added, move what `TestBackupHoncho` and `TestBackupHindsight` in `test/e2e/backup_test.go` share into one helper, starting with the check that a server that cannot be reached stops the backup with nothing committed and no password shown. They are left as two copies until a third test needs them.
 
 ### Agent contributing rules

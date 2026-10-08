@@ -422,15 +422,27 @@ func (w *walker) walk(s *spot, by []*Preset) (gone bool, err error) {
 		if sidecar {
 			return nil
 		}
-		// The place itself may be a symlink, and then has two names; the
-		// secrets rules match either. Inside it, symlinks are not followed.
-		names := []string{d.Name()}
-		if walked == real {
-			names = append(names, filepath.Base(pl.Abs))
+		// A secrets file pattern is matched against as many of the last parts
+		// of the file's path as it has, so it can name the folders the file
+		// is in. The place itself may be a symlink, so its path as the preset
+		// names it and its real path are both tried. Inside it, symlinks are
+		// not followed.
+		paths := []string{filepath.ToSlash(walked), filepath.ToSlash(at)}
+		matches := func(pat string) bool {
+			for _, p := range paths {
+				start := len(p)
+				for i := 0; i <= strings.Count(pat, "/") && start >= 0; i++ {
+					start = strings.LastIndexByte(p[:start], '/')
+				}
+				if ok, _ := path.Match(pat, p[start+1:]); ok {
+					return true
+				}
+			}
+			return false
 		}
 		var number string
 		for _, sec := range w.secrets {
-			if !slices.ContainsFunc(names, func(n string) bool { return matchAny(sec.Files, n) }) {
+			if !slices.ContainsFunc(sec.Files, matches) {
 				continue
 			}
 			why, secret, num := secretIn(walked, sec)
