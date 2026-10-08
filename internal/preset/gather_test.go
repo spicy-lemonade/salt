@@ -641,7 +641,7 @@ func TestGatherSidecarOfSkippedDatabase(t *testing.T) {
 
 // A file or folder deleted after the walk listed it, as a tool's files can
 // be at any time, is skipped, and the files Gather adds are marked live. A
-// place deleted while it is walked is still an error.
+// preset whose only place is deleted while it is walked has found nothing.
 func TestGatherSkipsWhatVanishes(t *testing.T) {
 	home, err := filepath.EvalSymlinks(t.TempDir()) // the walk sees real paths
 	if err != nil {
@@ -673,7 +673,63 @@ func TestGatherSkipsWhatVanishes(t *testing.T) {
 	}
 
 	vanish = []string{"."}
-	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain); !errors.Is(err, ErrNothing) {
 		t.Fatalf("Gather = %v", err)
+	}
+}
+
+// A place deleted after it was found, a folder or a single file, is skipped
+// and left out of Places, so the backup goes on and names it as missing.
+func TestGatherSkipsVanishedPlaces(t *testing.T) {
+	for _, gone := range []string{"tool", "single.txt"} {
+		t.Run(gone, func(t *testing.T) {
+			home, err := filepath.EvalSymlinks(t.TempDir()) // the walk sees real paths
+			if err != nil {
+				t.Fatal(err)
+			}
+			write(t, filepath.Join(home, "tool", "a.md"), "a")
+			write(t, filepath.Join(home, "single.txt"), "one file")
+			listedHook = func(p string) {
+				if p == filepath.Join(home, gone) {
+					os.RemoveAll(p)
+				}
+			}
+			t.Cleanup(func() { listedHook = nil })
+			f, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain)
+			if err != nil {
+				t.Fatal(err)
+			}
+			kept := map[string]string{"tool": "single.txt", "single.txt": "tool"}[gone]
+			if !slices.Equal(f.Places, []string{kept}) {
+				t.Errorf("places = %v, want [%s]", f.Places, kept)
+			}
+			if files, _ := rels(f); len(files) != 1 || !strings.HasPrefix(files[0], kept) {
+				t.Errorf("files = %v", files)
+			}
+		})
+	}
+}
+
+// A spot deleted between Find and its walk is skipped and marked gone. Any
+// other error, or one for a file inside it, never marks it gone.
+func TestWalkSkipsGoneSpot(t *testing.T) {
+	home := t.TempDir()
+	missing := filepath.Join(home, "missing")
+	s := &spot{place: Place{Abs: missing, Rel: "a", Real: missing}, real: missing, rels: []string{"a", "b"}}
+	w := &walker{f: &Found{}, spots: map[string]*spot{missing: s}, found: map[*Preset]bool{}, show: plain}
+	if err := w.walk(s, []*Preset{testPreset(t)}); err != nil {
+		t.Fatalf("walk = %v", err)
+	}
+	if !s.gone || len(w.f.Files) != 0 || len(w.found) != 0 {
+		t.Fatalf("gone %v, files %v, found %v", s.gone, w.f.Files, w.found)
+	}
+
+	other := &spot{real: home}
+	bad := errors.New("bad")
+	if err := other.skipGone(home, bad); err != bad || other.gone {
+		t.Fatalf("skipGone = %v, gone %v", err, other.gone)
+	}
+	if err := other.skipGone(filepath.Join(home, "inside"), fs.ErrNotExist); err != nil || other.gone {
+		t.Fatalf("skipGone inside = %v, gone %v", err, other.gone)
 	}
 }

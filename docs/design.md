@@ -789,8 +789,11 @@ copies made in between can take a while. A symlink inside a folder is not
 followed or backed up, and salt prints one line about it. A `from` that is
 itself a symlink is followed. A file or database the tool deletes while salt
 backs it up, as tools do with temporary files, or replaces with something
-that is not a file, is left out of that backup instead of stopping it. A
-database named with `--sqlite`, or a file in `salt seal`'s source folder,
+that is not a file, is left out of that backup instead of stopping it. So
+is a place a preset found and the tool deletes before salt reads it, such as
+a profile deleted during the backup. It then counts as not found, so salt
+names it if the last backup held it, and a preset left with nothing still
+stops the backup. A database named with `--sqlite`, or a file in `salt seal`'s source folder,
 still stops the seal when it is missing, since the person named it.
 
 A place found twice, such as a folder named both by a variable and by its
