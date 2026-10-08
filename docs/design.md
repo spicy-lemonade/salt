@@ -817,11 +817,13 @@ code reads them all, so adding a tool means adding one file:
   the file and the setting, never its value. It says to keep it in an
   environment variable if it is a secret. A file that
   cannot be read, cannot be read as YAML or JSON, or is over 1 MiB is left
-  out too. A comment, as JSON5 allows, is not YAML. It usually stops salt
-  reading the file, which is then left out, and a comment after a value
-  becomes part of it, so the setting holds text. Remove comments from such a
-  file to be sure it is checked as written and backed up. Salt never changes
-  the file to remove the secret.
+  out too. A comment, as JSON5 allows, is not YAML. One that stops salt
+  reading the file, or that salt would read as the start of a setting's
+  name, as before a setting or a closing brace, keeps the file out, since it
+  would hide the setting after it from the check. A comment after a value
+  becomes part of the value, so the setting holds text. Remove comments from
+  such a file to be sure it is checked as written and backed up. Salt never
+  changes the file to remove the secret.
 - `refs` in a secrets rule lists the ways the tool names where a secret is
   kept in an object, each as the exact names of that object's settings in
   lower case, never patterns, such as
@@ -1158,10 +1160,10 @@ OpenClaw SecretRef, such as
 `{"source": "env", "provider": "default", "id": "NAME"}`, names where the
 key is. Neither counts as a secret, so a file holding only such keys is
 backed up. OpenClaw reads its settings as JSON5, but writes them as plain
-JSON, dropping any comment. A comment usually stops salt reading the file
-to check it, which then keeps it out of the backup, so remove comments to be
-sure it is backed up. After restoring, set up OpenClaw's logins and keys
-again, as on a new machine.
+JSON, dropping any comment. Most comments keep the file out of the backup,
+as `secrets` above explains, so remove comments to be sure it is backed up.
+After restoring, set up OpenClaw's logins and keys again, as on a new
+machine.
 
 | On the machine | In the backup |
 |---|---|
