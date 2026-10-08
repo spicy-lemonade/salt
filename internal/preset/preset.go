@@ -85,8 +85,11 @@ func (d Database) conn() (func(conn, where string) (source.Database, error), err
 // settings in them that do. A file is backed up only when every such setting
 // is empty.
 type Secret struct {
-	// Files lists name patterns (path.Match) of the files to check. They are
-	// read as YAML, which includes JSON.
+	// Files lists name patterns (path.Match) of the files to check. A
+	// pattern can name the folders the file is in too, joined by /, such as
+	// _system/users.json, and is then matched against as many of the last
+	// parts of the file's path. The files are read as YAML, which includes
+	// JSON.
 	Files []string `json:"files"`
 	// Keys lists name patterns (path.Match) of settings that hold secrets,
 	// compared in lower case at any depth in the file, beyond those in
@@ -212,6 +215,11 @@ func (p *Preset) check(name string) error {
 	for _, s := range p.Secrets {
 		if len(s.Files) == 0 {
 			return errors.New("a secrets rule needs files")
+		}
+		for _, f := range s.Files {
+			if slices.ContainsFunc(strings.Split(f, "/"), func(part string) bool { return part == "" || part == "." || part == ".." }) {
+				return fmt.Errorf("the secrets file %q must be a name, or folder names and a name joined by /", f)
+			}
 		}
 		for _, k := range s.Keys {
 			if k != strings.ToLower(k) {

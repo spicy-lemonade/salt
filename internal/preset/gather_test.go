@@ -179,6 +179,47 @@ func TestGatherDefaultSecretKeys(t *testing.T) {
 	}
 }
 
+// A secrets file pattern that names folders is matched against as many of
+// the last parts of the file's path, at any depth, through the place's path
+// as the preset names it or its real path, so the same name elsewhere is not
+// checked.
+func TestGatherSecretsFolderPatterns(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := Parse("t", []byte(`{"name": "t", "paths": [{"from": "~/tool", "to": "tool"}, {"from": "~/link", "to": "link"}],
+		"secrets": [{"files": ["conf/*.yaml", "tool/top.yaml", "link/top.yaml", "real/deep.yaml"]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{
+		"tool/conf/a.yaml", "tool/other/conf/b.yaml", "tool/top.yaml", "tool/a.yaml", "tool/deep.yaml",
+		"elsewhere/real/top.yaml", "elsewhere/real/deep.yaml",
+	} {
+		write(t, filepath.Join(home, rel), "password: hunter2\n")
+	}
+	if err := os.Symlink(filepath.Join(home, "elsewhere", "real"), filepath.Join(home, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := envOf(home, nil).Gather([]*Preset{p}, t.TempDir(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files, _ := rels(f); !slices.Equal(files, []string{"tool/a.yaml", "tool/deep.yaml"}) {
+		t.Errorf("files = %v", files)
+	}
+	why := ": its setting password holds a secret"
+	if left, want := leftOut(f, home), []string{
+		filepath.Join("link", "deep.yaml") + why, filepath.Join("link", "top.yaml") + why,
+		filepath.Join("tool", "conf", "a.yaml") + why, filepath.Join("tool", "other", "conf", "b.yaml") + why,
+		filepath.Join("tool", "top.yaml") + why,
+	}; !slices.Equal(left, want) {
+		t.Errorf("left out %v, want %v", left, want)
+	}
+}
+
 // A place that holds the backup repo, or is inside it, is refused before
 // anything in it is read, comparing real paths.
 func TestGatherRefusesTheRepo(t *testing.T) {
@@ -981,9 +1022,12 @@ func TestGatherOpenClaw(t *testing.T) {
 // memory named like one OpenViking keeps beside it, such as log, is backed
 // up. It leaves out the vector index, the job queue, logs, caches, locks,
 // downloaded models, keys and logins, and a settings, users or account
-// file holding a secret. HERMES_HOME names another folder. Given with
-// hermes, it adds only its own files, and it finds nothing when its only
-// file holds a secret.
+// file holding a secret. Its secrets rules check those files only in
+// OpenViking's own folders, so a resource with the same name is backed up,
+// and given with another preset, such as openclaw, it changes nothing that
+// preset backs up. HERMES_HOME names another folder. Given with hermes, it
+// adds only its own files, and it finds nothing when its only file holds a
+// secret.
 func TestGatherOpenViking(t *testing.T) {
 	presets, err := GetAll([]string{"hermes", "openviking"})
 	if err != nil {
@@ -1003,6 +1047,8 @@ func TestGatherOpenViking(t *testing.T) {
 		".openviking/data/viking/default/user/u/memories/.abstract.md":                     "a summary",
 		".openviking/data/viking/default/resources/docs/guide.md":                          "a resource",
 		".openviking/data/viking/default/resources/log/temp.md":                            "a resource folder named like a log",
+		".openviking/data/viking/default/resources/app/users.json":                         `{"users": {"u": {"key": "a resource"}}}`,
+		".openviking/data/viking/default/resources/app/_system/setting.json":               `{"sk": "a resource"}`,
 		".openviking/data/.ovgit/default/HEAD":                                             "ref: refs/heads/main",
 		".openviking/data/.ovgit/default/objects/ab/cdef":                                  "an object",
 		".hermes/openviking/memory_mirror_registry.json":                                   `{"entries": {}}`,
@@ -1085,20 +1131,46 @@ func TestGatherOpenViking(t *testing.T) {
 		}
 	}
 
-	// The settings OpenViking keeps keys in are taken for secrets, and those
-	// that only name a key or hold a number are not.
-	sec := Secret{Keys: slices.Concat(defaultSecretKeys, openviking.Secrets[0].Keys)}
+	// Each rule checks only the settings OpenViking keeps keys in, beyond
+	// salt's usual ones, so a setting that only names a key is not taken
+	// for one.
 	conf := filepath.Join(t.TempDir(), "ov.conf")
-	for name, secret := range map[string]bool{
-		"api_key": true, "root_api_key": true, "key": true, "ak": true, "sk": true, "access_key": true, "secret_key": true,
-		"app_secret": true, "gateway_token": true, "oidc_token": true, "token": true, "password": true, "sentinel_password": true,
-		"Authorization": true, "X-API-Key": true, "X-Gateway-Token": true,
-		"api_base": false, "key_file": false, "key_id": false, "key_name": false, "cache_key_prefix": false, "password_env": false,
+	for i, cases := range []map[string]bool{
+		{"ak": true, "sk": true, "key": false, "key_file": false, "key_id": false},
+		{"key": true, "key_prefix": false, "role": false},
 	} {
-		write(t, conf, fmt.Sprintf(`{"x": {%q: "v-1"}}`, name))
-		if why, _, _ := secretIn(conf, sec); (why != "") != secret {
-			t.Errorf("%s: %q", name, why)
+		sec := Secret{Keys: slices.Concat(defaultSecretKeys, openviking.Secrets[i].Keys)}
+		for name, secret := range cases {
+			write(t, conf, fmt.Sprintf(`{"x": {%q: "v-1"}}`, name))
+			if why, _, _ := secretIn(conf, sec); (why != "") != secret {
+				t.Errorf("rule %d, %s: %q", i, name, why)
+			}
 		}
+	}
+
+	// Given with another preset, it changes nothing that preset backs up,
+	// as its secrets rules name OpenViking's own folders.
+	openclaw, err := Get("openclaw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rel, content := range map[string]string{
+		"MEMORY.md":                   "memory",
+		"setting.json":                `{"locales": {"sk": "Slovenčina"}}`,
+		"users.json":                  `{"users": [{"name": "a", "key": "id-1"}]}`,
+		"_system/users.json":          `{"key": "id-2"}`,
+		"runtime_config/cluster.json": `{"ak": "a-1"}`,
+	} {
+		write(t, filepath.Join(home, ".openclaw", "workspace", rel), content)
+	}
+	alone := gather(nil, openclaw)
+	both := gather(nil, openclaw, openviking)
+	ofOpenClaw := slices.DeleteFunc(slices.Sorted(slices.Values(both.Paths())), func(rel string) bool { return !strings.HasPrefix(rel, "openclaw/") })
+	if got := slices.Sorted(slices.Values(alone.Paths())); !slices.Equal(ofOpenClaw, got) || len(alone.LeftOut) != 0 || len(got) != 5 {
+		t.Fatalf("openclaw backed up %v alone, left out %v, and %v with openviking", got, alone.LeftOut, ofOpenClaw)
+	}
+	if len(both.LeftOut) != 4 {
+		t.Fatalf("openclaw and openviking left out %v", leftOut(both, home))
 	}
 
 	// With nothing to back up, or only a settings file holding a secret, as

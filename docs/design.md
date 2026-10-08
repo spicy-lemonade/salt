@@ -796,8 +796,12 @@ code reads them all, so adding a tool means adding one file:
   caches, logs and downloaded models. `.DS_Store` and `.git` are always
   skipped, as in `salt seal`.
 - `secrets` lists files that may hold secrets, and the settings in them that
-  do. Such a file is read as YAML (which includes JSON), every document in
-  it. Every setting at any depth is checked by its name in lower case, so
+  do. A file is named by a name pattern, such as `config.yaml`, or by the
+  folders it is in and its name, joined by `/`, such as
+  `_system/users.json`. Such a pattern is matched against as many of the
+  last parts of the file's path, at any depth, so a file with the same name
+  in any other folder is not checked. Such a file is read as YAML (which
+  includes JSON), every document in it. Every setting at any depth is checked by its name in lower case, so
   `keys` are written in lower case too. Salt always checks the settings most
   tools keep secrets in (`*api_key`, `*apikey`, `*api-key`, `*secret`,
   `*secret_key`, `*secretkey`, `*access_key`, `*accesskey`, `*private_key`,
@@ -872,7 +876,9 @@ the folder around it leaves it out. Where presets overlap, a file is backed
 up if any preset that reaches it would back it up, so adding a preset never
 drops a file another one backs up. A preset reaches a place inside its own
 unless it skips a folder on the way. Every preset's secrets rules apply to
-every file. So nothing is backed up twice, and the backup is the same
+every file, so a rule that names only a file's name reaches the same name
+in every preset's places. A rule that also names its folders reaches only
+files in such folders. So nothing is backed up twice, and the backup is the same
 whatever order the presets are given in.
 
 Two places backed up at the same path are refused before anything is copied.
@@ -1196,7 +1202,8 @@ server and keeps its memory as files in its workspace folder, in `viking`.
 These are each user's memories, the resources and skills given to it, its
 sessions, the summaries it writes beside them (`.abstract.md` and
 `.overview.md`), and its accounts and their settings. Its snapshot history
-is in `.ovgit` beside them. The preset backs up both, from
+is in `.ovgit` beside them, unless `git.local.base_dir` in `ov.conf` moves it
+somewhere else, where it is not found. The preset backs up both, from
 `~/.openviking/data`, which is where OpenViking's setup
 (`openviking-server init`) and its Docker image keep the workspace. It also
 backs up the server's settings (`ov.conf`), the settings that point the `ov`
@@ -1234,18 +1241,37 @@ be committed, are left out.
 
 `ov.conf` can hold API keys, such as each model's `api_key`, the server's
 `root_api_key`, or a rerank service's `ak` and `sk`, and `ovcli.conf` can
-hold an `api_key`. In the workspace, each account's `users.json` holds its
-users' API keys when the server checks keys (`auth_mode` set to `api_key`,
-which Docker needs), and the account and runtime settings (`setting.json`,
-`cluster.json` and their `.backup.json` copies) can hold model keys. So each
-of these is checked, with `key`, `ak` and `sk` checked as well as salt's
-usual settings. A file holding one is left out, and salt names it. A server
-that checks keys always has them in `users.json`, so salt names it in every
-backup, and after restoring, its users are registered again with `ov admin`.
+hold an `api_key`. In the workspace, each account's settings
+(`viking/<account>/_system/setting.json` and its `.backup.json` copy) and
+the runtime settings (`viking/_system/runtime_config/cluster.json` and its
+copy) can hold model keys. So these are checked, with `ak` and `sk` checked
+as well as salt's usual settings. Each account's
+`viking/<account>/_system/users.json` holds its users' API keys when the
+server checks keys (`auth_mode` set to `api_key`, which Docker needs), so it
+is checked with `key` as well as salt's usual settings. A file holding one
+is left out, and salt names it. The rules name these folders, so a file
+with the same name elsewhere, such as in a resource given to OpenViking or
+in another preset's folder, is not checked. A server that checks keys
+always has them in `users.json`, so salt names it in every backup, and after
+restoring, its users are registered again with `ov admin`.
+
 With OpenViking's encryption on, the files in `viking` are encrypted with
 the key in `master.key`, or with a wrapped key and the KMS or Vault key that
 opens it. Salt does not back these up, and the backup cannot be read
-without them, so keep a copy somewhere safe.
+without them, so keep a copy somewhere safe. The settings and users files
+are encrypted too, so salt cannot read them to check them. They are left
+out, and salt names them in every backup. After restoring, set each
+account's model settings up again.
+
+OpenViking saves a snapshot by writing its objects into `.ovgit` first and
+then pointing a branch at the newest one. Salt lists the files of a folder
+first and reads them later, so a snapshot saved while salt backs up can
+leave the backup's branch pointing at a snapshot whose objects it does not
+hold. The snapshot history restored from that backup then fails at its
+newest snapshot. The memory in `viking` and the older snapshots are not
+affected, and the next backup holds the whole history again. OpenViking
+advises pausing writes while its workspace is copied, so run `salt backup`
+when OpenViking is not saving snapshots, or with it stopped.
 
 A workspace set somewhere else in `ov.conf` (`storage.workspace`), such as a
 systemd service's `/var/lib/openviking/data` or the `./data` of a

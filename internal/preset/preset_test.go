@@ -122,6 +122,11 @@ func TestParseRefusesBadPresets(t *testing.T) {
 		"rule needs files":                     `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"keys": ["k"]}]}`,
 		`bad pattern "["`:                      `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "skip": ["["]}`,
 		`bad pattern "[k"`:                     `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["[k"]}]}`,
+		`bad pattern "a/[x"`:                   `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["a/[x"]}]}`,
+		`secrets file "/x" must be a name`:     `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["/x"]}]}`,
+		`secrets file "a//x" must be a name`:   `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["a//x"]}]}`,
+		`secrets file "../x" must be a name`:   `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["../x"]}]}`,
+		`secrets file "a/" must be a name`:     `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["a/"]}]}`,
 		// A misspelt field would otherwise be dropped, and with it a rule.
 		`unknown field "secret"`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secret": [{"files": ["x"], "keys": ["k"]}]}`,
 		`unknown field "key"`:    `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "key": ["k"]}]}`,

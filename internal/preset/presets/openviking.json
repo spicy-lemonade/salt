@@ -17,8 +17,15 @@
   "skip": [".path.ovlock", ".exact.ovlock.*"],
   "secrets": [
     {
-      "files": ["ov.conf", "ovcli.conf", "users.json", "setting.json", "setting.backup.json", "cluster.json", "cluster.backup.json"],
-      "keys": ["key", "ak", "sk"]
+      "files": [
+        "ov.conf", "ovcli.conf", "viking/*/_system/setting.json", "viking/*/_system/setting.backup.json",
+        "viking/_system/runtime_config/cluster.json", "viking/_system/runtime_config/cluster.backup.json"
+      ],
+      "keys": ["ak", "sk"]
+    },
+    {
+      "files": ["viking/*/_system/users.json"],
+      "keys": ["key"]
     }
   ]
 }
