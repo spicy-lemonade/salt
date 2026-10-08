@@ -566,11 +566,22 @@ Salt takes the password out of CONN and gives it to `pg_dump` in
 `--no-password` stops `pg_dump` from waiting for someone to type a password.
 Unless the person set `PGCONNECT_TIMEOUT`, salt sets it to 30 seconds, so a
 server that cannot be reached fails the backup instead of stalling it. A
-table another program has locked fails the dump after 30 seconds. A dropped
-connection or any other `pg_dump` error stops salt before sealing, with
-`pg_dump`'s reason. A connection with no database name uses `PGDATABASE`, as
-libpq does. Without that it is refused, rather than letting `pg_dump` guess
-one.
+table another program has locked fails the dump after 30 seconds. Salt adds
+libpq's keepalives to the connection `pg_dump` gets (`keepalives_idle=30`,
+`keepalives_interval=10`, `keepalives_count=3`, and `tcp_user_timeout=60000`
+when `pg_dump --version` is 12 or later, as older libpq refuses it). A
+connection that dies part way through a dump, such as when the server's
+container restarts or the laptop sleeps, then fails it after about a minute
+without a reply, instead of the two hours the system would wait, all the
+while holding the repo's lock. A busy server still answers, so a long dump
+is never stopped. A setting the connection gives itself is kept. A
+connection that turns keepalives off with `keepalives=0` gets none, and so
+does one that names a libpq service, or runs with `PGSERVICE` set, so the
+service file's own are kept. Messages show the connection without them.
+A dropped connection or any other `pg_dump` error stops salt before sealing,
+with `pg_dump`'s reason. A connection with no database name uses
+`PGDATABASE`, as libpq does. Without that it is refused, rather than letting
+`pg_dump` guess one.
 
 A dump has no last-modified date of its own, so none is recorded, and it is
 owner-only (0600). Recent `pg_dump` releases (18, and 17.6, 16.10, 15.14,
