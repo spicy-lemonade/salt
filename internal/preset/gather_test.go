@@ -1036,15 +1036,23 @@ func TestSecretIn(t *testing.T) {
 		strings.Repeat("x", maxSecretsFile+1):     "it is too large to check for secrets",
 		strings.Repeat("a: 1\n", 10) + "\t- bad:": "it could not be read as YAML or JSON to check it for secrets",
 		// A JSON5 comment is not YAML. One that runs into the next setting
-		// stops the file being read, so it cannot be checked. One just
-		// before a closing brace is read as a setting, and one after a value
-		// joins the value, which is then text. Unquoted keys and a trailing
-		// comma can be read.
-		"{\"a\": 1,\n  // a note\n}\n":             "",
-		"{\"token\": 512 // a cap\n}\n":            "its setting token holds a secret",
-		"{\n  // the keys\n  \"token\": \"\"\n}\n": "it could not be read as YAML or JSON to check it for secrets",
-		"/* note */ {\"token\": \"\"}\n":           "it could not be read as YAML or JSON to check it for secrets",
-		"{token: \"abc\",}\n":                      "its setting token holds a secret",
+		// stops the file being read. One that YAML reads as part of a
+		// setting's name, as before a setting or a closing brace, would hide
+		// that setting, so the file is left out too. One after a value
+		// joins the value, which is then text, and one in a list joins the
+		// item. Unquoted keys and a trailing comma can be read.
+		"{\"a\": 1, /* note */ \"token\": \"sk-1\"}\n": "a comment in it stops it being checked for secrets",
+		"{/* note */ api_key: \"sk-1\"}\n":             "a comment in it stops it being checked for secrets",
+		"{\"a\": {/* note */ \"token\": \"sk-1\"}}\n":  "a comment in it stops it being checked for secrets",
+		"[{/* note */ \"token\": \"sk-1\"}]\n":         "a comment in it stops it being checked for secrets",
+		"{\"a\": 1,\n  // a note\n}\n":                 "a comment in it stops it being checked for secrets",
+		"{\"token\" /* note */: \"sk-1\"}\n":           "it could not be read as YAML or JSON to check it for secrets",
+		"{\"a\": 1 /* note */, \"token\": \"sk-1\"}\n": "its setting token holds a secret",
+		"{\"token\": 512 // a cap\n}\n":                "its setting token holds a secret",
+		"{\"a\": [1, /* note */ 2]}\n":                 "",
+		"{\n  // the keys\n  \"token\": \"\"\n}\n":     "it could not be read as YAML or JSON to check it for secrets",
+		"/* note */ {\"token\": \"\"}\n":               "it could not be read as YAML or JSON to check it for secrets",
+		"{token: \"abc\",}\n":                          "its setting token holds a secret",
 		// An object holding exactly the settings a ref lists names where the
 		// secret is kept, compared in lower case. One with more, less, or
 		// more than a value in a setting may hold a secret.

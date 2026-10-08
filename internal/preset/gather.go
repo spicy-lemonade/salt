@@ -521,7 +521,10 @@ func secretIn(p string, sec Secret) (why string, secret bool, number string) {
 		if err != nil {
 			return "it could not be read as YAML or JSON to check it for secrets", false, ""
 		}
-		text, num := secretKeys(&doc, sec)
+		text, num, comment := secretKeys(&doc, sec)
+		if comment {
+			return "a comment in it stops it being checked for secrets", false, ""
+		}
 		if text != "" {
 			return fmt.Sprintf("its setting %s holds a secret", text), true, ""
 		}
@@ -531,36 +534,42 @@ func secretIn(p string, sec Secret) (why string, secret bool, number string) {
 
 // secretKeys returns the first setting in n, at any depth, whose name
 // matches sec's keys in lower case and that holds a value, and the first
-// such setting that holds a number and no value, or "" for either.
-func secretKeys(n *yaml.Node, sec Secret) (text, number string) {
+// such setting that holds a number and no value, or "" for either. comment
+// is true, and the others "", when a setting's name starts with // or /*.
+// Only a JSON5 comment read as YAML gives such a name, joined to the name
+// after it, which then matches no key, so the file cannot be checked.
+func secretKeys(n *yaml.Node, sec Secret) (text, number string, comment bool) {
 	switch n.Kind {
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, c := range n.Content {
-			t, num := secretKeys(c, sec)
-			if t != "" {
-				return t, ""
+			t, num, com := secretKeys(c, sec)
+			if t != "" || com {
+				return t, "", com
 			}
 			number = cmp.Or(number, num)
 		}
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k, v := n.Content[i], n.Content[i+1]
+			if strings.HasPrefix(k.Value, "//") || strings.HasPrefix(k.Value, "/*") {
+				return "", "", true
+			}
 			if matchAny(sec.Keys, strings.ToLower(k.Value)) {
 				if hasValue(v, sec.Refs) {
-					return k.Value, ""
+					return k.Value, "", false
 				}
 				if hasNumber(v) {
 					number = cmp.Or(number, k.Value)
 				}
 			}
-			t, num := secretKeys(v, sec)
-			if t != "" {
-				return t, ""
+			t, num, com := secretKeys(v, sec)
+			if t != "" || com {
+				return t, "", com
 			}
 			number = cmp.Or(number, num)
 		}
 	}
-	return "", number
+	return "", number, false
 }
 
 // hasNumber reports whether n holds a number, an integer or a decimal, at

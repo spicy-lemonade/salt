@@ -118,11 +118,11 @@ func (e Env) Find(x Path) ([]Place, error) {
 		}
 		var next []match
 		for _, pl := range places {
-			found, err := folders(pl.abs, pats[i])
+			matched, err := folders(pl.abs, pats[i])
 			if err != nil {
 				return nil, err
 			}
-			for _, f := range found {
+			for _, f := range matched {
 				next = append(next, match{
 					abs:   filepath.Join(pl.abs, f.name, filepath.FromSlash(tail)),
 					stars: append(slices.Clip(pl.stars), f.star),
