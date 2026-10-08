@@ -398,6 +398,67 @@ func TestBackupHoncho(t *testing.T) {
 	assertEmpty(t, tmp)
 }
 
+// salt backup --preset hindsight dumps the database HINDSIGHT_API_DATABASE_URL
+// names, with a second schema as Hindsight keeps for each tenant and its
+// vectors when pgvector is installed, and backs it up with each agent's
+// Hindsight settings, leaving out settings holding a token and the .env
+// files beside them, and never shows a password. The restored dump loads
+// into a new database that matches the live one. A server that cannot be
+// reached stops the backup with nothing committed or pushed, and the error
+// says where the connection came from. The test always sets
+// HINDSIGHT_API_DATABASE_URL, so it never reaches a real Postgres on this
+// machine. Which files the preset finds is tested in internal/preset.
+func TestBackupHindsight(t *testing.T) {
+	e := newEnv(t)
+	s := startPostgres(t, e)
+	s.psql(t, "postgres", "CREATE DATABASE hindsight")
+	s.psql(t, "hindsight", memorySQL+`CREATE SCHEMA tenant_a; CREATE TABLE tenant_a.banks (id text PRIMARY KEY, config jsonb); INSERT INTO tenant_a.banks VALUES ('agent', '{"mission": "remember"}');`)
+	snapshot := pgSnapshot + " UNION ALL SELECT 0, id || config::text, 0 FROM tenant_a.banks"
+	if _, code := s.e.run(s.data, filepath.Join(s.bin, "psql"), "-X", "-q", "-d", "hindsight", "-c", "CREATE EXTENSION vector"); code == 0 {
+		s.psql(t, "hindsight", "CREATE TABLE tenant_a.embeddings (id int PRIMARY KEY, v vector(3)); INSERT INTO tenant_a.embeddings VALUES (1, '[1,2,3]'), (2, '[0.5,0,-1]');")
+		snapshot += " UNION ALL SELECT id, v::text, 0 FROM tenant_a.embeddings"
+	}
+	live := s.psql(t, "hindsight", snapshot)
+	b := newBackupRepo(t, e)
+	own := filepath.Join(e.home, ".hindsight")
+	write(t, filepath.Join(own, "claude-code.json"), `{"bankId": "agent"}`)
+	write(t, filepath.Join(own, "codex.json"), `{"bankId": "agent", "hindsightApiToken": "hsk-s3cret"}`)
+	write(t, filepath.Join(own, "config.env"), "HINDSIGHT_API_LLM_API_KEY=sk-s3cret\n")
+	port := strconv.Itoa(s.port)
+	salt, tmp := withTemp(t, saltWithPg(e, s).with("HINDSIGHT_API_DATABASE_URL="+s.url("hindsight")))
+	commits := commitCount(e, b.remote)
+
+	out := salt.must(b.base, "salt", "backup", "--preset", "hindsight", b.dir)
+	if want := "salt: left ~/.hindsight/codex.json out of the backup because its setting hindsightApiToken holds a secret. Keep secrets in environment variables so the file can be backed up\n"; out != want {
+		t.Fatalf("backup printed:\n%s", out)
+	}
+	assertEmpty(t, tmp)
+	if got := commitCount(e, b.remote); got == commits {
+		t.Fatal("the backup was not pushed")
+	}
+	dest, files := restoredFiles(t, e, b)
+	if !slices.Equal(files, []string{"hindsight/claude-code.json", "hindsight/hindsight.sql"}) {
+		t.Fatalf("restored %v", files)
+	}
+	s.psql(t, "postgres", "CREATE DATABASE hindsight_restored")
+	s.e.must(dest, filepath.Join(s.bin, "psql"), "-X", "-q", "-v", "ON_ERROR_STOP=1", "--single-transaction", "-d", "hindsight_restored", "-f", filepath.Join(dest, "hindsight", "hindsight.sql"))
+	if got := s.psql(t, "hindsight_restored", snapshot); got != live {
+		t.Fatalf("restored database = %q, want %q", got, live)
+	}
+
+	s.stop()
+	commits, local := commitCount(e, b.remote), commitCount(e, b.dir)
+	out, code := salt.run(b.base, "salt", "backup", "--preset", "hindsight", b.dir)
+	if code != 1 || !strings.Contains(out, "copying the database postgresql://agent@127.0.0.1:"+port+"/hindsight: pg_dump") ||
+		!strings.HasSuffix(strings.TrimSpace(out), "The hindsight preset read this connection from HINDSIGHT_API_DATABASE_URL") || strings.Contains(out, "s3cret") || strings.Contains(out, "pa:ss") {
+		t.Fatalf("server stopped: exit %d:\n%s", code, out)
+	}
+	if commitCount(e, b.dir) != local || commitCount(e, b.remote) != commits {
+		t.Fatal("a backup without the database was committed or pushed")
+	}
+	assertEmpty(t, tmp)
+}
+
 // salt backup stops, and says why, when the preset finds nothing, when
 // sqlite3 makes no copy of a database, and when the push fails, without
 // showing a password in origin's URL.

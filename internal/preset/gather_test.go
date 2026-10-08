@@ -691,6 +691,108 @@ func TestGatherHoncho(t *testing.T) {
 	}
 }
 
+// The hindsight preset backs up Hindsight's database, with the connection
+// to Hindsight's own embedded database when HINDSIGHT_API_DATABASE_URL is
+// not set, the settings each agent's Hindsight integration keeps in
+// ~/.hindsight, and Hermes's in Hermes and in each Hermes profile. A
+// settings file holding an API key or a token is left out. Nothing else in
+// ~/.hindsight is backed up, such as .env files, the CLI's TOML settings,
+// OAuth tokens and logs. A connection in Hindsight's own pg0 form is
+// refused without being shown. HERMES_HOME names another folder. Given with
+// hermes, it adds only its own files.
+func TestGatherHindsight(t *testing.T) {
+	t.Setenv("PGDATABASE", "")
+	presets, err := GetAll([]string{"hermes", "hindsight"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hermes, hindsight := presets[0], presets[1]
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, dir := filepath.Join(home, ".hindsight"), filepath.Join(home, ".hermes")
+	write(t, filepath.Join(own, "claude-code.json"), `{"bankId": "claude", "recallMaxTokens": 1024}`)
+	write(t, filepath.Join(own, "zed.json"), `{"bankId": "zed", "hindsightApiToken": ""}`)
+	write(t, filepath.Join(own, "codex.json"), `{"hindsightApiUrl": "https://hindsight.example", "hindsightApiToken": "hsk-1"}`)
+	write(t, filepath.Join(own, "coding-agent.json"), `{"apiUrl": "https://hindsight.example", "apiToken": "hsk-2"}`)
+	write(t, filepath.Join(own, "config.json"), `{"bank_id": "hermes", "llmApiKey": "sk-1"}`)
+	write(t, filepath.Join(own, "config.env"), "HINDSIGHT_API_LLM_API_KEY=sk-2\n")
+	write(t, filepath.Join(own, "config"), "api_url = \"https://hindsight.example\"\napi_key = \"hsk-3\"\n")
+	write(t, filepath.Join(own, "xai_oauth.json"), `{"access_token": "at-1"}`)
+	write(t, filepath.Join(own, "control.token"), "ct-1")
+	write(t, filepath.Join(own, "profiles", "hermes.env"), "HINDSIGHT_API_LLM_API_KEY=sk-3\n")
+	write(t, filepath.Join(own, "profiles", "hermes.log"), "log")
+	write(t, filepath.Join(own, "profiles", "metadata.json"), `{"profiles": {}}`)
+	write(t, filepath.Join(own, "codex", "state", "turns.json"), `{"turns": 3}`)
+	write(t, filepath.Join(dir, "hindsight", "config.json"), `{"mode": "local_embedded", "bank_id": "hermes"}`)
+	write(t, filepath.Join(dir, "profiles", "coder", "hindsight", "config.json"), `{"mode": "cloud", "api_key": "hsk-4"}`)
+	write(t, filepath.Join(dir, "profiles", "writer", "hindsight", "config.json"), `{"mode": "local_external", "api_url": "http://localhost:8888"}`)
+	write(t, filepath.Join(dir, "SOUL.md"), "soul")
+	gather := func(vars map[string]string, presets ...*Preset) *Found {
+		t.Helper()
+		f, err := envOf(home, vars).Gather(presets, t.TempDir(), plain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+
+	f := gather(nil, hindsight)
+	files, dbs := rels(f)
+	want := []string{"hermes/hindsight/config.json", "hermes/profiles/writer/hindsight/config.json", "hindsight/claude-code.json", "hindsight/zed.json"}
+	if !slices.Equal(files, want) || !slices.Equal(dbs, []string{"hindsight/hindsight.sql"}) {
+		t.Fatalf("files %v, databases %v", files, dbs)
+	}
+	if got := f.Databases[0].String(); got != "postgresql://hindsight@localhost:5432/hindsight" {
+		t.Fatalf("default connection %s", got)
+	}
+	var left []string
+	for _, l := range f.LeftOut {
+		left = append(left, strings.TrimPrefix(l.Path, home+string(filepath.Separator))+": "+l.Why)
+	}
+	slices.Sort(left)
+	if want := []string{
+		filepath.Join(".hermes", "profiles", "coder", "hindsight", "config.json") + ": its setting api_key holds a secret",
+		filepath.Join(".hindsight", "codex.json") + ": its setting hindsightApiToken holds a secret",
+		filepath.Join(".hindsight", "coding-agent.json") + ": its setting apiToken holds a secret",
+		filepath.Join(".hindsight", "config.json") + ": its setting llmApiKey holds a secret",
+	}; !slices.Equal(left, want) || len(f.Numbers) != 0 {
+		t.Fatalf("left out %v, want %v, numbers %v", left, want, f.Numbers)
+	}
+
+	hermesHome := filepath.Join(home, "hermes-home")
+	write(t, filepath.Join(hermesHome, "hindsight", "config.json"), `{"bank_id": "w"}`)
+	f = gather(map[string]string{
+		"HINDSIGHT_API_DATABASE_URL": "postgresql://hs:s3cret@db.internal:6543/memory",
+		"HERMES_HOME":                hermesHome,
+	}, hindsight)
+	files, dbs = rels(f)
+	if !slices.Equal(files, []string{"hermes/hindsight/config.json", "hindsight/claude-code.json", "hindsight/zed.json"}) || !slices.Equal(dbs, []string{"hindsight/hindsight.sql"}) {
+		t.Fatalf("with variables: files %v, databases %v", files, dbs)
+	}
+	if got := f.Databases[0].String(); got != "postgresql://hs@db.internal:6543/memory" {
+		t.Fatalf("with HINDSIGHT_API_DATABASE_URL: %s", got)
+	}
+	for _, x := range f.Files {
+		if x.Rel == "hermes/hindsight/config.json" && filepath.Dir(filepath.Dir(x.Path)) != hermesHome {
+			t.Errorf("%s came from %s, want %s", x.Rel, x.Path, hermesHome)
+		}
+	}
+
+	_, err = envOf(home, map[string]string{"HINDSIGHT_API_DATABASE_URL": "pg0://hindsight-embed-hermes"}).Gather([]*Preset{hindsight}, t.TempDir(), plain)
+	if err == nil || !strings.Contains(err.Error(), "the connection in HINDSIGHT_API_DATABASE_URL, used by the hindsight preset, is not a Postgres connection") || strings.Contains(err.Error(), "pg0:") {
+		t.Fatalf("a pg0 connection: %v", err)
+	}
+
+	f = gather(nil, hermes, hindsight)
+	want = append([]string{"hermes/SOUL.md", "hindsight/hindsight.sql"}, want...)
+	slices.Sort(want)
+	if got := slices.Sorted(slices.Values(f.Paths())); !slices.Equal(got, want) {
+		t.Fatalf("hermes and hindsight backed up %v, want %v", got, want)
+	}
+}
+
 func TestGatherUnreadable(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads every file")
