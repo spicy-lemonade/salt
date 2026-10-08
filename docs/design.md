@@ -677,8 +677,9 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
 3. makes a safe copy of each SQLite database found, as `--sqlite` does, and
    seals the copies and every other file found into REPO, which then holds
    only them. Anything else in REPO is removed, as with `salt seal --prune`.
-   A place the last backup held that is not found this time, and that this
-   backup holds nothing in, is then named in one line each, such as a
+   A place the last backup held that is not found this time, and that
+   holds nothing of its own in this backup (a place inside it that is
+   found does not count), is then named in one line each, such as a
    folder on a drive that is not mounted, one pointed to by a variable set
    in the person's shell but not in cron, or a file deleted before it was
    sealed. A missing place inside another missing one is not named again.

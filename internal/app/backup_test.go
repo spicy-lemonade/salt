@@ -567,8 +567,8 @@ func TestBackupPlaceGoneBeforeSealed(t *testing.T) {
 	}
 }
 
-// warnMissing names a place inside another that is found, and only the
-// outer one when both are missing. A place still found, or with something
+// warnMissing names a place inside another that is found, one around
+// another that is found, and only the outer one when both are missing. A place still found, or with something
 // in this backup, is not named, nor is a path no preset names.
 func TestWarnMissingNestedPlaces(t *testing.T) {
 	p, err := preset.Parse("t", []byte(`{"name": "t", "paths": [
@@ -587,6 +587,7 @@ func TestWarnMissingNestedPlaces(t *testing.T) {
 		missing []string
 	}{
 		{"inner missing", preset.Found{Places: []string{"outer", "one.md", "empty"}, Files: []seal.Extra{{Rel: "outer/a.md"}, {Rel: "one.md"}}}, nil, []string{"outer/inner"}},
+		{"outer missing", preset.Found{Places: []string{"outer/inner", "one.md", "empty"}, Files: []seal.Extra{{Rel: "outer/inner/b.md"}, {Rel: "one.md"}}}, nil, []string{"outer"}},
 		{"both missing", preset.Found{Places: []string{"one.md", "empty"}, Files: []seal.Extra{{Rel: "one.md"}}}, nil, []string{"outer"}},
 		{"inner held by outer", preset.Found{Places: []string{"outer", "one.md", "empty"}, Files: []seal.Extra{{Rel: "outer/inner/b.md"}, {Rel: "one.md"}}}, nil, nil},
 		{"file gone before sealed", preset.Found{Places: []string{"outer", "outer/inner", "one.md", "empty"}, Files: []seal.Extra{{Rel: "outer/a.md"}, {Rel: "one.md"}}}, []string{"one.md"}, []string{"one.md"}},

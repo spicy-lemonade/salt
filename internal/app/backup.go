@@ -156,27 +156,34 @@ func interrupted(ctx context.Context, err error) bool {
 }
 
 // warnMissing names each place the last backup held, at the paths in last,
-// that was not found this time and that this backup holds nothing in, as
-// when a drive is not mounted, a variable set in the person's shell is not
-// set for cron, or a file a preset names was deleted before it was sealed.
-// gone lists the backup paths of what found held but was deleted before it
+// that was not found this time and that holds nothing of its own in this
+// backup, not counting a place inside it that is found. Such a place may
+// be on a drive that is not mounted, be pointed to by a variable set in the
+// person's shell but not for cron, or be a file a preset names that was
+// deleted before it was sealed. gone lists the backup paths of what found held but was deleted before it
 // was sealed. Its files are no longer backed up, so each place is named
 // once, not each file, and one inside another missing place is not named.
 // Paths no preset names, such as those an earlier salt seal sealed, are not
 // named.
 func (a *App) warnMissing(last []string, presets []*preset.Preset, found *preset.Found, gone []string) {
-	in := func(p, dir string) bool { return p == dir || strings.HasPrefix(p, dir+"/") }
-	kept := slices.DeleteFunc(found.Paths(), func(p string) bool { return slices.Contains(gone, p) })
-	// still records, for each place, whether it is backed up this time.
+	// still records, for each place, whether it is backed up this time:
+	// whether this backup holds a path whose own place it is, so a place
+	// inside it that is found does not count, or it was found and was not
+	// a file deleted before it was sealed.
 	still := map[string]bool{}
+	for _, rel := range found.Paths() {
+		if place, ok := preset.PlaceOf(presets, rel); ok && !slices.Contains(gone, rel) {
+			still[place] = true
+		}
+	}
 	for _, rel := range last {
 		place, ok := preset.PlaceOf(presets, rel)
 		if _, seen := still[place]; !ok || seen {
 			continue
 		}
-		still[place] = (slices.Contains(found.Places, place) && !slices.Contains(gone, place)) ||
-			slices.ContainsFunc(kept, func(k string) bool { return in(k, place) })
+		still[place] = slices.Contains(found.Places, place) && !slices.Contains(gone, place)
 	}
+	in := func(p, dir string) bool { return p == dir || strings.HasPrefix(p, dir+"/") }
 	var missing []string
 	for place, ok := range still {
 		if !ok {
