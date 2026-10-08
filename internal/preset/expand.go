@@ -60,9 +60,10 @@ func (e Env) expand(template string) (string, bool) {
 	return out, ok && out != ""
 }
 
-// vars lists the variables template reads, each once, in order of first
-// use: those set to something, those unset with a default wherever they
-// are read, and those unset that are read at least once without one. An
+// vars lists the variables template reads, each once. set holds those set
+// to something and defaulted those unset with a default wherever they are
+// read, each in order of first use. missing holds those unset that are read
+// at least once without a default, in order of their first such read. An
 // empty variable counts as unset, as in expand.
 func (e Env) vars(template string) (set, defaulted, missing []string) {
 	for _, m := range variable.FindAllStringSubmatch(template, -1) {

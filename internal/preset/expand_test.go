@@ -21,10 +21,10 @@ func mkdir(t *testing.T, parts ...string) string {
 	return p
 }
 
-// vars names each variable a template reads once, in order of first use, as
-// set, as unset with a default wherever it is read, or as unset and read at
-// least once without one. An empty variable is unset, as in expand. Without
-// Getenv, none is set.
+// vars names each variable a template reads once, as set, as unset with a
+// default wherever it is read, or as unset and read at least once without
+// one, which orders it by its first read without a default. An empty
+// variable is unset, as in expand. Without Getenv, none is set.
 func TestVars(t *testing.T) {
 	e := envOf("/home/me", map[string]string{"A": "a", "C": ""})
 	for _, c := range []struct {
