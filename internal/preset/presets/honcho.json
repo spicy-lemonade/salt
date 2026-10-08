@@ -1,0 +1,18 @@
+{
+  "name": "honcho",
+  "about": "Self-hosted Honcho's memory database, and its settings on their own or in Hermes and each Hermes profile",
+  "paths": [
+    {"from": "${HONCHO_CONFIG_DIR:-~/.honcho}/config.json", "to": "honcho/config.json"},
+    {"from": "${HERMES_HOME:-~/.hermes}/honcho.json", "to": "hermes/honcho.json"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/honcho.json", "to": "hermes/profiles/*/honcho.json"}
+  ],
+  "databases": [
+    {"kind": "postgres", "from": "${DB_CONNECTION_URI:-postgresql://postgres:postgres@localhost:5432/postgres}", "to": "honcho/honcho.sql"}
+  ],
+  "secrets": [
+    {
+      "files": ["config.json", "honcho.json"],
+      "keys": ["*token"]
+    }
+  ]
+}

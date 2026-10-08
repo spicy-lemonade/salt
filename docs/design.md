@@ -675,7 +675,8 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
    finds nothing, naming where it looked. When another preset found
    something, it says to leave that one out if the person doesn't use it;
 3. makes a safe copy of each SQLite database found, as `--sqlite` does, and
-   seals the copies and every other file found into REPO, which then holds
+   of each database a preset names, such as a Postgres one, as `--postgres`
+   does. It seals the copies and every other file found into REPO, which then holds
    only them. Anything else in REPO is removed, as with `salt seal --prune`.
    A place the last backup held that is not found this time, and that
    holds nothing of its own in this backup (a place inside it that is
@@ -737,6 +738,9 @@ code reads them all, so adding a tool means adding one file:
     {"from": "${TOOL_HOME:-~/.tool}/data", "to": "tool/data"},
     {"from": "${TOOL_HOME:-~/.tool}/profiles/*/data", "to": "tool/profiles/*/data"}
   ],
+  "databases": [
+    {"kind": "postgres", "from": "${TOOL_DB_URL:-postgresql://localhost/tool}", "to": "tool/tool.sql"}
+  ],
   "skip": ["*.log", "cache"],
   "secrets": [{"files": ["config.yaml"], "keys": ["*sync_key"]}]
 }
@@ -751,6 +755,20 @@ code reads them all, so adding a tool means adding one file:
   A `*` held by a variable is part of a name, never matched.
 - `to` is where it goes in the backup. It has a `*` for each `*` in `from`,
   which takes the name that `*` matched. Paths that do not exist are skipped.
+- `databases` lists live databases that are not files, such as one on a
+  Postgres server. `kind` is the `salt seal` option for that kind of
+  database without its dashes, such as `postgres`. Only a kind given by a
+  connection can be named, since `paths` already finds a SQLite file and
+  gives it a safe copy. `from` is the connection, with variables and
+  defaults as in a path's `from` and no `*` part. The database is skipped
+  when a variable without a default is unset or empty. `to` is the path
+  the copy is backed up under. The copy is made as `salt seal` makes it, so
+  its password is never shown and an unchanged database makes no commit.
+  An error reading the connection names the variable it came from, never
+  the connection. A server that cannot be reached stops the backup before
+  anything is committed, so the last backup stays the latest. A connection
+  two presets name, compared without its password, is backed up once under
+  the first preset's path, taking presets in name order.
 - `skip` lists name patterns of files and folders never backed up, such as
   caches, logs and downloaded models. `.DS_Store` and `.git` are always
   skipped, as in `salt seal`.
@@ -922,6 +940,49 @@ with `salt seal --sqlite PATH` into a repo of its own.
 |---|---|
 | `~/.hermes/memory_store.db` (or under `$HERMES_HOME`) | `hermes/memory_store.db` |
 | `~/.hermes/profiles/<name>/memory_store.db` | `hermes/profiles/<name>/memory_store.db` |
+
+The `honcho` preset covers self-hosted
+[Honcho](https://github.com/plastic-labs/honcho). Honcho keeps all its
+memory in one Postgres database, with its workspaces, peers, sessions,
+messages, the conclusions it draws and their pgvector embeddings. The
+preset dumps the database `DB_CONNECTION_URI` names, as Honcho does, or
+Honcho's own default when it is not set,
+`postgresql://postgres:postgres@localhost:5432/postgres`. That default is
+also where Honcho's Docker setup and the Honcho CLI's `local` stack can be
+reached from the machine. Salt drops the `+psycopg` driver in Honcho's
+connection, as for `--postgres`. Honcho usually reads its connection from
+its `.env` file, which cron does not read, so if Honcho uses another
+database, set `DB_CONNECTION_URI` in the cron line too. Honcho keeps its
+vectors in Postgres unless `VECTOR_STORE_TYPE` names another store, such as
+Turbopuffer, LanceDB or Qdrant. Such a store is not backed up.
+
+The preset also backs up the settings that point an agent at its memory in
+Honcho. These are Honcho's own `config.json`, which the Honcho CLI and
+Honcho's plugins share, and Hermes's `honcho.json` in the Hermes folder and
+in each Hermes profile, which names the workspace and peers Hermes uses.
+Either can hold an API key (`apiKey`) or an OAuth token (`refreshToken`),
+so both are checked for them, with `*token` checked as well as salt's usual
+settings. A file holding one is left out, and salt names it. After
+restoring, log in to Honcho again, as on a new machine.
+
+The Honcho server's `.env` and `config.toml` are not backed up. They hold
+its LLM API keys and sit in whatever folder the server was started from.
+Nor are its Redis cache and the stack folders the Honcho CLI keeps in
+`~/.honcho/profiles`, which `honcho stack` makes again. A Honcho CLI stack
+other than `local` listens on a port of its own. Back it up with its
+connection in `DB_CONNECTION_URI`, into a repo of its own. Honcho's cloud
+service keeps memory on Honcho's servers, so the preset cannot back it up.
+
+| On the machine | In the backup |
+|---|---|
+| Honcho's database (`$DB_CONNECTION_URI`, or `postgres` on `localhost:5432`) | `honcho/honcho.sql` |
+| `~/.honcho/config.json` (or `$HONCHO_CONFIG_DIR/config.json`) | `honcho/config.json` |
+| `~/.hermes/honcho.json` (or under `$HERMES_HOME`) | `hermes/honcho.json` |
+| `~/.hermes/profiles/<name>/honcho.json` | `hermes/profiles/<name>/honcho.json` |
+
+To get Honcho's memory back, load `honcho/honcho.sql` into a new database
+as in "Restoring a Postgres database", on a server with pgvector, and point
+`DB_CONNECTION_URI` at it.
 
 Hermes sets `HERMES_HOME` to a profile's folder while it runs that profile.
 A `salt backup` started from inside Hermes, such as from one of its

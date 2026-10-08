@@ -17,6 +17,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/preset"
 	"github.com/spicy-lemonade/salt/internal/prune"
 	"github.com/spicy-lemonade/salt/internal/seal"
+	"github.com/spicy-lemonade/salt/internal/source"
 )
 
 // backupEnv is a set-up backup repo and a home folder holding a tool's files,
@@ -606,6 +607,48 @@ func TestWarnMissingNestedPlaces(t *testing.T) {
 			}
 			if out := e.ui.out.String(); out != want.String() {
 				t.Fatalf("output %q, want %q", out, want.String())
+			}
+		})
+	}
+}
+
+// warnMissing names a database a preset names, which the last backup held
+// and this one does not, as when its connection's variable is not set for
+// cron, and not when it is backed up. One inside a missing place is not
+// named again.
+func TestWarnMissingDatabase(t *testing.T) {
+	p, err := preset.Parse("t", []byte(`{"name": "t", "paths": [{"from": "~/tool", "to": "tool"}],
+		"databases": [{"kind": "postgres", "from": "${T_DB}", "to": "tool/memory.sql"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := source.NewPostgres("postgresql://localhost/memory")
+	if err == nil {
+		db, err = source.Named(db, "tool/memory.sql")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := []string{"tool/a.md", "tool/memory.sql"}
+	for _, tc := range []struct {
+		name    string
+		found   preset.Found
+		missing string
+	}{
+		{"database missing", preset.Found{Places: []string{"tool"}, Files: []seal.Extra{{Rel: "tool/a.md"}}}, "tool/memory.sql"},
+		{"database found", preset.Found{Places: []string{"tool"}, Files: []seal.Extra{{Rel: "tool/a.md"}}, Databases: []source.Database{db}}, ""},
+		{"both missing", preset.Found{}, "tool"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.ui.out.Reset()
+			e.app.warnMissing(last, []*preset.Preset{p}, &tc.found)
+			want := ""
+			if tc.missing != "" {
+				want = "salt: " + tc.missing + " was in the last backup but was not found this time, so it is no longer backed up. Its earlier copies stay in history until prune drops them\n"
+			}
+			if out := e.ui.out.String(); out != want {
+				t.Fatalf("output %q, want %q", out, want)
 			}
 		})
 	}

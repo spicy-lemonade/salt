@@ -439,6 +439,167 @@ func TestGatherHolographic(t *testing.T) {
 	}
 }
 
+// A database a preset names is backed up under its path when its
+// connection's variable is set, or with its default when it is not, and is
+// skipped without either. Its password is never shown. A connection two
+// presets name is backed up once, under the first preset's path, taking
+// presets in name order, and counts for both.
+func TestGatherDatabases(t *testing.T) {
+	t.Setenv("PGDATABASE", "")
+	mk := func(name, from, to string) *Preset {
+		t.Helper()
+		p, err := Parse(name, []byte(`{"name": "`+name+`", "databases": [{"kind": "postgres", "from": "`+from+`", "to": "`+to+`"}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	gather := func(vars map[string]string, presets ...*Preset) (*Found, error) {
+		return envOf(t.TempDir(), vars).Gather(presets, t.TempDir(), plain)
+	}
+	withDefault := mk("d", "${D_URL:-postgresql://u:s3cret@localhost/def}", "d/def.sql")
+	for _, c := range []struct {
+		vars map[string]string
+		want string
+	}{
+		{nil, "postgresql://u@localhost/def"},
+		{map[string]string{"D_URL": ""}, "postgresql://u@localhost/def"},
+		{map[string]string{"D_URL": "postgresql+psycopg://a:s3cret@h:5432/mem"}, "postgresql://a@h:5432/mem"},
+	} {
+		f, err := gather(c.vars, withDefault)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(f.Databases) != 1 || f.Databases[0].Name() != "d/def.sql" || f.Databases[0].String() != c.want || f.Files != nil {
+			t.Fatalf("%v: databases %v", c.vars, f.Databases)
+		}
+		if p := f.Paths(); !slices.Equal(p, []string{"d/def.sql"}) {
+			t.Fatalf("%v: paths %v", c.vars, p)
+		}
+	}
+
+	// Without the variable or a default, nothing is found.
+	if _, err := gather(nil, mk("v", "${V_URL}", "v.sql")); !errors.Is(err, ErrNothing) {
+		t.Fatalf("unset: %v", err)
+	}
+
+	// Errors name the variables the connection came from, or the preset's
+	// default, and never the password.
+	for _, c := range []struct {
+		p    *Preset
+		vars map[string]string
+		want string
+	}{
+		{withDefault, map[string]string{"D_URL": "postgresql://a:s3cret@h"}, "the connection in D_URL, used by the d preset, names no database"},
+		{mk("two", "postgresql://${USER_X}:s3cret@${HOST_X}", "t.sql"), map[string]string{"USER_X": "a", "HOST_X": "h"}, "the connection in USER_X and HOST_X, used by the two preset, names no database"},
+		{mk("bad", "${B_URL:-mysql://u:s3cret@h/db}", "b.sql"), map[string]string{"OTHER": "x"}, "the bad preset's database connection is not a Postgres connection"},
+	} {
+		_, err := gather(c.vars, c.p)
+		if err == nil || !strings.HasPrefix(err.Error(), c.want) || strings.Contains(err.Error(), "s3cret") {
+			t.Errorf("%s: %v, want %q", c.p.Name, err, c.want)
+		}
+	}
+
+	// Taken in name order, b's path wins over c's, whatever order they are
+	// given in, and both presets count as finding it.
+	same := "${SAME:-postgresql://u:pw1@h/mem}"
+	b, c := mk("b", same, "b/mem.sql"), mk("c", "postgresql://u:pw2@h/mem", "c/mem.sql")
+	f, err := gather(nil, c, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Databases) != 1 || f.Databases[0].Name() != "b/mem.sql" {
+		t.Fatalf("databases %v", f.Databases)
+	}
+	if err := f.CheckGone(); err != nil {
+		t.Fatal(err)
+	}
+	f.Drop([]string{"b/mem.sql"})
+	if err := f.CheckGone(); !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "the b preset") {
+		t.Fatalf("CheckGone after Drop = %v", err)
+	}
+}
+
+// The honcho preset backs up Honcho's database, with Honcho's own default
+// connection when DB_CONNECTION_URI is not set, and Honcho's settings on
+// their own, in Hermes and in each Hermes profile. A settings file holding
+// an API key or a token is left out. HONCHO_CONFIG_DIR and HERMES_HOME name
+// other folders. Given with hermes, it adds only its own files.
+func TestGatherHoncho(t *testing.T) {
+	t.Setenv("PGDATABASE", "")
+	presets, err := GetAll([]string{"hermes", "honcho"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hermes, honcho := presets[0], presets[1]
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, ".hermes")
+	write(t, filepath.Join(home, ".honcho", "config.json"), `{"environmentUrl": "http://localhost:8000"}`)
+	write(t, filepath.Join(home, ".honcho", "profiles", "local", "config.toml"), "[llm]\nOPENAI_API_KEY = \"sk-1\"\n")
+	write(t, filepath.Join(dir, "honcho.json"), `{"hosts": {"hermes": {"workspace": "w", "oauth": {"refreshToken": "rt-1"}}}}`)
+	write(t, filepath.Join(dir, "profiles", "coder", "honcho.json"), `{"apiKey": "hch-1", "workspace": "w"}`)
+	write(t, filepath.Join(dir, "profiles", "writer", "honcho.json"), `{"workspace": "w", "contextTokens": 800}`)
+	write(t, filepath.Join(dir, "SOUL.md"), "soul")
+	gather := func(vars map[string]string, presets ...*Preset) *Found {
+		t.Helper()
+		f, err := envOf(home, vars).Gather(presets, t.TempDir(), plain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+
+	f := gather(nil, honcho)
+	files, dbs := rels(f)
+	if want := []string{"hermes/profiles/writer/honcho.json", "honcho/config.json"}; !slices.Equal(files, want) || !slices.Equal(dbs, []string{"honcho/honcho.sql"}) {
+		t.Fatalf("files %v, databases %v", files, dbs)
+	}
+	if got := f.Databases[0].String(); got != "postgresql://postgres@localhost:5432/postgres" {
+		t.Fatalf("default connection %s", got)
+	}
+	var left []string
+	for _, l := range f.LeftOut {
+		left = append(left, strings.TrimPrefix(l.Path, dir+string(filepath.Separator))+": "+l.Why)
+	}
+	slices.Sort(left)
+	if want := []string{
+		"honcho.json: its setting refreshToken holds a secret",
+		filepath.Join("profiles", "coder", "honcho.json") + ": its setting apiKey holds a secret",
+	}; !slices.Equal(left, want) {
+		t.Fatalf("left out %v, want %v", left, want)
+	}
+
+	other, hermesHome := filepath.Join(home, "honcho-config"), filepath.Join(home, "hermes-home")
+	write(t, filepath.Join(other, "config.json"), `{"environmentUrl": "http://localhost:8001"}`)
+	write(t, filepath.Join(hermesHome, "honcho.json"), `{"workspace": "w"}`)
+	f = gather(map[string]string{
+		"DB_CONNECTION_URI": "postgresql+psycopg://honcho:s3cret@db.internal:6543/memory",
+		"HONCHO_CONFIG_DIR": other,
+		"HERMES_HOME":       hermesHome,
+	}, honcho)
+	files, dbs = rels(f)
+	if !slices.Equal(files, []string{"hermes/honcho.json", "honcho/config.json"}) || !slices.Equal(dbs, []string{"honcho/honcho.sql"}) {
+		t.Fatalf("with variables: files %v, databases %v", files, dbs)
+	}
+	if got := f.Databases[0].String(); got != "postgresql://honcho@db.internal:6543/memory" {
+		t.Fatalf("with DB_CONNECTION_URI: %s", got)
+	}
+	for _, x := range f.Files {
+		if want := map[string]string{"hermes/honcho.json": hermesHome, "honcho/config.json": other}[x.Rel]; filepath.Dir(x.Path) != want {
+			t.Errorf("%s came from %s, want %s", x.Rel, x.Path, want)
+		}
+	}
+
+	f = gather(nil, hermes, honcho)
+	want := []string{"hermes/SOUL.md", "hermes/profiles/writer/honcho.json", "honcho/config.json", "honcho/honcho.sql"}
+	if got := slices.Sorted(slices.Values(f.Paths())); !slices.Equal(got, want) {
+		t.Fatalf("hermes and honcho backed up %v, want %v", got, want)
+	}
+}
+
 func TestGatherUnreadable(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads every file")

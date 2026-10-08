@@ -40,7 +40,8 @@ var ErrNothing = errors.New("found nothing to back up")
 type Found struct {
 	// Files are sealed as they are.
 	Files []seal.Extra
-	// Databases are SQLite databases, copied safely before sealing.
+	// Databases are the SQLite databases found and the databases the
+	// presets name, each copied safely before sealing.
 	Databases []source.Database
 	// LeftOut lists files left out because they hold, or may hold, secrets.
 	LeftOut []LeftOut
@@ -128,7 +129,10 @@ type LeftOut struct {
 // or place deleted while it is gathered, as a tool's files can be at any
 // time, is skipped, and every file is marked live, so seal skips one deleted
 // before it is read too. A place skipped this way is left out of Places, and
-// a preset left with nothing is an error.
+// a preset left with nothing is an error. A database a preset names is
+// backed up when its connection's variables are set or have defaults. One
+// named twice, by the same connection without its password, is backed up
+// once, under the first name, taking presets in name order.
 func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*Found, error) {
 	// Places have their symlinks followed, so the repo's are too before
 	// comparing them.
@@ -168,6 +172,39 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 			}
 		}
 		lookedIn[p] = looked
+		for _, d := range p.Databases {
+			conn, ok := e.expand(d.From)
+			if !ok {
+				continue
+			}
+			// Errors name the variables the connection came from, never
+			// the connection, which may hold a password.
+			var set []string
+			for _, m := range variable.FindAllStringSubmatch(d.From, -1) {
+				if e.Getenv != nil && e.Getenv(m[1]) != "" {
+					set = append(set, m[1])
+				}
+			}
+			where := fmt.Sprintf("the %s preset's database connection", p.Name)
+			if len(set) > 0 {
+				where = fmt.Sprintf("the connection in %s, used by the %s preset,", strings.Join(set, " and "), p.Name)
+			}
+			db, err := d.conn()(conn, where)
+			if err == nil {
+				db, err = source.Named(db, d.To)
+			}
+			if err != nil {
+				return nil, err
+			}
+			if i := slices.IndexFunc(w.f.Databases, func(o source.Database) bool { return o.String() == db.String() }); i >= 0 {
+				db = w.f.Databases[i]
+			} else {
+				w.f.Databases = append(w.f.Databases, db)
+			}
+			if !slices.Contains(w.f.by[p], db.Name()) {
+				w.f.by[p] = append(w.f.by[p], db.Name())
+			}
+		}
 	}
 	for _, s := range spots {
 		if err := seal.CheckDisjoint(s.real, repoReal, show); err != nil {

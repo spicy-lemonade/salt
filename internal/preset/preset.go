@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/spicy-lemonade/salt/internal/repo"
+	"github.com/spicy-lemonade/salt/internal/source"
 )
 
 //go:embed presets/*.json
@@ -30,6 +31,9 @@ type Preset struct {
 	About string `json:"about"`
 	// Paths lists each file or folder to back up.
 	Paths []Path `json:"paths"`
+	// Databases lists each live database to back up that is not a file,
+	// such as one on a Postgres server.
+	Databases []Database `json:"databases"`
 	// Skip lists name patterns (path.Match) of files and folders never backed
 	// up, such as caches.
 	Skip []string `json:"skip"`
@@ -48,6 +52,32 @@ type Path struct {
 	// To is the slash path it is backed up under. It has a * for each * in
 	// From, which takes the name that * matched.
 	To string `json:"to"`
+}
+
+// Database is a live database to back up that is not a file.
+type Database struct {
+	// Kind is the kind of database, named as its salt seal option is
+	// without dashes, such as "postgres" (see source.Kinds). It must be a
+	// kind given by a connection, since a database file is found by its
+	// path.
+	Kind string `json:"kind"`
+	// From is the connection, with variables and defaults as in a Path's
+	// From and no part that is only *. The database is skipped when a
+	// variable without a default is unset or empty.
+	From string `json:"from"`
+	// To is the slash path the copy is backed up under.
+	To string `json:"to"`
+}
+
+// conn returns how to make the database from its connection, or nil when
+// d's kind is not one given by a connection.
+func (d Database) conn() func(conn, where string) (source.Database, error) {
+	for _, k := range source.Kinds {
+		if k.Flag == d.Kind {
+			return k.Conn
+		}
+	}
+	return nil
 }
 
 // Secret names files that may hold secrets, such as API keys, and the
@@ -135,8 +165,8 @@ func (p *Preset) check(name string) error {
 	if p.Name != name {
 		return fmt.Errorf("its name is %q, not the file's name", p.Name)
 	}
-	if len(p.Paths) == 0 {
-		return errors.New("it has no paths")
+	if len(p.Paths) == 0 && len(p.Databases) == 0 {
+		return errors.New("it has no paths or databases")
 	}
 	for _, x := range p.Paths {
 		if x.From == "" {
@@ -151,6 +181,24 @@ func (p *Preset) check(name string) error {
 		}
 		if strings.Count(x.From, "*") != stars(x.From) || stars(x.From) != stars(x.To) || strings.Count(x.To, "*") != stars(x.To) {
 			return fmt.Errorf("%s and %s must have the same number of *, each a whole part of the path", x.From, x.To)
+		}
+	}
+	for _, d := range p.Databases {
+		if d.conn() == nil {
+			return fmt.Errorf("%q is not a kind of database a preset can name. A database file is found by its path", d.Kind)
+		}
+		if d.From == "" {
+			return errors.New("a database has no from")
+		}
+		if stars(d.From) > 0 {
+			return fmt.Errorf("the database %s cannot have a * part", d.From)
+		}
+		if err := checkFrom(d.From); err != nil {
+			return err
+		}
+		clean, err := repo.CleanPath(d.To)
+		if err != nil || clean != d.To || stars(d.To) > 0 {
+			return fmt.Errorf("the database path %q cannot be used in the backup", d.To)
 		}
 	}
 	for _, s := range p.Secrets {
@@ -171,23 +219,29 @@ func (p *Preset) check(name string) error {
 	return nil
 }
 
-// PlaceOf returns the place the backup path rel is in, among the paths the
-// presets back up: as many of rel's first parts as a path's To has, each *
-// in To standing for any one part. When such places nest, the innermost is
-// taken, so one missing inside another that is found can be named. ok is
-// false when no preset backs rel up.
+// PlaceOf returns the place the backup path rel is in, among the paths and
+// databases the presets back up: as many of rel's first parts as a path's
+// or database's To has, each * in To standing for any one part. When such
+// places nest, the innermost is taken, so one missing inside another that
+// is found can be named. ok is false when no preset backs rel up.
 func PlaceOf(presets []*Preset, rel string) (place string, ok bool) {
 	parts := strings.Split(rel, "/")
 	n := 0
+	try := func(slashTo string) {
+		to := strings.Split(slashTo, "/")
+		if len(to) > len(parts) || (ok && len(to) <= n) {
+			return
+		}
+		if slices.EqualFunc(to, parts[:len(to)], func(t, part string) bool { return t == "*" || t == part }) {
+			place, ok, n = strings.Join(parts[:len(to)], "/"), true, len(to)
+		}
+	}
 	for _, p := range presets {
 		for _, x := range p.Paths {
-			to := strings.Split(x.To, "/")
-			if len(to) > len(parts) || (ok && len(to) <= n) {
-				continue
-			}
-			if slices.EqualFunc(to, parts[:len(to)], func(t, part string) bool { return t == "*" || t == part }) {
-				place, ok, n = strings.Join(parts[:len(to)], "/"), true, len(to)
-			}
+			try(x.To)
+		}
+		for _, d := range p.Databases {
+			try(d.To)
 		}
 	}
 	return place, ok

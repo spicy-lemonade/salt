@@ -135,6 +135,27 @@ func TestNewPostgresEnv(t *testing.T) {
 	}
 }
 
+// A connection salt was given another way, such as by a preset, is read as
+// one given to --postgres, and its errors start with where.
+func TestNewPostgresConn(t *testing.T) {
+	t.Setenv("PGDATABASE", "")
+	db, err := NewPostgresConn("postgresql+psycopg://agent:s3cret@localhost/memory", "the connection in DB_URL,")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db.Flag() != "--postgres" || db.Name() != "memory.sql" || db.String() != "postgresql://agent@localhost/memory" || db.(*Postgres).password != "s3cret" {
+		t.Fatalf("got %q %q %q", db.Flag(), db.Name(), db.String())
+	}
+	_, err = NewPostgresConn("postgresql://agent:s3cret@localhost", "the connection in DB_URL,")
+	if !errors.Is(err, errNoDatabase) || err.Error() != "the connection in DB_URL, "+errNoDatabase.Error() {
+		t.Fatalf("no database: %v", err)
+	}
+	_, err = NewPostgresConn("mysql://agent:s3cret@localhost/memory", "the preset's connection")
+	if !errors.Is(err, errNotPostgres) || !strings.HasPrefix(err.Error(), "the preset's connection is not a Postgres connection") || strings.Contains(err.Error(), "s3cret") {
+		t.Fatalf("not Postgres: %v", err)
+	}
+}
+
 func TestPgDumpCommand(t *testing.T) {
 	t.Setenv("PGPASSWORD", "old")
 	t.Setenv("PGCONNECT_TIMEOUT", "")
@@ -201,6 +222,16 @@ func TestKinds(t *testing.T) {
 		}
 		if db.Flag() != "--"+k.Flag || k.Usage == "" {
 			t.Errorf("%s: flag %q, usage %q", k.Flag, db.Flag(), k.Usage)
+		}
+		// Only a kind given by a connection can be made from one; a file
+		// is found by its path.
+		if (k.Conn != nil) != (k.Flag == "postgres") {
+			t.Errorf("%s: Conn set is %v", k.Flag, k.Conn != nil)
+		}
+		if k.Conn != nil {
+			if db, err := k.Conn(args[k.Flag], "the connection"); err != nil || db.Name() != "memory.sql" {
+				t.Errorf("%s: Conn = %v, %v", k.Flag, db, err)
+			}
 		}
 	}
 }
