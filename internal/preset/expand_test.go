@@ -175,14 +175,19 @@ func TestFindStarInPart(t *testing.T) {
 		t.Fatalf("Find = %v, want %v", got, want)
 	}
 
-	// Text after the *, the * kept inside a part of the backup path, and a
-	// hidden folder left out by a part that does not start with a dot.
+	// Text after the *, and the * kept inside a part of the backup path.
 	ws := mkdir(t, home, "state", "ws-a.d")
-	mkdir(t, home, "state", ".ws-b.d")
 	mkdir(t, home, "state", "ws-.d.x")
 	got = places(t, envOf(home, nil), Path{From: "~/state/ws-*.d", To: "s/workspace-*"})
 	if !slices.Equal(got, []Place{{Abs: ws, Rel: "s/workspace-a"}}) {
 		t.Fatalf("text after the *: %v", got)
+	}
+	// A part that does not start with a dot leaves out hidden folders,
+	// though the * could match the dot.
+	mkdir(t, home, "state", ".x.d")
+	got = places(t, envOf(home, nil), Path{From: "~/state/*.d", To: "s/*"})
+	if !slices.Equal(got, []Place{{Abs: ws, Rel: "s/ws-a"}}) {
+		t.Fatalf("hidden folder: %v", got)
 	}
 	// Such parts and whole * parts together.
 	inner := mkdir(t, home, ".tool-work", "agents", "main", "skills")

@@ -86,28 +86,28 @@ func TestNamesAreSorted(t *testing.T) {
 
 func TestParseRefusesBadPresets(t *testing.T) {
 	for want, body := range map[string]string{
-		"unexpected EOF":           `{`,
-		"more after the preset":    `{"name": "t", "paths": [{"from": "/a", "to": "a"}]} {}`,
-		"not the file's name":      `{"name": "other", "paths": [{"from": "/a", "to": "a"}]}`,
-		"no paths":                 `{"name": "t"}`,
-		"has no from":              `{"name": "t", "paths": [{"to": "a"}]}`,
-		`"../a" cannot be used`:    `{"name": "t", "paths": [{"from": "/a", "to": "../a"}]}`,
-		`"/a" cannot be used`:      `{"name": "t", "paths": [{"from": "/a", "to": "/a"}]}`,
-		`"a//b" cannot be used`:    `{"name": "t", "paths": [{"from": "/a", "to": "a//b"}]}`,
-		"same number of *":         `{"name": "t", "paths": [{"from": "/a/*", "to": "a"}]}`,
-		"/a/x* and a must have":    `{"name": "t", "paths": [{"from": "/a/x*", "to": "a"}]}`,
-		"at most one in a part":    `{"name": "t", "paths": [{"from": "/a/p*q*", "to": "a/*/*"}]}`,
-		"/a/*/b and a/x*y* must":   `{"name": "t", "paths": [{"from": "/a/*/b", "to": "a/x*y*"}]}`,
-		"cannot start with *":      `{"name": "t", "paths": [{"from": "*/a", "to": "*/a"}]}`,
-		"p*/a cannot start with *": `{"name": "t", "paths": [{"from": "p*/a", "to": "*/a"}]}`,
-		"cannot hold a variable":   `{"name": "t", "paths": [{"from": "/a/${B}-*", "to": "a/*"}]}`,
-		"${A:-${B}}: a variable":   `{"name": "t", "paths": [{"from": "${A:-${B}}", "to": "a"}]}`,
-		"${A:-$B}/a: a variable":   `{"name": "t", "paths": [{"from": "${A:-$B}/a", "to": "a"}]}`,
-		"${A:-/x/*/y}: a variable": `{"name": "t", "paths": [{"from": "${A:-/x/*/y}", "to": "a/*"}]}`,
-		"/a/${B: a variable":       `{"name": "t", "paths": [{"from": "/a/${B", "to": "a"}]}`,
-		"rule needs files":         `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"keys": ["k"]}]}`,
-		`bad pattern "["`:          `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "skip": ["["]}`,
-		`bad pattern "[k"`:         `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["[k"]}]}`,
+		"unexpected EOF":                       `{`,
+		"more after the preset":                `{"name": "t", "paths": [{"from": "/a", "to": "a"}]} {}`,
+		"not the file's name":                  `{"name": "other", "paths": [{"from": "/a", "to": "a"}]}`,
+		"no paths":                             `{"name": "t"}`,
+		"has no from":                          `{"name": "t", "paths": [{"to": "a"}]}`,
+		`"../a" cannot be used`:                `{"name": "t", "paths": [{"from": "/a", "to": "../a"}]}`,
+		`"/a" cannot be used`:                  `{"name": "t", "paths": [{"from": "/a", "to": "/a"}]}`,
+		`"a//b" cannot be used`:                `{"name": "t", "paths": [{"from": "/a", "to": "a//b"}]}`,
+		"same number of *":                     `{"name": "t", "paths": [{"from": "/a/*", "to": "a"}]}`,
+		"/a/x* and a must have":                `{"name": "t", "paths": [{"from": "/a/x*", "to": "a"}]}`,
+		"at most one in a part":                `{"name": "t", "paths": [{"from": "/a/p*q*", "to": "a/*/*"}]}`,
+		"/a/*/b and a/x*y* must":               `{"name": "t", "paths": [{"from": "/a/*/b", "to": "a/x*y*"}]}`,
+		"*/a: its first part cannot hold a *":  `{"name": "t", "paths": [{"from": "*/a", "to": "*/a"}]}`,
+		"p*/a: its first part cannot hold a *": `{"name": "t", "paths": [{"from": "p*/a", "to": "*/a"}]}`,
+		"cannot hold a variable":               `{"name": "t", "paths": [{"from": "/a/${B}-*", "to": "a/*"}]}`,
+		"${A:-${B}}: a variable":               `{"name": "t", "paths": [{"from": "${A:-${B}}", "to": "a"}]}`,
+		"${A:-$B}/a: a variable":               `{"name": "t", "paths": [{"from": "${A:-$B}/a", "to": "a"}]}`,
+		"${A:-/x/*/y}: a variable":             `{"name": "t", "paths": [{"from": "${A:-/x/*/y}", "to": "a/*"}]}`,
+		"/a/${B: a variable":                   `{"name": "t", "paths": [{"from": "/a/${B", "to": "a"}]}`,
+		"rule needs files":                     `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"keys": ["k"]}]}`,
+		`bad pattern "["`:                      `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "skip": ["["]}`,
+		`bad pattern "[k"`:                     `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["[k"]}]}`,
 		// A misspelt field would otherwise be dropped, and with it a rule.
 		`unknown field "secret"`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secret": [{"files": ["x"], "keys": ["k"]}]}`,
 		`unknown field "key"`:    `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "key": ["k"]}]}`,
@@ -128,7 +128,10 @@ func TestParseRefusesBadPresets(t *testing.T) {
 		`database path "" cannot be used`:                            `{"name": "t", "databases": [{"kind": "postgres", "from": "${A}"}]}`,
 		`unknown field "form"`:                                       `{"name": "t", "databases": [{"kind": "postgres", "form": "${A}", "to": "a.sql"}]}`,
 		// Settings are matched in lower case, so API_KEY would never match.
-		`"*API_KEY" must be in lower case`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["*API_KEY"]}]}`,
+		`"*API_KEY" must be in lower case`:              `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["*API_KEY"]}]}`,
+		`"ID" must be in lower case`:                    `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["source", "ID"]]}]}`,
+		`ref [] must name settings`:                     `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [[]]}]}`,
+		`ref ["id" "id"] must name settings, each once`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["id", "id"]]}]}`,
 	} {
 		_, err := Parse("t", []byte(body))
 		if err == nil || !strings.Contains(err.Error(), want) || !strings.HasPrefix(err.Error(), "preset t: ") {
@@ -139,11 +142,11 @@ func TestParseRefusesBadPresets(t *testing.T) {
 
 func TestParseGoodPreset(t *testing.T) {
 	p, err := Parse("t", []byte(`{"name": "t", "about": "test", "paths": [{"from": "${HOME_X:-~/x}/*/data", "to": "x/*/data"}],
-		"skip": ["*.log"], "secrets": [{"files": ["*.yaml"], "keys": ["*api_key"]}]}`))
+		"skip": ["*.log"], "secrets": [{"files": ["*.yaml"], "keys": ["*api_key"], "refs": [["source", "id"]]}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Paths[0].To != "x/*/data" || p.Skip[0] != "*.log" || p.Secrets[0].Keys[0] != "*api_key" {
+	if p.Paths[0].To != "x/*/data" || p.Skip[0] != "*.log" || p.Secrets[0].Keys[0] != "*api_key" || !slices.Equal(p.Secrets[0].Refs[0], []string{"source", "id"}) {
 		t.Fatalf("Parse = %+v", p)
 	}
 	// A * may have text around it in a part, in From and in To, and be in a

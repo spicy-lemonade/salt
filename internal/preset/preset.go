@@ -92,6 +92,12 @@ type Secret struct {
 	// compared in lower case at any depth in the file, beyond those in
 	// defaultSecretKeys, which are always checked.
 	Keys []string `json:"keys"`
+	// Refs lists, for each way the tool names where a secret is kept in an
+	// object, such as {"source": "env", "id": "NAME"}, the names of that
+	// object's settings in lower case. An object holding exactly one such
+	// set of settings, each with one value, is not a secret, as ${NAME} is
+	// not.
+	Refs [][]string `json:"refs"`
 }
 
 // defaultSecretKeys lists name patterns (path.Match) of settings that hold
@@ -206,9 +212,14 @@ func (p *Preset) check(name string) error {
 		if len(s.Files) == 0 {
 			return errors.New("a secrets rule needs files")
 		}
-		for _, k := range s.Keys {
+		for _, k := range slices.Concat(s.Keys, slices.Concat(s.Refs...)) {
 			if k != strings.ToLower(k) {
 				return fmt.Errorf("the secrets key %q must be in lower case, as settings are matched in lower case", k)
+			}
+		}
+		for _, ref := range s.Refs {
+			if len(ref) == 0 || len(slices.Compact(slices.Sorted(slices.Values(ref)))) != len(ref) {
+				return fmt.Errorf("the secrets ref %q must name settings, each once", ref)
 			}
 		}
 	}

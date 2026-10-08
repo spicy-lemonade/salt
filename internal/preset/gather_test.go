@@ -820,10 +820,12 @@ func TestGatherHindsight(t *testing.T) {
 // wiki, LanceDB memory, shared and learned skills, and openclaw.json when it
 // holds no secret, in OpenClaw's folder and in each OpenClaw profile's. It
 // leaves out OpenClaw's databases, which hold its logins, credential files,
-// sessions and logs, and inside the folders it backs up, .env and key files,
-// caches and an agent database kept there. A secret kept by reference, as
-// an object naming where it is, counts as one. OPENCLAW_STATE_DIR names
-// another folder, and OPENCLAW_WORKSPACE_DIR a workspace elsewhere.
+// sessions and logs, and inside the folders it backs up, .env, key and
+// other credential files, caches and an agent database kept there. A key
+// kept as a SecretRef, an object naming where the key is, is not a secret,
+// and nor are settings such as mainKey that only end in key.
+// OPENCLAW_STATE_DIR names another folder, and OPENCLAW_WORKSPACE_DIR a
+// workspace elsewhere.
 func TestGatherOpenClaw(t *testing.T) {
 	openclaw, err := Get("openclaw")
 	if err != nil {
@@ -854,16 +856,22 @@ func TestGatherOpenClaw(t *testing.T) {
 		"logs/commands.log", "agents/main/sessions/s1.jsonl", "agents/main/agent/codex-home/auth.json", "agents/main/qmd/index.bin",
 		"npm/node_modules/x/index.js", "extensions/x/index.js", "sandboxes/s/MEMORY.md", "openclaw.json.bak",
 		"workspace/.env", "workspace/prod.env", "workspace/deploy.pem", "workspace/id.key", "workspace/.git/HEAD",
+		"workspace/.ssh/id_ed25519", "workspace/keys/id_rsa", "workspace/cert.p12", "workspace/cert.pfx",
+		"workspace/repo/.aws/credentials", "workspace/repo/.netrc", "workspace/repo/.npmrc", "workspace/repo/.pypirc",
+		"workspace/repo/.git-credentials",
 		"workspace/node_modules/x/index.js", "workspace/skills/notes/.venv/lib/x.py", "workspace/skills/notes/__pycache__/x.pyc",
 	} {
 		write(t, filepath.Join(state, rel), "left out")
 	}
 	write(t, filepath.Join(state, "openclaw.json"), `{"gateway": {"auth": {"mode": "token", "token": "tok-1"}}}`)
-	write(t, filepath.Join(work, "openclaw.json"), `{"agents": {"defaults": {"model": "m"}}, "env": {"vars": {}}, "channels": {"telegram": {"botToken": "${TG_TOKEN}"}}}`)
+	write(t, filepath.Join(work, "openclaw.json"), `{"agents": {"defaults": {"model": "m"}}, "env": {"vars": {}},
+		"session": {"mainKey": "main"}, "hooks": {"defaultSessionKey": "hook:main"}, "cacheKey": "c", "publicKey": "pk",
+		"gateway": {"auth": {"token": "${GATEWAY_TOKEN}"}},
+		"channels": {"telegram": {"botToken": {"source": "env", "provider": "default", "id": "TG"}}, "slack": {"appToken": {"source": "file", "id": "/slack/app"}}}}`)
 	write(t, filepath.Join(work, "workspace", "MEMORY.md"), "work memory")
 	write(t, filepath.Join(work, "workspace-ops", "SOUL.md"), "ops soul")
 	write(t, filepath.Join(work, "credentials", "whatsapp", "creds.json"), `{"noiseKey": "nk-1"}`)
-	write(t, filepath.Join(rescue, "openclaw.json"), `{"channels": {"telegram": {"botToken": {"source": "env", "provider": "default", "id": "TG"}}}}`)
+	write(t, filepath.Join(rescue, "openclaw.json"), `{"channels": {"telegram": {"botToken": {"source": "env", "id": "TG"}}, "feishu": {"encryptKey": "ek-1"}}}`)
 	write(t, filepath.Join(home, ".openclaw-", "workspace", "MEMORY.md"), "a folder whose * matches nothing")
 	gather := func(vars map[string]string) *Found {
 		t.Helper()
@@ -899,7 +907,7 @@ func TestGatherOpenClaw(t *testing.T) {
 		t.Fatalf("files %v, databases %v", files, dbs)
 	}
 	if left, want := leftOut(f, home), []string{
-		filepath.Join(".openclaw-rescue", "openclaw.json") + ": its setting botToken holds a secret",
+		filepath.Join(".openclaw-rescue", "openclaw.json") + ": its setting encryptKey holds a secret",
 		filepath.Join(".openclaw", "openclaw.json") + ": its setting token holds a secret",
 	}; !slices.Equal(left, want) || len(f.Numbers) != 0 || len(f.Skipped) != 0 {
 		t.Fatalf("left out %v, want %v, numbers %v, skipped %v", left, want, f.Numbers, f.Skipped)
@@ -979,7 +987,7 @@ func TestGatherUnreadable(t *testing.T) {
 }
 
 func TestSecretIn(t *testing.T) {
-	keys := []string{"*api_key", "token"}
+	sec := Secret{Keys: []string{"*api_key", "token"}, Refs: [][]string{{"source", "id"}, {"source", "provider", "id"}}}
 	dir := t.TempDir()
 	for content, want := range map[string]string{
 		"level: 3\n":                              "",
@@ -1007,9 +1015,25 @@ func TestSecretIn(t *testing.T) {
 		"base: &b sk-1\napi_key: *b\n":            "its setting api_key holds a secret",
 		"a: 1\n---\ntoken: abc\n":                 "its setting token holds a secret",
 		`{"token": "abc"}`:                        "its setting token holds a secret",
-		"api_key: [unclosed\n":                    "it could not be read as YAML to check it for secrets",
+		"api_key: [unclosed\n":                    "it could not be read as YAML or JSON to check it for secrets",
 		strings.Repeat("x", maxSecretsFile+1):     "it is too large to check for secrets",
-		strings.Repeat("a: 1\n", 10) + "\t- bad:": "it could not be read as YAML to check it for secrets",
+		strings.Repeat("a: 1\n", 10) + "\t- bad:": "it could not be read as YAML or JSON to check it for secrets",
+		// A comment on a line of its own in JSON5 is not YAML, so the file
+		// cannot be checked. Unquoted keys and a trailing comma can be.
+		"{\n  // the keys\n  \"token\": \"\"\n}\n": "it could not be read as YAML or JSON to check it for secrets",
+		"/* note */ {\"token\": \"\"}\n":           "it could not be read as YAML or JSON to check it for secrets",
+		"{token: \"abc\",}\n":                      "its setting token holds a secret",
+		// An object holding exactly the settings a ref lists names where the
+		// secret is kept, compared in lower case. One with more, less, or
+		// more than a value in a setting may hold a secret.
+		`{"token": {"source": "env", "id": "K"}}`:                        "",
+		`{"token": {"Source": "env", "provider": "default", "ID": "K"}}`: "",
+		"token:\n  source: exec\n  id: vault/k\n":                        "",
+		`{"token": {"source": "env", "id": "K", "extra": "sk-1"}}`:       "its setting token holds a secret",
+		`{"token": {"source": "env"}}`:                                   "its setting token holds a secret",
+		`{"token": {"source": "env", "id": {"v": "sk-1"}}}`:              "its setting token holds a secret",
+		`{"token": {"provider": "default", "id": "K"}}`:                  "its setting token holds a secret",
+		"r: &r {source: env, id: K}\ntoken: {source: env, id: *r}\n":     "its setting token holds a secret",
 		// Only ${NAME} names where the secret is kept. Anything more may
 		// hold one, as a default after :- can.
 		"api_key: ${MODEL_API_KEY}\n":  "",
@@ -1038,9 +1062,15 @@ func TestSecretIn(t *testing.T) {
 	} {
 		p := filepath.Join(dir, "f.yaml")
 		write(t, p, content)
-		if got, secret, _ := secretIn(p, keys); got != want || secret != strings.HasSuffix(want, "holds a secret") {
+		if got, secret, _ := secretIn(p, sec); got != want || secret != strings.HasSuffix(want, "holds a secret") {
 			t.Errorf("secretIn(%.40q) = %q, want %q", content, got, want)
 		}
+	}
+	// Without refs, such an object is taken for a secret.
+	p := filepath.Join(dir, "f.yaml")
+	write(t, p, `{"token": {"source": "env", "id": "K"}}`)
+	if got, _, _ := secretIn(p, Secret{Keys: sec.Keys}); got != "its setting token holds a secret" {
+		t.Errorf("without refs: %q", got)
 	}
 	// A setting named like a secret that holds a number and no text is not
 	// taken for a secret, since secrets almost always mix letters and
@@ -1061,15 +1091,15 @@ func TestSecretIn(t *testing.T) {
 	} {
 		p := filepath.Join(dir, "f.yaml")
 		write(t, p, content)
-		if _, _, got := secretIn(p, keys); got != want {
+		if _, _, got := secretIn(p, sec); got != want {
 			t.Errorf("secretIn(%q) names the number in %q, want %q", content, got, want)
 		}
 	}
 	// A file deleted since it was listed is for the caller to skip.
-	if got, secret, _ := secretIn(filepath.Join(dir, "missing"), keys); got != "" || secret {
+	if got, secret, _ := secretIn(filepath.Join(dir, "missing"), sec); got != "" || secret {
 		t.Errorf("missing file: %q", got)
 	}
-	if got, _, _ := secretIn(dir, keys); !strings.Contains(got, "could not be read") {
+	if got, _, _ := secretIn(dir, sec); !strings.Contains(got, "could not be read") {
 		t.Errorf("folder: %q", got)
 	}
 }

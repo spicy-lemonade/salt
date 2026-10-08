@@ -118,14 +118,14 @@ func (e Env) Find(x Path) ([]Place, error) {
 		}
 		var next []match
 		for _, pl := range places {
-			names, stars, err := folders(pl.abs, pats[i])
+			found, err := folders(pl.abs, pats[i])
 			if err != nil {
 				return nil, err
 			}
-			for j, n := range names {
+			for _, f := range found {
 				next = append(next, match{
-					abs:   filepath.Join(pl.abs, n, filepath.FromSlash(tail)),
-					stars: append(slices.Clip(pl.stars), stars[j]),
+					abs:   filepath.Join(pl.abs, f.name, filepath.FromSlash(tail)),
+					stars: append(slices.Clip(pl.stars), f.star),
 				})
 			}
 		}
@@ -167,7 +167,7 @@ func splitStars(from string) (runs, pats []string) {
 func checkFrom(from string) error {
 	runs, pats := splitStars(from)
 	if runs[0] == "" {
-		return fmt.Errorf("%s cannot start with *", from)
+		return fmt.Errorf("%s: its first part cannot hold a *", from)
 	}
 	for _, pat := range pats {
 		if strings.ContainsAny(pat, "${}") {
@@ -212,27 +212,30 @@ func matchPart(pat, name string) (star string, ok bool) {
 	return star, true
 }
 
+// folder is a folder a part holding a * matched, and the text the * matched.
+type folder struct{ name, star string }
+
 // folders lists the folders in dir that the part pat, which holds a *,
-// matches, and the text the * matched in each. Hidden folders are left out,
-// as a shell's * leaves them out, unless pat starts with a dot. A missing
-// dir has none.
-func folders(dir, pat string) (names, stars []string, err error) {
+// matches. Hidden folders are left out, as a shell's * leaves them out,
+// unless pat starts with a dot. A missing dir has none.
+func folders(dir, pat string) ([]folder, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil, nil
+		return nil, nil
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	hidden := strings.HasPrefix(pat, ".")
+	var found []folder
 	for _, d := range entries {
 		star, ok := matchPart(pat, d.Name())
 		if !ok || (strings.HasPrefix(d.Name(), ".") && !hidden) {
 			continue
 		}
 		if fi, err := os.Stat(filepath.Join(dir, d.Name())); err == nil && fi.IsDir() {
-			names, stars = append(names, d.Name()), append(stars, star)
+			found = append(found, folder{name: d.Name(), star: star})
 		}
 	}
-	return names, stars, nil
+	return found, nil
 }

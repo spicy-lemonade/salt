@@ -148,7 +148,7 @@ func TestBackupLeavesOutUncheckedFile(t *testing.T) {
 	if err := e.backup(presets); err != nil {
 		t.Fatal(err)
 	}
-	want := "salt: left ~/tool/settings.yaml out of the backup because it could not be read as YAML to check it for secrets\n"
+	want := "salt: left ~/tool/settings.yaml out of the backup because it could not be read as YAML or JSON to check it for secrets\n"
 	if out := e.ui.out.String(); out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
