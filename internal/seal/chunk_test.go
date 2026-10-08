@@ -292,6 +292,7 @@ func TestChunkedLostChunkIsEncryptedAgain(t *testing.T) {
 func TestChunksSharedBetweenFiles(t *testing.T) {
 	smallChunks(t)
 	f := newFixture(t, true)
+	f.fixedKey()
 	data := noise(512 << 10)
 	f.write("a.db", string(data))
 	f.seal(false)
