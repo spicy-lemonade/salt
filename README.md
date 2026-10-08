@@ -114,7 +114,7 @@ Run `crontab -e` and add this line to run it every day at 6am. Use the path that
 0 6 * * * /opt/homebrew/bin/salt backup --preset NAME "$HOME/my-backup-repo" >> "$HOME/backup.log" 2>&1
 ```
 
-- Your repo then holds only what the presets find, so give `salt backup` a repo of its own. Repeat `--preset` for each tool you use. A preset for a memory tool that works with any agent, such as `mnemosyne` or `honcho`, finds its data on its own or inside an agent's folder, so give it alone or beside your agent's preset.
+- Your repo then holds only what the presets find, so give `salt backup` a repo of its own. Repeat `--preset` for each tool you use. A preset for a memory tool that works with any agent, such as `mnemosyne`, `honcho` or `hindsight`, finds its data on its own or inside an agent's folder, so give it alone or beside your agent's preset.
 - A settings file holding an API key or other secret is left out, and Salt names it. Keep secrets in environment variables instead.
 - `--keep-days N` keeps the last N days with a change. The default is 5. Every backup from the latest of those days is kept, and only the last backup of each earlier day.
 - `git push` to `origin` must work without a password prompt. Running `gh auth setup-git` once does this.
@@ -124,6 +124,7 @@ Run `crontab -e` and add this line to run it every day at 6am. Use the path that
 | Preset | What it backs up |
 |---|---|
 | `hermes` | [Hermes](https://github.com/NousResearch/hermes-agent) memory (`MEMORY.md` and `USER.md`), persona, settings, skills and databases, in Hermes and each of its profiles. Its `.env` and login files are left out |
+| `hindsight` | Self-hosted [Hindsight](https://github.com/vectorize-io/hindsight) memory, dumped from its Postgres database (the one `HINDSIGHT_API_DATABASE_URL` names, or Hindsight's own embedded one on port 5432), and the Hindsight settings of each agent that uses it, on their own or inside Hermes and its profiles. Needs `pg_dump`, version 18 or newer for the embedded database. Settings holding an API key or token are left out |
 | `holographic` | The database of Hermes's [Holographic memory provider](https://github.com/NousResearch/hermes-agent/tree/main/plugins/memory/holographic) (`memory_store.db`), in Hermes and each of its profiles. Add it to `hermes` to back up the rest of Hermes too. It covers the default path only |
 | `honcho` | Self-hosted [Honcho](https://github.com/plastic-labs/honcho) memory, dumped from its Postgres database (the one `DB_CONNECTION_URI` names, or Honcho's default), and its settings on their own or inside Hermes and its profiles. Needs `pg_dump`. Settings holding an API key or token are left out |
 | `mnemosyne` | [Mnemosyne](https://github.com/mnemosyne-oss/mnemosyne) memory, on its own or inside Hermes and its profiles |

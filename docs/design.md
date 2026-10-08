@@ -1,7 +1,7 @@
 # Salt design
 
-Salt encrypts AI-agent memory (Hermes and Mnemosyne today; Honcho, Hindsight
-and OpenViking later) before it is backed up to Git.
+Salt encrypts AI-agent memory, such as Hermes, Mnemosyne, Honcho and
+Hindsight today and OpenViking later, before it is backed up to Git.
 
 ## Principles
 
@@ -999,6 +999,78 @@ To get Honcho's memory back, load `honcho/honcho.sql` into a new database
 as in "Restoring a Postgres database", on a server with pgvector, and point
 `DB_CONNECTION_URI` at it.
 
+The `hindsight` preset covers self-hosted
+[Hindsight](https://github.com/vectorize-io/hindsight). Hindsight keeps all
+its memory in one Postgres database, with its memory banks, the facts,
+entities and observations it draws, their pgvector embeddings, and the
+files given to it. Each tenant's memory is in a schema of its own in the
+same database. The preset dumps the database `HINDSIGHT_API_DATABASE_URL`
+names, as Hindsight does, or Hindsight's own embedded database when it is
+not set, `postgresql://hindsight:hindsight@localhost:5432/hindsight`.
+Hindsight usually reads its connection from its `.env` file, which cron
+does not read, so if Hindsight uses a Postgres server of its own, set
+`HINDSIGHT_API_DATABASE_URL` in the cron line too. Hindsight's own `pg0`
+form of the variable names its embedded database and is not a Postgres
+connection, so salt refuses it. Set a `postgresql://` connection instead.
+
+Hindsight's embedded database is a PostgreSQL 18 server that Hindsight
+starts itself, with the user, password and database all `hindsight`, so
+`pg_dump` must be version 18 or newer. It runs while Hindsight does, so
+back it up while Hindsight is running. It takes port 5432 when that is free,
+or else the next free port. Each hindsight-embed profile has a database of
+its own, and each agent that runs Hindsight on the machine has a profile of
+its own, such as `hermes` or `claude-code`. With more than one, whichever
+starts first takes port 5432, so the default could back up a different one
+from day to day. Give each a fixed port instead, with
+`HINDSIGHT_EMBED_API_DATABASE_URL=pg0://hindsight-embed-NAME:PORT` in the
+profile's `~/.hindsight/profiles/NAME.env`, and back each up with its
+connection in `HINDSIGHT_API_DATABASE_URL`, into a repo of its own.
+Hindsight's Docker image keeps its embedded database inside the container,
+where salt cannot reach it, so run it with `HINDSIGHT_API_DATABASE_URL`
+naming a Postgres server that salt can reach. Files kept in another store
+(`HINDSIGHT_API_FILE_STORAGE_TYPE`, such as S3), a database on Hindsight's
+Oracle backend and Hindsight Cloud's memory are not backed up.
+
+The preset also backs up the settings that point each agent at its memory
+in Hindsight, such as the bank it uses. Hindsight's integrations keep these
+in `~/.hindsight`, one JSON file each, named `aider.json`,
+`claude-code.json`, `cline.json`, `codex.json`, `coding-agent.json`,
+`copilot.json`, `copilot-cli.json`, `cursor.json`, `cursor-cli.json`,
+`devin-desktop.json`, `omo.json`, `opencode.json`, `openhands.json`,
+`zcode.json` and `zed.json`. Hermes keeps its own in `hindsight/config.json`
+in the Hermes folder and in each Hermes profile, and older Hermes setups
+share `~/.hindsight/config.json`. Any of these can hold an API key or a token
+(`hindsightApiToken`, `apiToken`, `api_key` or `llmApiKey`), so each is
+checked for them, with `*token` checked as well as salt's usual settings. A
+file holding one is left out, and salt names it. After restoring, set the
+key or token up again, as on a new machine. An agent that keeps its
+Hindsight settings in its own settings file, such as OpenClaw's
+`openclaw.json`, is not covered by this preset. Nor is a settings file that
+`HINDSIGHT_CONFIG` names somewhere else, or a repository's
+`.hindsight/config.toml`.
+
+Nothing else in `~/.hindsight` is backed up. Its `.env` files hold
+Hindsight's LLM API keys, `config` and `cli-profiles` hold the Hindsight
+CLI's API keys in TOML, which salt cannot check, and `xai_oauth.json` and
+`control.token` hold logins. Nor are its logs, or the integrations' state
+folders, installed code and downloaded models, which are made again when
+needed. A
+hindsight-embed profile's settings are in its `.env` file, so after
+restoring, set Hindsight up again with the same embedding model as before,
+since the stored vectors were made with it.
+
+| On the machine | In the backup |
+|---|---|
+| Hindsight's database (`$HINDSIGHT_API_DATABASE_URL`, or `hindsight` on `localhost:5432`) | `hindsight/hindsight.sql` |
+| `~/.hindsight/<integration>.json`, such as `claude-code.json`, and `~/.hindsight/config.json` | `hindsight/<integration>.json` and `hindsight/config.json` |
+| `~/.hermes/hindsight/config.json` (or under `$HERMES_HOME`) | `hermes/hindsight/config.json` |
+| `~/.hermes/profiles/<name>/hindsight/config.json` | `hermes/profiles/<name>/hindsight/config.json` |
+
+To get Hindsight's memory back, load `hindsight/hindsight.sql` into a new
+database as in "Restoring a Postgres database", on a server with pgvector
+and any other extension Hindsight was set up with, and point
+`HINDSIGHT_API_DATABASE_URL` at it.
+
 Hermes sets `HERMES_HOME` to a profile's folder while it runs that profile.
 A `salt backup` started from inside Hermes, such as from one of its
 scheduled jobs, then sees only that profile. It backs that profile up as the
@@ -1019,4 +1091,4 @@ Touch ID, and switching recovery method.
 ## Still to build
 
 - OpenViking support. Its data format has not been checked yet.
-- Presets for more tools, such as OpenClaw, Honcho and Hindsight.
+- Presets for more tools, such as OpenClaw.
