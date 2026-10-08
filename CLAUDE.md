@@ -19,6 +19,7 @@
 - Read existing files before writing any output.
 - Do not re-read files unless they have been changed.
 - Use gitmoji when commiting, by running `gitmoji -c` and selecting an appropriate emoji.
+- PR descriptions should short, written in plain English, in short sentences, and free from jargon.
 
 ## Project Overview
 
