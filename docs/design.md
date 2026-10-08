@@ -815,8 +815,17 @@ code reads them all, so adding a tool means adding one file:
   number and no text, the file is backed up, and salt prints a warning naming
   the file and the setting, never its value. It says to keep it in an
   environment variable if it is a secret. A file that
-  cannot be read, cannot be read as YAML, or is over 1 MiB is left out too.
-  Salt never changes the file to remove the secret.
+  cannot be read, cannot be read as YAML or JSON, or is over 1 MiB is left
+  out too. A comment on a line of its own, as JSON5 allows, is not YAML, so
+  a JSON5 file holding one is left out. Salt never changes the file to
+  remove the secret.
+- `refs` in a secrets rule lists the ways the tool names where a secret is
+  kept in an object, each as the names of that object's settings in lower
+  case, such as `[["source", "id"], ["source", "provider", "id"]]`. An
+  object holding exactly one of these sets of settings, with one value in
+  each, names where the secret is, as `${NAME}` does, so it never counts as
+  a secret. An object with any other setting, or with more than one value in
+  a setting, still counts.
 
 A preset is for one tool. A memory tool that works with any agent, such as
 Mnemosyne, Honcho, Hindsight or OpenViking, gets a preset that looks where
@@ -1100,8 +1109,10 @@ too. A workspace set somewhere else in `openclaw.json`, in
 `agents.defaults.workspace` or an agent's own `workspace`, is not found, so
 set `OPENCLAW_WORKSPACE_DIR` to it in the cron line, or back it up with
 `salt seal` into a repo of its own. Nor is a LanceDB store that the plugin's
-`dbPath` puts somewhere else. With `OPENCLAW_HOME` set, set
-`OPENCLAW_STATE_DIR` in the cron line too. A workspace holding large files,
+`dbPath` puts somewhere else, or a settings file `OPENCLAW_CONFIG_PATH`
+moves somewhere else, since its secrets are checked only in a file named
+`openclaw.json`. With `OPENCLAW_HOME` set, set `OPENCLAW_STATE_DIR` in the
+cron line too. A workspace holding large files,
 such as a repository the agent works on, adds them to the backup, apart from
 its `.git` folder.
 
@@ -1120,22 +1131,30 @@ credential files (`.env`, `credentials`, `secrets.json`, `gateway.token`,
 `gateway.password`, `identity` and `devices`), each agent's `codex-home`,
 the old `sessions` folders, logs, sandboxes, installed plugins and tools,
 downloaded models and caches. Inside the folders it backs up, it leaves out
-`.env` files, key files (`*.key` and `*.pem`), an OpenClaw database kept
-there, and the Python and Node caches and packages a skill or project can
-hold, which are installed again when needed. Any other SQLite database in a
-workspace gets a safe copy.
+`.env` files, key files (`*.key`, `*.pem`, `*.p12`, `*.pfx`, and SSH keys
+named `id_rsa`, `id_dsa`, `id_ecdsa` or `id_ed25519`), the credentials a
+repository the agent works on can hold (`.ssh`, `.aws`, `.netrc`, `.npmrc`,
+`.pypirc` and `.git-credentials`), an OpenClaw database kept there, and the
+Python and Node caches and packages a skill or project can hold, which are
+installed again when needed. Any other SQLite database in a workspace gets a
+safe copy.
 
 `openclaw.json` can hold API keys and tokens, such as the gateway's
 `gateway.auth.token`, which OpenClaw's setup writes there by default, a
 channel's `botToken`, or a key in `env.vars`. So it is checked for them, with
-`*key`, `*token`, `authtag`, `serviceaccount`, `value`, `vars` and `creds`
-checked as well as salt's usual settings. A file holding one is left out, and
-salt names it. A key written as `${NAME}` names a variable, not a key, so a
-file holding only such keys is backed up. A key kept as an OpenClaw
-SecretRef, such as `{"source": "env", "id": "NAME"}`, names where the key is
-in an object, which salt counts as a secret, so that file is left out too.
-After restoring, set up OpenClaw's logins and keys again, as on a new
-machine.
+`key`, `privatekey`, `encryptkey`, `*token`, `authtag`, `serviceaccount`,
+`value` and `vars` checked as well as salt's usual settings. These are the
+settings OpenClaw lists as able to hold a key, so a setting that only ends
+in `key`, such as `session.mainKey`, is not taken for one. A file holding
+one is left out, and salt names it. A key written as `${NAME}` names a
+variable, not a key, and a key kept as an OpenClaw SecretRef, such as
+`{"source": "env", "provider": "default", "id": "NAME"}`, names where the
+key is. Neither counts as a secret, so a file holding only such keys is
+backed up. OpenClaw reads its settings as JSON5, but writes them as plain
+JSON. A comment on a line of its own, which OpenClaw drops whenever it
+writes the file, keeps the file out of the backup, since salt cannot read
+it to check it. After restoring, set up OpenClaw's logins and keys again, as
+on a new machine.
 
 | On the machine | In the backup |
 |---|---|
@@ -1144,9 +1163,18 @@ machine.
 | `$OPENCLAW_WORKSPACE_DIR` | `openclaw-workspace/` |
 
 `OPENCLAW_STATE_DIR` naming a profile's folder backs that profile up under
-`openclaw/`. To get OpenClaw's memory back, restore into a new folder, stop
-OpenClaw, and copy `openclaw/` to `~/.openclaw/` and each
-`openclaw-profiles/<profile>/` to `~/.openclaw-<profile>/`.
+`openclaw/`, and the main OpenClaw folder is then not backed up. OpenClaw
+sets `OPENCLAW_STATE_DIR` to a profile's folder while it runs that profile,
+and the commands it runs, such as its scheduled jobs, see it too. A
+`salt backup` started from inside such a profile then backs it up under
+`openclaw/`, drops the main folder and the profile's earlier copy from the
+backup, and names each place that went missing. Run `salt backup` from cron
+or another scheduler outside OpenClaw, with `OPENCLAW_STATE_DIR` unset or
+set to the main OpenClaw folder.
+
+To get OpenClaw's memory back, restore into a new folder, stop OpenClaw, and
+copy `openclaw/` to `~/.openclaw/` and each `openclaw-profiles/<profile>/` to
+`~/.openclaw-<profile>/`.
 
 Hermes sets `HERMES_HOME` to a profile's folder while it runs that profile.
 A `salt backup` started from inside Hermes, such as from one of its
