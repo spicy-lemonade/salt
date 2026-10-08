@@ -173,15 +173,16 @@ func (p *Preset) check(name string) error {
 
 // PlaceOf returns the place the backup path rel is in, among the paths the
 // presets back up: as many of rel's first parts as a path's To has, each *
-// in To standing for any one part. When such places nest, the outermost is
-// taken. ok is false when no preset backs rel up.
+// in To standing for any one part. When such places nest, the innermost is
+// taken, so one missing inside another that is found can be named. ok is
+// false when no preset backs rel up.
 func PlaceOf(presets []*Preset, rel string) (place string, ok bool) {
 	parts := strings.Split(rel, "/")
 	n := 0
 	for _, p := range presets {
 		for _, x := range p.Paths {
 			to := strings.Split(x.To, "/")
-			if len(to) > len(parts) || (ok && len(to) >= n) {
+			if len(to) > len(parts) || (ok && len(to) <= n) {
 				continue
 			}
 			if slices.EqualFunc(to, parts[:len(to)], func(t, part string) bool { return t == "*" || t == part }) {

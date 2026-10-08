@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -78,7 +77,8 @@ func (a *App) Backup(o BackupOptions) error {
 	for _, n := range found.Numbers {
 		a.UI.Printf("salt: warning: the setting %s in %s holds a number, which salt does not take for a secret, so the file is backed up. If it is a secret, keep it in an environment variable\n", n.Key, a.short(n.Path))
 	}
-	a.warnMissing(r.Root, o.Presets, found.Places)
+	// Read before sealing, which replaces them with this backup's.
+	last := seal.CachedPaths(a.CacheDir, r.Root)
 	// A signal stops the backup before the next step that changes the repo,
 	// saying how far it got. Prune most of all must not start after one.
 	stopped := func(done string) error {
@@ -94,6 +94,10 @@ func (a *App) Backup(o BackupOptions) error {
 	sealed, err := a.seal(r, signer, so)
 	if err != nil {
 		return err
+	}
+	a.warnMissing(last, o.Presets, found, sealed.Gone)
+	if err := found.CheckGone(sealed.Gone); err != nil {
+		return fmt.Errorf("the backup was sealed but not committed: %w", err)
 	}
 	if err := a.Git.Stage(r.Root); err != nil {
 		return fmt.Errorf("staging the backup: %w", err)
@@ -151,24 +155,39 @@ func interrupted(ctx context.Context, err error) bool {
 	return ctx.Err() != nil || errors.Is(err, context.Canceled)
 }
 
-// warnMissing names each place the last backup held that was not found this
-// time, as when a drive is not mounted, or a variable set in the person's
-// shell is not set for cron. Its files are no longer backed up, so each
-// place is named once, not each file. The last backup's paths come from the
-// change cache; paths no preset names, such as those an earlier salt seal
-// sealed, are not named.
-func (a *App) warnMissing(root string, presets []*preset.Preset, places []string) {
-	missing := map[string]bool{}
-	for _, rel := range seal.CachedPaths(a.CacheDir, root) {
-		if slices.ContainsFunc(places, func(pl string) bool { return rel == pl || strings.HasPrefix(rel, pl+"/") }) {
+// warnMissing names each place the last backup held, at the paths in last,
+// that was not found this time and that this backup holds nothing in, as
+// when a drive is not mounted, a variable set in the person's shell is not
+// set for cron, or a file a preset names was deleted before it was sealed.
+// gone lists the backup paths of what found held but was deleted before it
+// was sealed. Its files are no longer backed up, so each place is named
+// once, not each file, and one inside another missing place is not named.
+// Paths no preset names, such as those an earlier salt seal sealed, are not
+// named.
+func (a *App) warnMissing(last []string, presets []*preset.Preset, found *preset.Found, gone []string) {
+	in := func(p, dir string) bool { return p == dir || strings.HasPrefix(p, dir+"/") }
+	kept := slices.DeleteFunc(found.Paths(), func(p string) bool { return slices.Contains(gone, p) })
+	// still records, for each place, whether it is backed up this time.
+	still := map[string]bool{}
+	for _, rel := range last {
+		place, ok := preset.PlaceOf(presets, rel)
+		if _, seen := still[place]; !ok || seen {
 			continue
 		}
-		if place, ok := preset.PlaceOf(presets, rel); ok {
-			missing[place] = true
+		still[place] = (slices.Contains(found.Places, place) && !slices.Contains(gone, place)) ||
+			slices.ContainsFunc(kept, func(k string) bool { return in(k, place) })
+	}
+	var missing []string
+	for place, ok := range still {
+		if !ok {
+			missing = append(missing, place)
 		}
 	}
-	for _, place := range slices.Sorted(maps.Keys(missing)) {
-		a.UI.Printf("salt: %s was in the last backup but was not found this time, so it is no longer backed up. Its earlier copies stay in history until prune drops them\n", place)
+	slices.Sort(missing)
+	for _, place := range missing {
+		if !slices.ContainsFunc(missing, func(o string) bool { return o != place && in(place, o) }) {
+			a.UI.Printf("salt: %s was in the last backup but was not found this time, so it is no longer backed up. Its earlier copies stay in history until prune drops them\n", place)
+		}
 	}
 }
 

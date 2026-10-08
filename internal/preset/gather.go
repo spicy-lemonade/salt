@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -52,6 +53,23 @@ type Found struct {
 	// Places lists the slash path of every place found and still there when
 	// it was walked, so one backed up last time and missing now can be named.
 	Places []string
+	// by lists, for each preset, the slash path of every file and database
+	// it backs up.
+	by map[*Preset][]string
+}
+
+// CheckGone returns ErrNothing for the first preset, in name order, whose
+// every file and database is in gone, the backup paths of those deleted
+// before they were sealed. A preset left with nothing then fails as one that
+// found nothing does.
+func (f *Found) CheckGone(gone []string) error {
+	presets := slices.SortedFunc(maps.Keys(f.by), func(a, b *Preset) int { return strings.Compare(a.Name, b.Name) })
+	for _, p := range presets {
+		if !slices.ContainsFunc(f.by[p], func(rel string) bool { return !slices.Contains(gone, rel) }) {
+			return fmt.Errorf("%w for the %s preset. What it found was deleted before it could be backed up", ErrNothing, p.Name)
+		}
+	}
+	return nil
 }
 
 // Paths lists the slash path every file and database is backed up under.
@@ -98,7 +116,7 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 		return nil, err
 	}
 	presets = slices.SortedFunc(slices.Values(presets), func(a, b *Preset) int { return strings.Compare(a.Name, b.Name) })
-	w := &walker{f: &Found{}, spots: map[string]*spot{}, found: map[*Preset]bool{}, show: show}
+	w := &walker{f: &Found{by: map[*Preset][]string{}}, spots: map[string]*spot{}, show: show}
 	var spots []*spot
 	lookedIn := map[*Preset][]string{}
 	for _, p := range presets {
@@ -136,17 +154,18 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 		}
 	}
 	for _, s := range spots {
-		if err := w.walk(s, reaching(s, spots)); err != nil {
+		gone, err := w.walk(s, reaching(s, spots))
+		if err != nil {
 			return nil, err
 		}
-		if !s.gone {
+		if !gone {
 			w.f.Places = append(w.f.Places, s.rels...)
 		}
 	}
 	for _, p := range presets {
-		if !w.found[p] {
+		if len(w.f.by[p]) == 0 {
 			hint := ""
-			if len(w.found) > 0 { // another preset found something
+			if len(w.f.by) > 0 { // another preset found something
 				hint = ". If you don't use it, leave out --preset " + p.Name
 			}
 			return nil, fmt.Errorf("%w for the %s preset. It looks in %s%s", ErrNothing, p.Name, strings.Join(lookedIn[p], ", "), hint)
@@ -156,15 +175,13 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 }
 
 // spot is a place a preset found, once symlinks are followed. rels lists
-// the slash path of every place found there, and users every preset that
-// found it. It is walked once, under place's path. gone records that it was
-// deleted before the walk could read it.
+// the slash path of every place found there, the first being place.Rel, and
+// users every preset that found it. It is walked once, under place's path.
 type spot struct {
 	place Place
 	real  string
 	rels  []string
 	users []*Preset
-	gone  bool
 }
 
 // reaching returns the presets that back up what is in the spot s: those
@@ -204,9 +221,7 @@ type walker struct {
 	// secrets holds every preset's secrets rules, each with
 	// defaultSecretKeys added to its keys.
 	secrets []Secret
-	// found records each preset that backs up something found.
-	found map[*Preset]bool
-	show  func(string) string
+	show    func(string) string
 }
 
 // walk adds the file or folder in the spot s, which the presets by back up.
@@ -214,15 +229,25 @@ type walker struct {
 // skip it. Files are read from their real paths, under the one checked
 // against the repo, and messages give paths as s's place names them. A
 // place in spots inside it is left to its own walk, so it is backed up
-// once, under its own path. A spot deleted since it was found is skipped
-// and marked gone.
-func (w *walker) walk(s *spot, by []*Preset) error {
+// once, under its own path. A file or folder deleted since it was found,
+// as a tool's files can be at any time, is skipped, and gone is true when
+// that is s itself.
+func (w *walker) walk(s *spot, by []*Preset) (gone bool, err error) {
 	pl, real := s.place, s.real
 	// reach holds, for each folder walked, the presets that reach it.
 	reach := map[string][]*Preset{}
-	return filepath.WalkDir(real, func(walked string, d fs.DirEntry, err error) error {
+	// skipGone returns nil for an error saying walked no longer exists, and
+	// any other error.
+	skipGone := func(walked string, err error) error {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		gone = gone || walked == real
+		return nil
+	}
+	err = filepath.WalkDir(real, func(walked string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return s.skipGone(walked, err)
+			return skipGone(walked, err)
 		}
 		if listedHook != nil {
 			listedHook(walked)
@@ -256,8 +281,12 @@ func (w *walker) walk(s *spot, by []*Preset) error {
 			w.f.Skipped = append(w.f.Skipped, w.show(at))
 			return nil
 		}
-		if sidecar, err := isSidecar(walked); sidecar || err != nil {
-			return s.skipGone(walked, err)
+		sidecar, err := isSidecar(walked)
+		if err != nil {
+			return skipGone(walked, err)
+		}
+		if sidecar {
+			return nil
 		}
 		// The place itself may be a symlink, and then has two names; the
 		// secrets rules match either. Inside it, symlinks are not followed.
@@ -280,14 +309,16 @@ func (w *walker) walk(s *spot, by []*Preset) error {
 		// added records what one more file found tells: which presets back
 		// something up, and a number in it named like a secret.
 		added := func() {
-			w.mark(here)
+			for _, p := range here {
+				w.f.by[p] = append(w.f.by[p], to)
+			}
 			if number != "" {
 				w.f.Numbers = append(w.f.Numbers, Setting{Path: at, Key: number})
 			}
 		}
 		isDB, err := source.IsSQLite(walked)
 		if err != nil {
-			return s.skipGone(walked, err)
+			return skipGone(walked, err)
 		}
 		if isDB {
 			db, err := source.NewSQLite(walked)
@@ -306,27 +337,7 @@ func (w *walker) walk(s *spot, by []*Preset) error {
 		added()
 		return nil
 	})
-}
-
-// mark records that each of by backs up something found.
-func (w *walker) mark(by []*Preset) {
-	for _, p := range by {
-		w.found[p] = true
-	}
-}
-
-// skipGone returns nil for an error saying the file or folder at walked,
-// in the spot s, no longer exists, so one deleted since it was found is
-// skipped, as a tool's files can be at any time. When walked is s itself, s
-// is marked gone. Any other error is returned.
-func (s *spot) skipGone(walked string, err error) error {
-	if !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	if walked == s.real {
-		s.gone = true
-	}
-	return nil
+	return gone, err
 }
 
 // isSidecar reports whether the file at p is a -wal, -shm or -journal file

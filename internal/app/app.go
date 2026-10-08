@@ -251,7 +251,9 @@ func (a *App) openToSeal(path string) (*repo.Repo, ed25519.PrivateKey, error) {
 }
 
 // seal copies o.Databases safely, then seals them, o.Src and o.Files into r.
-// The caller has already opened the repo as r, so o.Repo is ignored.
+// The caller has already opened the repo as r, so o.Repo is ignored. A live
+// database deleted before it was copied is listed in the result's Gone, as
+// a live file deleted before it was read is.
 func (a *App) seal(r *repo.Repo, signer ed25519.PrivateKey, o SealOptions) (*seal.Result, error) {
 	extra, cleanup, err := a.copyDatabases(o.Context, r, o.Databases, o.Live)
 	if err != nil {
@@ -269,6 +271,13 @@ func (a *App) seal(r *repo.Repo, signer ed25519.PrivateKey, o SealOptions) (*sea
 	// still stops the backup script before it commits.
 	if o.Context != nil && o.Context.Err() != nil {
 		return nil, fmt.Errorf("seal %w: the backup was sealed and the database copies were removed, but do not commit it without checking", ErrInterrupted)
+	}
+	// Each copy is sealed under its database's name, and the names are
+	// unique, so one with no copy was left out.
+	for _, db := range o.Databases {
+		if !slices.ContainsFunc(extra, func(x seal.Extra) bool { return x.Rel == db.Name() }) {
+			res.Gone = append(res.Gone, db.Name())
+		}
 	}
 	return res, nil
 }

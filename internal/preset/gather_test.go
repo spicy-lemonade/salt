@@ -205,6 +205,9 @@ func TestGatherTakesEachPlaceOnce(t *testing.T) {
 	if files, _ := rels(f); !slices.Equal(files, []string{"first/b.md", "third.md"}) {
 		t.Fatalf("files = %v", files)
 	}
+	if want := []string{"first", "second", "third.md"}; !slices.Equal(f.Places, want) {
+		t.Fatalf("places = %v, want %v", f.Places, want)
+	}
 }
 
 // Two presets whose places overlap back each file up once, whatever order
@@ -671,6 +674,9 @@ func TestGatherSkipsWhatVanishes(t *testing.T) {
 	if !f.Files[0].Live {
 		t.Fatal("a gathered file is not marked live")
 	}
+	if !slices.Equal(f.Places, []string{"tool"}) {
+		t.Fatalf("places = %v", f.Places)
+	}
 
 	vanish = []string{"."}
 	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain); !errors.Is(err, ErrNothing) {
@@ -679,57 +685,115 @@ func TestGatherSkipsWhatVanishes(t *testing.T) {
 }
 
 // A place deleted after it was found, a folder or a single file, is skipped
-// and left out of Places, so the backup goes on and names it as missing.
+// and left out of Places, so the backup goes on and names it as missing. A
+// place found under two paths leaves both out.
 func TestGatherSkipsVanishedPlaces(t *testing.T) {
-	for _, gone := range []string{"tool", "single.txt"} {
+	for _, gone := range []string{"data", "single.txt"} {
 		t.Run(gone, func(t *testing.T) {
 			home, err := filepath.EvalSymlinks(t.TempDir()) // the walk sees real paths
 			if err != nil {
 				t.Fatal(err)
 			}
-			write(t, filepath.Join(home, "tool", "a.md"), "a")
+			write(t, filepath.Join(home, "data", "a.md"), "a")
 			write(t, filepath.Join(home, "single.txt"), "one file")
+			p, err := Parse("t", []byte(`{"name": "t", "paths": [
+				{"from": "~/data", "to": "first"},
+				{"from": "${DATA}", "to": "second"},
+				{"from": "~/single.txt", "to": "single.txt"}]}`))
+			if err != nil {
+				t.Fatal(err)
+			}
 			listedHook = func(p string) {
 				if p == filepath.Join(home, gone) {
 					os.RemoveAll(p)
 				}
 			}
 			t.Cleanup(func() { listedHook = nil })
-			f, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain)
+			f, err := envOf(home, map[string]string{"DATA": filepath.Join(home, "data")}).Gather([]*Preset{p}, t.TempDir(), plain)
 			if err != nil {
 				t.Fatal(err)
 			}
-			kept := map[string]string{"tool": "single.txt", "single.txt": "tool"}[gone]
-			if !slices.Equal(f.Places, []string{kept}) {
-				t.Errorf("places = %v, want [%s]", f.Places, kept)
+			wantPlaces, wantFiles := []string{"single.txt"}, []string{"single.txt"}
+			if gone == "single.txt" {
+				wantPlaces, wantFiles = []string{"first", "second"}, []string{"first/a.md"}
 			}
-			if files, _ := rels(f); len(files) != 1 || !strings.HasPrefix(files[0], kept) {
-				t.Errorf("files = %v", files)
+			if !slices.Equal(f.Places, wantPlaces) {
+				t.Errorf("places = %v, want %v", f.Places, wantPlaces)
+			}
+			if files, _ := rels(f); !slices.Equal(files, wantFiles) {
+				t.Errorf("files = %v, want %v", files, wantFiles)
 			}
 		})
 	}
 }
 
-// A spot deleted between Find and its walk is skipped and marked gone. Any
-// other error, or one for a file inside it, never marks it gone.
+// Two presets that share only a place deleted before it is read have both
+// found nothing, and the first in name order is named.
+func TestGatherSharedPlaceVanishes(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir()) // the walk sees real paths
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(home, "data", "a.md"), "a")
+	var presets []*Preset
+	for _, name := range []string{"b", "a"} {
+		p, err := Parse(name, []byte(`{"name": "`+name+`", "paths": [{"from": "~/data", "to": "data"}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		presets = append(presets, p)
+	}
+	listedHook = func(p string) {
+		if p == filepath.Join(home, "data") {
+			os.RemoveAll(p)
+		}
+	}
+	t.Cleanup(func() { listedHook = nil })
+	_, err = envOf(home, nil).Gather(presets, t.TempDir(), plain)
+	if !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "for the a preset") {
+		t.Fatalf("Gather = %v", err)
+	}
+}
+
+// A spot deleted between Find and its walk is skipped and reported gone. Any
+// other error on it still stops the walk.
 func TestWalkSkipsGoneSpot(t *testing.T) {
 	home := t.TempDir()
 	missing := filepath.Join(home, "missing")
-	s := &spot{place: Place{Abs: missing, Rel: "a", Real: missing}, real: missing, rels: []string{"a", "b"}}
-	w := &walker{f: &Found{}, spots: map[string]*spot{missing: s}, found: map[*Preset]bool{}, show: plain}
-	if err := w.walk(s, []*Preset{testPreset(t)}); err != nil {
-		t.Fatalf("walk = %v", err)
-	}
-	if !s.gone || len(w.f.Files) != 0 || len(w.found) != 0 {
-		t.Fatalf("gone %v, files %v, found %v", s.gone, w.f.Files, w.found)
+	s := &spot{place: Place{Abs: missing, Rel: "a", Real: missing}, real: missing}
+	w := &walker{f: &Found{by: map[*Preset][]string{}}, spots: map[string]*spot{missing: s}, show: plain}
+	gone, err := w.walk(s, []*Preset{testPreset(t)})
+	if err != nil || !gone || len(w.f.Files) != 0 || len(w.f.by) != 0 {
+		t.Fatalf("walk = %v, %v, files %v, by %v", gone, err, w.f.Files, w.f.by)
 	}
 
-	other := &spot{real: home}
-	bad := errors.New("bad")
-	if err := other.skipGone(home, bad); err != bad || other.gone {
-		t.Fatalf("skipGone = %v, gone %v", err, other.gone)
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every file")
 	}
-	if err := other.skipGone(filepath.Join(home, "inside"), fs.ErrNotExist); err != nil || other.gone {
-		t.Fatalf("skipGone inside = %v, gone %v", err, other.gone)
+	locked := mkdir(t, home, "locked")
+	os.Chmod(locked, 0)
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	s = &spot{place: Place{Abs: locked, Rel: "b", Real: locked}, real: locked}
+	if gone, err := w.walk(s, []*Preset{testPreset(t)}); gone || !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("walk = %v, %v", gone, err)
+	}
+}
+
+// CheckGone fails for a preset whose every file was deleted before it was
+// sealed, naming the first in name order, and passes while any is left.
+func TestCheckGone(t *testing.T) {
+	a, b := &Preset{Name: "a"}, &Preset{Name: "b"}
+	f := &Found{by: map[*Preset][]string{a: {"x", "y"}, b: {"y"}}}
+	if err := f.CheckGone(nil); err != nil {
+		t.Fatalf("nothing gone: %v", err)
+	}
+	if err := f.CheckGone([]string{"x"}); err != nil {
+		t.Fatalf("x gone: %v", err)
+	}
+	if err := f.CheckGone([]string{"y"}); !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "for the b preset") {
+		t.Fatalf("y gone: %v", err)
+	}
+	if err := f.CheckGone([]string{"y", "x"}); !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "for the a preset") {
+		t.Fatalf("both gone: %v", err)
 	}
 }

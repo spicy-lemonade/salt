@@ -515,6 +515,97 @@ func TestBackupWarnsOfMissingPlaces(t *testing.T) {
 	}
 }
 
+// A single-file place deleted after it was found but before it was sealed
+// is named as missing when the last backup held it, and the backup goes on.
+// When that leaves a preset with nothing, the backup stops before it is
+// staged or committed.
+func TestBackupPlaceGoneBeforeSealed(t *testing.T) {
+	for name, only := range map[string]bool{"named": false, "preset left with nothing": true} {
+		t.Run(name, func(t *testing.T) {
+			e, home, presets := backupEnv(t)
+			if only {
+				p, err := preset.Parse("only", []byte(`{"name": "only", "paths": [{"from": "${TOOL_HOME}/notes.md", "to": "tool/notes.md"}]}`))
+				if err != nil {
+					t.Fatal(err)
+				}
+				presets = append(presets, p)
+			}
+			if err := e.backup(presets); err != nil {
+				t.Fatal(err)
+			}
+			// A symlink is named after the presets gather and before seal
+			// reads anything, so the file is deleted then.
+			os.Symlink("notes.md", filepath.Join(home, "tool", "profiles", "work", "link.md"))
+			e.ui.onPrintf = func(line string) {
+				if strings.HasPrefix(line, "salt: skipped") {
+					os.Remove(filepath.Join(home, "tool", "notes.md"))
+				}
+			}
+			e.ui.out.Reset()
+			e.git.calls = nil
+			err := e.backup(presets)
+			if only {
+				if !errors.Is(err, preset.ErrNothing) || !strings.Contains(err.Error(), "the backup was sealed but not committed") || !strings.Contains(err.Error(), "for the only preset") {
+					t.Fatalf("Backup = %v", err)
+				}
+				if len(e.git.calls) != 0 {
+					t.Fatalf("calls = %v", e.git.calls)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			const want = "salt: tool/notes.md was in the last backup but was not found this time, so it is no longer backed up. Its earlier copies stay in history until prune drops them\n"
+			if out := e.ui.out.String(); !strings.HasSuffix(out, want) {
+				t.Fatalf("output %q, want it to end %q", out, want)
+			}
+			if _, ok := e.restored()["tool/notes.md"]; ok {
+				t.Fatal("the deleted file was restored")
+			}
+		})
+	}
+}
+
+// warnMissing names a place inside another that is found, and only the
+// outer one when both are missing. A place still found, or with something
+// in this backup, is not named, nor is a path no preset names.
+func TestWarnMissingNestedPlaces(t *testing.T) {
+	p, err := preset.Parse("t", []byte(`{"name": "t", "paths": [
+		{"from": "~/outer", "to": "outer"},
+		{"from": "~/inner", "to": "outer/inner"},
+		{"from": "~/one.md", "to": "one.md"},
+		{"from": "~/empty", "to": "empty"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := []string{"outer/a.md", "outer/inner/b.md", "one.md", "empty/c.md", "elsewhere.md"}
+	for _, tc := range []struct {
+		name    string
+		found   preset.Found
+		gone    []string
+		missing []string
+	}{
+		{"inner missing", preset.Found{Places: []string{"outer", "one.md", "empty"}, Files: []seal.Extra{{Rel: "outer/a.md"}, {Rel: "one.md"}}}, nil, []string{"outer/inner"}},
+		{"both missing", preset.Found{Places: []string{"one.md", "empty"}, Files: []seal.Extra{{Rel: "one.md"}}}, nil, []string{"outer"}},
+		{"inner held by outer", preset.Found{Places: []string{"outer", "one.md", "empty"}, Files: []seal.Extra{{Rel: "outer/inner/b.md"}, {Rel: "one.md"}}}, nil, nil},
+		{"file gone before sealed", preset.Found{Places: []string{"outer", "outer/inner", "one.md", "empty"}, Files: []seal.Extra{{Rel: "outer/a.md"}, {Rel: "one.md"}}}, []string{"one.md"}, []string{"one.md"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.ui.out.Reset()
+			e.app.warnMissing(last, []*preset.Preset{p}, &tc.found, tc.gone)
+			var want strings.Builder
+			for _, m := range tc.missing {
+				want.WriteString("salt: " + m + " was in the last backup but was not found this time, so it is no longer backed up. Its earlier copies stay in history until prune drops them\n")
+			}
+			if out := e.ui.out.String(); out != want.String() {
+				t.Fatalf("output %q, want %q", out, want.String())
+			}
+		})
+	}
+}
+
 // Before pushing, a backup measures the push against what origin holds and
 // warns when it is large, without stopping it. It says nothing when the
 // push is small or cannot be measured, as with an older git.
