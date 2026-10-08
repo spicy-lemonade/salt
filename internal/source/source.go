@@ -58,13 +58,18 @@ type Kind struct {
 	// New makes the database from the option's value. Its errors never
 	// repeat a password.
 	New func(arg string) (Database, error)
+	// Conn makes the database from a connection salt was given another way,
+	// such as by a preset, and where names the connection in its errors,
+	// which never repeat a password. It is nil for a kind whose option is
+	// not a connection, such as a file, which a preset finds by its path.
+	Conn func(conn, where string) (Database, error)
 }
 
 // Kinds lists every kind of database salt can copy. Adding a kind here adds
 // its option to salt seal.
 var Kinds = []Kind{
 	{Flag: "sqlite", Usage: "a live SQLite database file to copy safely and seal", New: NewSQLite},
-	{Flag: "postgres", Usage: "a Postgres connection URL or string to dump safely and seal", New: NewPostgres},
+	{Flag: "postgres", Usage: "a Postgres connection URL or string to dump safely and seal", New: NewPostgres, Conn: NewPostgresConn},
 	{Flag: "postgres-env", Usage: "an environment variable holding a Postgres connection", New: NewPostgresEnv},
 }
 

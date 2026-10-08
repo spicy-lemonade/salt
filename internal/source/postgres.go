@@ -44,11 +44,7 @@ type Postgres struct {
 // postgresql+psycopg://, is dropped, since pg_dump has its own. Without a
 // password in conn, pg_dump looks in ~/.pgpass, PGPASSFILE and PGPASSWORD.
 func NewPostgres(conn string) (Database, error) {
-	p, err := newPostgres("--postgres", conn)
-	if err != nil {
-		return nil, fmt.Errorf("the connection given to --postgres %w", err)
-	}
-	return p, nil
+	return NewPostgresConn(conn, "the connection given to --postgres")
 }
 
 // NewPostgresEnv is NewPostgres for the connection held by the environment
@@ -58,14 +54,18 @@ func NewPostgresEnv(name string) (Database, error) {
 	if conn == "" {
 		return nil, fmt.Errorf("the environment variable %s given to --postgres-env is not set or is empty", name)
 	}
-	p, err := newPostgres("--postgres-env", conn)
-	if err != nil {
-		return nil, fmt.Errorf("the connection in %s, given to --postgres-env, %w", name, err)
-	}
-	return p, nil
+	return newPostgres("--postgres-env", fmt.Sprintf("the connection in %s, given to --postgres-env,", name), conn)
 }
 
-func newPostgres(flag, s string) (*Postgres, error) {
+// NewPostgresConn is NewPostgres for a connection salt was given another
+// way, such as by a preset. where names the connection in messages.
+func NewPostgresConn(conn, where string) (Database, error) {
+	return newPostgres("--postgres", where, conn)
+}
+
+// newPostgres reads the connection s, given with the option flag. Its errors
+// start with where, which names the connection, and never repeat a password.
+func newPostgres(flag, where, s string) (Database, error) {
 	parse := parseSettings
 	if scheme, _, ok := strings.Cut(s, "://"); ok && !strings.ContainsAny(scheme, spaces+"=") {
 		parse = parseURL
@@ -77,11 +77,14 @@ func newPostgres(flag, s string) (*Postgres, error) {
 	}
 	switch {
 	case err != nil:
-		return nil, err
+		// parse's error says what is wrong.
 	case dbname == "":
-		return nil, errNoDatabase
+		err = errNoDatabase
 	case dbname == "." || dbname == ".." || strings.ContainsAny(dbname, "/\\") || strings.ContainsFunc(dbname, unicode.IsControl):
-		return nil, errBadName
+		err = errBadName
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s %w", where, err)
 	}
 	return &Postgres{flag: flag, conn: conn, password: password, dbname: dbname}, nil
 }

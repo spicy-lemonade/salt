@@ -3,6 +3,7 @@ package preset
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/spicy-lemonade/salt/internal/proc"
 	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/source"
 )
@@ -40,7 +42,8 @@ var ErrNothing = errors.New("found nothing to back up")
 type Found struct {
 	// Files are sealed as they are.
 	Files []seal.Extra
-	// Databases are SQLite databases, copied safely before sealing.
+	// Databases are the SQLite databases found and the databases the
+	// presets name, each copied safely before sealing.
 	Databases []source.Database
 	// LeftOut lists files left out because they hold, or may hold, secrets.
 	LeftOut []LeftOut
@@ -116,7 +119,8 @@ type LeftOut struct {
 }
 
 // Gather finds everything the presets back up on this machine. show is how
-// paths are written in messages. A preset that finds nothing is an error.
+// paths are written in messages. A preset that finds nothing is an error,
+// which names where it looks, and each variable it needs that is not set.
 // Each place is walked once. A place found twice, such as a folder named by
 // two paths or by two presets, is backed up under the first path, taking
 // presets in name order. A place inside another is backed up under its own
@@ -128,7 +132,10 @@ type LeftOut struct {
 // or place deleted while it is gathered, as a tool's files can be at any
 // time, is skipped, and every file is marked live, so seal skips one deleted
 // before it is read too. A place skipped this way is left out of Places, and
-// a preset left with nothing is an error.
+// a preset left with nothing is an error. A database a preset names is
+// backed up when its connection's variables are set or have defaults. One
+// named twice, by the same connection without its password, is backed up
+// once, under the first name, taking presets in name order.
 func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*Found, error) {
 	// Places have their symlinks followed, so the repo's are too before
 	// comparing them.
@@ -148,6 +155,8 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 		for _, x := range p.Paths {
 			if where, ok := e.expand(x.From); ok {
 				looked = append(looked, show(where))
+			} else if _, _, missing := e.vars(x.From); len(missing) > 0 {
+				looked = append(looked, notSet(missing))
 			}
 			places, err := e.Find(x)
 			if err != nil {
@@ -166,6 +175,19 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 				w.spots[real] = s
 				spots = append(spots, s)
 			}
+		}
+		for _, d := range p.Databases {
+			db, missing, err := e.database(p, d)
+			if err != nil {
+				return nil, err
+			}
+			if db == nil {
+				if len(missing) > 0 {
+					looked = append(looked, "the database in "+notSet(missing))
+				}
+				continue
+			}
+			w.addDatabase(p, db)
 		}
 		lookedIn[p] = looked
 	}
@@ -193,6 +215,82 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 		}
 	}
 	return w.f, nil
+}
+
+// notSet writes the variables names, which are not set, for the list of
+// where a preset looks.
+func notSet(names []string) string {
+	return "$" + strings.Join(names, " and $") + " (not set)"
+}
+
+// database returns the database d names for the preset p, ready to copy.
+// It returns nil, and the variables it needs that are not set, when d's
+// connection needs one of them. Errors name the variables the connection
+// came from, never the connection, which may hold a password. A variable
+// that is set comes first, as what it holds is the likelier cause, then
+// those whose defaults were used.
+func (e Env) database(p *Preset, d Database) (db source.Database, missing []string, err error) {
+	conn, err := d.conn()
+	if err != nil {
+		return nil, nil, fmt.Errorf("preset %s: %w", p.Name, err)
+	}
+	set, defaulted, missing := e.vars(d.From)
+	from, ok := e.expand(d.From)
+	if !ok {
+		return nil, missing, nil
+	}
+	where, about := fmt.Sprintf("the %s preset's database connection", p.Name), ""
+	if len(set) > 0 {
+		where = fmt.Sprintf("the connection in %s, used by the %s preset,", strings.Join(set, " and "), p.Name)
+		about = fmt.Sprintf("The %s preset read this connection from %s", p.Name, strings.Join(set, " and "))
+	}
+	if len(defaulted) > 0 {
+		names, are, s := strings.Join(defaulted, " and "), "is", ""
+		if len(defaulted) > 1 {
+			are, s = "are", "s"
+		}
+		if about == "" {
+			where = fmt.Sprintf("the %s preset's default database connection", p.Name)
+			about = fmt.Sprintf("This is the %s preset's default connection, used when %s %s not set", p.Name, names, are)
+		} else {
+			about += fmt.Sprintf(", with its default%s for %s, which %s not set", s, names, are)
+		}
+		about += fmt.Sprintf(". If the database is elsewhere, set %s, in the cron line too", names)
+	}
+	db, err = conn(from, where)
+	if err == nil {
+		db, err = source.Named(db, d.To)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return presetDB{Database: db, preset: p.Name, about: about}, nil, nil
+}
+
+// presetDB is a database a preset names. Its option is the preset, and when
+// its program fails, as when the server cannot be reached, the error says
+// where its connection came from.
+type presetDB struct {
+	source.Database
+	preset string
+	// about says where the connection came from, or is "" when it holds
+	// no variables.
+	about string
+}
+
+func (d presetDB) Flag() string { return "--preset " + d.preset }
+
+func (d presetDB) Copy(ctx context.Context, o source.CopyOptions) (source.Meta, error) {
+	meta, err := d.Database.Copy(ctx, o)
+	var failed *proc.Error
+	if d.about != "" && errors.As(err, &failed) {
+		sep := ". "
+		if msg := err.Error(); strings.ContainsAny(msg[len(msg)-1:], ".?!") {
+			sep = " "
+		}
+		err = fmt.Errorf("%w%s%s", err, sep, d.about)
+	}
+	return meta, err
 }
 
 // spot is a place a preset found, once symlinks are followed. rels lists
@@ -243,6 +341,21 @@ type walker struct {
 	// defaultSecretKeys added to its keys.
 	secrets []Secret
 	show    func(string) string
+}
+
+// addDatabase adds db, which the preset p names, to what is backed up. A
+// database from the same connection, compared without its password, is
+// backed up once, under the name it was first added with, and counts for
+// p too.
+func (w *walker) addDatabase(p *Preset, db source.Database) {
+	if i := slices.IndexFunc(w.f.Databases, func(o source.Database) bool { return o.String() == db.String() }); i >= 0 {
+		db = w.f.Databases[i]
+	} else {
+		w.f.Databases = append(w.f.Databases, db)
+	}
+	if !slices.Contains(w.f.by[p], db.Name()) {
+		w.f.by[p] = append(w.f.by[p], db.Name())
+	}
 }
 
 // walk adds the file or folder in the spot s, which the presets by back up.

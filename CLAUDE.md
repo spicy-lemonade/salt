@@ -46,7 +46,7 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - `internal/gitx`: the only way salt runs git (hooks, compression and delta search always off)
 - `internal/source`: safe copies of live databases (runs `sqlite3` and `pg_dump`); each kind is a `Database` listed in `Kinds`; with `gitx` and `proc`, the only packages that start programs
 - `internal/proc`: runs the programs `gitx` and `source` may stop part way (`git clone`, `git ls-remote`, `git rev-list`, `git push`, `git commit`, `sqlite3`, `pg_dump`); caps their error output and how long a stopped one is waited for
-- `internal/preset`: presets for `salt backup`, one embedded JSON file per tool in `presets/`, read by the same tool-agnostic code; finds each preset's files and SQLite databases and leaves out files holding secrets
+- `internal/preset`: presets for `salt backup`, one embedded JSON file per tool in `presets/`, read by the same tool-agnostic code; finds each preset's files, SQLite databases and the databases it names by connection (such as Postgres), and leaves out files holding secrets
 - `internal/guard`: refuses nested salt processes; sets a soft memory limit; locks a backup repo so two salts never seal, back up or prune it at once
 - `internal/prune`: keeps only the backups from the last N days with a change (counted for the whole repo, not per file), all of the latest day's and the last of each earlier day's, by rewriting the branch's history
 - `internal/trust`: this machine's approved copy of each repo's keys and settings; seal refuses if the repo differs
@@ -110,7 +110,7 @@ go test ./internal/seal -run TestRoundTrip
 - Decided out of scope is Touch ID gating, and switching recovery method from the 12 word passphrase to the user chosen passphrase or vice versa.
 - `salt seal --sqlite DB` makes a safe copy of a live SQLite database itself (`internal/source` runs `sqlite3 .backup`). `salt seal --postgres CONN` (or `--postgres-env VAR`) dumps a Postgres database as plain SQL with `pg_dump`, with the password passed in `PGPASSWORD` and never shown. See `docs/design.md`, "Databases".
 - `salt backup --preset NAME REPO` gathers what the presets name, seals it (the repo then holds only that), commits with hooks off after running the `salt check` logic in-process, prunes and pushes with `--force-with-lease`. It prints nothing on success. See `docs/design.md`, "One-command backup".
-- Not yet built: OpenViking support, and presets other than `hermes`, `holographic` and `mnemosyne` (OpenClaw, Honcho, Hindsight).
+- Not yet built: OpenViking support, and presets other than `hermes`, `holographic`, `honcho` and `mnemosyne` (OpenClaw, Hindsight).
 
 ### Agent contributing rules
 

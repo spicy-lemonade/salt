@@ -21,6 +21,31 @@ func mkdir(t *testing.T, parts ...string) string {
 	return p
 }
 
+// vars names each variable a template reads once, as set, as unset with a
+// default wherever it is read, or as unset and read at least once without
+// one, which orders it by its first read without a default. An empty
+// variable is unset, as in expand. Without Getenv, none is set.
+func TestVars(t *testing.T) {
+	e := envOf("/home/me", map[string]string{"A": "a", "C": ""})
+	for _, c := range []struct {
+		template                string
+		set, defaulted, missing []string
+	}{
+		{"${A}/${B:-x}/${A}/${C}/${B}/${E:-y}/${E:-z}/$D", []string{"A"}, []string{"E"}, []string{"C", "B"}},
+		{"${G}/${G:-x}", nil, nil, []string{"G"}},
+		{"${C:-x}/${F:-}", nil, []string{"C", "F"}, nil},
+		{"/plain", nil, nil, nil},
+	} {
+		set, defaulted, missing := e.vars(c.template)
+		if !slices.Equal(set, c.set) || !slices.Equal(defaulted, c.defaulted) || !slices.Equal(missing, c.missing) {
+			t.Errorf("vars(%s) = %v, %v, %v, want %v, %v, %v", c.template, set, defaulted, missing, c.set, c.defaulted, c.missing)
+		}
+	}
+	if set, defaulted, missing := (Env{}).vars("${A}/${B:-x}"); set != nil || !slices.Equal(defaulted, []string{"B"}) || !slices.Equal(missing, []string{"A"}) {
+		t.Fatalf("without Getenv: %v, %v, %v", set, defaulted, missing)
+	}
+}
+
 func TestExpand(t *testing.T) {
 	e := envOf("/home/me", map[string]string{"SET": "/set", "EMPTY": ""})
 	for template, want := range map[string]string{

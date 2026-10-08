@@ -25,12 +25,8 @@ func TestBuiltinPresetsAreValid(t *testing.T) {
 		if p.About == "" {
 			t.Errorf("%s: no about", n)
 		}
-		var tos []string
-		for _, x := range p.Paths {
-			tos = append(tos, x.To)
-		}
-		if i, j, ok := seal.FirstClash(tos, true); ok {
-			t.Errorf("%s: %s and %s clash", n, tos[j], tos[i])
+		if i, j, ok := seal.FirstClash(tos(p), true); ok {
+			t.Errorf("%s: %s and %s clash", n, tos(p)[j], tos(p)[i])
 		}
 	}
 }
@@ -44,15 +40,25 @@ func TestBuiltinPresetsCombine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var tos []string
+	var all []string
 	for _, p := range presets {
-		for _, x := range p.Paths {
-			tos = append(tos, x.To)
-		}
+		all = append(all, tos(p)...)
 	}
-	if i, j, ok := seal.FirstClash(tos, true); ok {
-		t.Errorf("%s and %s clash", tos[j], tos[i])
+	if i, j, ok := seal.FirstClash(all, true); ok {
+		t.Errorf("%s and %s clash", all[j], all[i])
 	}
+}
+
+// tos lists the backup path of each of p's paths and databases.
+func tos(p *Preset) []string {
+	var out []string
+	for _, x := range p.Paths {
+		out = append(out, x.To)
+	}
+	for _, d := range p.Databases {
+		out = append(out, d.To)
+	}
+	return out
 }
 
 // defaultSecretKeys holds patterns that path.Match can use, in lower case,
@@ -102,6 +108,20 @@ func TestParseRefusesBadPresets(t *testing.T) {
 		// A misspelt field would otherwise be dropped, and with it a rule.
 		`unknown field "secret"`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secret": [{"files": ["x"], "keys": ["k"]}]}`,
 		`unknown field "key"`:    `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "key": ["k"]}]}`,
+		// A database file is found by its path, so only a kind given by a
+		// connection can be named.
+		`"sqlite" is not a kind of database a preset can name`:       `{"name": "t", "databases": [{"kind": "sqlite", "from": "/a.db", "to": "a.db"}]}`,
+		`"postgres-env" is not a kind of database a preset can name`: `{"name": "t", "databases": [{"kind": "postgres-env", "from": "DB", "to": "a.sql"}]}`,
+		`"mysql" is not a kind of database a preset can name`:        `{"name": "t", "databases": [{"kind": "mysql", "from": "mysql://h/a", "to": "a.sql"}]}`,
+		`"" is not a kind of database a preset can name`:             `{"name": "t", "databases": [{"from": "postgresql://h/a", "to": "a.sql"}]}`,
+		"a database has no from":                                     `{"name": "t", "databases": [{"kind": "postgres", "to": "a.sql"}]}`,
+		"postgresql://h/* cannot have a * part":                      `{"name": "t", "databases": [{"kind": "postgres", "from": "postgresql://h/*", "to": "a.sql"}]}`,
+		"${A:-$B}: a variable":                                       `{"name": "t", "databases": [{"kind": "postgres", "from": "${A:-$B}", "to": "a.sql"}]}`,
+		`database path "../a.sql" cannot be used`:                    `{"name": "t", "databases": [{"kind": "postgres", "from": "${A}", "to": "../a.sql"}]}`,
+		`database path "a.sql/" cannot be used`:                      `{"name": "t", "databases": [{"kind": "postgres", "from": "${A}", "to": "a.sql/"}]}`,
+		`database path "a/*/b.sql" cannot be used`:                   `{"name": "t", "databases": [{"kind": "postgres", "from": "${A}", "to": "a/*/b.sql"}]}`,
+		`database path "" cannot be used`:                            `{"name": "t", "databases": [{"kind": "postgres", "from": "${A}"}]}`,
+		`unknown field "form"`:                                       `{"name": "t", "databases": [{"kind": "postgres", "form": "${A}", "to": "a.sql"}]}`,
 		// Settings are matched in lower case, so API_KEY would never match.
 		`"*API_KEY" must be in lower case`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "keys": ["*API_KEY"]}]}`,
 	} {
@@ -121,6 +141,15 @@ func TestParseGoodPreset(t *testing.T) {
 	if p.Paths[0].To != "x/*/data" || p.Skip[0] != "*.log" || p.Secrets[0].Keys[0] != "*api_key" {
 		t.Fatalf("Parse = %+v", p)
 	}
+	// A preset may name only databases. A connection's default may hold
+	// slashes, a colon and an @.
+	p, err = Parse("t", []byte(`{"name": "t", "databases": [{"kind": "postgres", "from": "${DB_URL:-postgresql://u:p@h:5432/db}", "to": "t/db.sql"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (Database{Kind: "postgres", From: "${DB_URL:-postgresql://u:p@h:5432/db}", To: "t/db.sql"}); len(p.Databases) != 1 || p.Databases[0] != want {
+		t.Fatalf("Parse = %+v", p)
+	}
 }
 
 // A backup path is in the place a preset path's To names, each * matching
@@ -130,7 +159,8 @@ func TestPlaceOf(t *testing.T) {
 		{"from": "~/tool/profiles/*/data", "to": "tool/profiles/*/data"},
 		{"from": "~/tool/settings.yaml", "to": "tool/settings.yaml"},
 		{"from": "~/inner", "to": "outer/inner"},
-		{"from": "~/outer", "to": "outer"}]}`))
+		{"from": "~/outer", "to": "outer"}],
+		"databases": [{"kind": "postgres", "from": "${DB}", "to": "tool/memory.sql"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,6 +173,8 @@ func TestPlaceOf(t *testing.T) {
 		"tool/profiles/work/other/notes.md": "",
 		"tool/profiles/work":                "",
 		"tool/settings.yaml.bak":            "",
+		"tool/memory.sql":                   "tool/memory.sql",
+		"tool/memory.sql.bak":               "",
 		"elsewhere.md":                      "",
 	} {
 		got, ok := PlaceOf([]*Preset{p}, rel)

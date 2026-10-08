@@ -337,6 +337,67 @@ func TestBackupHolographic(t *testing.T) {
 	}
 }
 
+// salt backup --preset honcho dumps the database DB_CONNECTION_URI names,
+// written as Honcho writes it with its driver, and backs it up with
+// Honcho's settings in Hermes, leaving out a profile's settings holding an
+// API key, and never shows a password. The restored dump loads into a new
+// database that matches the live one, and a second run with nothing
+// changed makes no commit. A server that cannot be reached stops the
+// backup with nothing committed or pushed, and the error says where the
+// connection came from. The test always sets
+// DB_CONNECTION_URI, so it never reaches a real Postgres on this machine.
+// Which files the preset finds is tested in internal/preset.
+func TestBackupHoncho(t *testing.T) {
+	e := newEnv(t)
+	s := startPostgres(t, e)
+	s.psql(t, "postgres", "CREATE DATABASE honcho")
+	s.psql(t, "honcho", memorySQL)
+	live := s.psql(t, "honcho", pgSnapshot)
+	b := newBackupRepo(t, e)
+	hermes := filepath.Join(e.home, ".hermes")
+	write(t, filepath.Join(hermes, "honcho.json"), `{"workspace": "hermes", "peerName": "me"}`)
+	write(t, filepath.Join(hermes, "profiles", "coder", "honcho.json"), `{"workspace": "hermes", "apiKey": "hch-s3cret"}`)
+	port := strconv.Itoa(s.port)
+	salt, tmp := withTemp(t, saltWithPg(e, s).with("DB_CONNECTION_URI=postgresql+psycopg://agent:pa%3Ass%40w0rd%20s3cret@127.0.0.1:"+port+"/honcho"))
+	commits := commitCount(e, b.remote)
+
+	out := salt.must(b.base, "salt", "backup", "--preset", "honcho", b.dir)
+	if want := "salt: left ~/.hermes/profiles/coder/honcho.json out of the backup because its setting apiKey holds a secret. Keep secrets in environment variables so the file can be backed up\n"; out != want {
+		t.Fatalf("backup printed:\n%s", out)
+	}
+	assertEmpty(t, tmp)
+	if got := commitCount(e, b.remote); got == commits {
+		t.Fatal("the backup was not pushed")
+	}
+	dest, files := restoredFiles(t, e, b)
+	if !slices.Equal(files, []string{"hermes/honcho.json", "honcho/honcho.sql"}) {
+		t.Fatalf("restored %v", files)
+	}
+	s.psql(t, "postgres", "CREATE DATABASE honcho_restored")
+	s.e.must(dest, filepath.Join(s.bin, "psql"), "-X", "-q", "-v", "ON_ERROR_STOP=1", "--single-transaction", "-d", "honcho_restored", "-f", filepath.Join(dest, "honcho", "honcho.sql"))
+	if got := s.psql(t, "honcho_restored", pgSnapshot); got != live {
+		t.Fatalf("restored database = %q, want %q", got, live)
+	}
+
+	commits = commitCount(e, b.remote)
+	salt.must(b.base, "salt", "backup", "--preset", "honcho", b.dir)
+	if got := commitCount(e, b.remote); got != commits {
+		t.Fatalf("an unchanged backup made a commit: %s, then %s", commits, got)
+	}
+
+	s.stop()
+	local := commitCount(e, b.dir)
+	out, code := salt.run(b.base, "salt", "backup", "--preset", "honcho", b.dir)
+	if code != 1 || !strings.Contains(out, "copying the database postgresql://agent@127.0.0.1:"+port+"/honcho: pg_dump") ||
+		!strings.HasSuffix(strings.TrimSpace(out), "The honcho preset read this connection from DB_CONNECTION_URI") || strings.Contains(out, "s3cret") || strings.Contains(out, "pa:ss") {
+		t.Fatalf("server stopped: exit %d:\n%s", code, out)
+	}
+	if commitCount(e, b.dir) != local || commitCount(e, b.remote) != commits {
+		t.Fatal("a backup without the database was committed or pushed")
+	}
+	assertEmpty(t, tmp)
+}
+
 // salt backup stops, and says why, when the preset finds nothing, when
 // sqlite3 makes no copy of a database, and when the push fails, without
 // showing a password in origin's URL.

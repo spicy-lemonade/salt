@@ -34,7 +34,12 @@ type Error struct {
 	Stderr string
 }
 
-func (e *Error) Error() string { return fmt.Sprintf("%s: %v: %s", e.Program, e.Err, e.Stderr) }
+func (e *Error) Error() string {
+	if e.Stderr == "" {
+		return fmt.Sprintf("%s: %v", e.Program, e.Err)
+	}
+	return fmt.Sprintf("%s: %v: %s", e.Program, e.Err, e.Stderr)
+}
 
 func (e *Error) Unwrap() error { return e.Err }
 

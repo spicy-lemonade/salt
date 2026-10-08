@@ -1,7 +1,9 @@
 package preset
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"maps"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spicy-lemonade/salt/internal/proc"
 	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/source"
 )
@@ -359,7 +362,7 @@ func TestGatherFindsNothing(t *testing.T) {
 	// The second preset is checked too, and with another that finds
 	// something, leaving it out is suggested.
 	write(t, filepath.Join(home, "tool", "a.md"), "a")
-	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t), other}, t.TempDir(), plain); !errors.Is(err, ErrNothing) || !strings.HasSuffix(err.Error(), "other preset. It looks in . If you don't use it, leave out --preset other") {
+	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t), other}, t.TempDir(), plain); !errors.Is(err, ErrNothing) || !strings.HasSuffix(err.Error(), "other preset. It looks in $UNSET (not set). If you don't use it, leave out --preset other") {
 		t.Fatalf("Gather = %v", err)
 	}
 }
@@ -436,6 +439,255 @@ func TestGatherHolographic(t *testing.T) {
 	if want := "found nothing to back up for the holographic preset. It looks in " + filepath.Join(empty, "memory_store.db") + ", " +
 		filepath.Join(empty, "profiles", "*", "memory_store.db") + ". If you don't use it, leave out --preset holographic"; !errors.Is(err, ErrNothing) || err.Error() != want {
 		t.Fatalf("Gather = %v, want %s", err, want)
+	}
+}
+
+// A database a preset names is backed up under its path when its
+// connection's variable is set, or with its default when it is not, and is
+// skipped without either. Its password is never shown. A connection two
+// presets name is backed up once, under the first preset's path, taking
+// presets in name order, and counts for both.
+func TestGatherDatabases(t *testing.T) {
+	t.Setenv("PGDATABASE", "")
+	mk := func(name, from, to string) *Preset {
+		t.Helper()
+		p, err := Parse(name, []byte(`{"name": "`+name+`", "databases": [{"kind": "postgres", "from": "`+from+`", "to": "`+to+`"}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	gather := func(vars map[string]string, presets ...*Preset) (*Found, error) {
+		return envOf(t.TempDir(), vars).Gather(presets, t.TempDir(), plain)
+	}
+	withDefault := mk("d", "${D_URL:-postgresql://u:s3cret@localhost/def}", "d/def.sql")
+	for _, c := range []struct {
+		vars map[string]string
+		want string
+	}{
+		{nil, "postgresql://u@localhost/def"},
+		{map[string]string{"D_URL": ""}, "postgresql://u@localhost/def"},
+		{map[string]string{"D_URL": "postgresql+psycopg://a:s3cret@h:5432/mem"}, "postgresql://a@h:5432/mem"},
+	} {
+		f, err := gather(c.vars, withDefault)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(f.Databases) != 1 || f.Databases[0].Name() != "d/def.sql" || f.Databases[0].String() != c.want || f.Files != nil {
+			t.Fatalf("%v: databases %v", c.vars, f.Databases)
+		}
+		if p := f.Paths(); !slices.Equal(p, []string{"d/def.sql"}) {
+			t.Fatalf("%v: paths %v", c.vars, p)
+		}
+	}
+
+	// Without the variable or a default, nothing is found, and the message
+	// names each variable that is not set, for paths and databases alike,
+	// in the order the preset lists them.
+	if _, err := gather(nil, mk("v", "${V_URL}", "v.sql")); !errors.Is(err, ErrNothing) || !strings.HasSuffix(err.Error(), "for the v preset. It looks in the database in $V_URL (not set)") {
+		t.Fatalf("unset: %v", err)
+	}
+	both, err := Parse("m", []byte(`{"name": "m", "paths": [{"from": "${M_DIR}/data/${M_SUB:-x}", "to": "m"}, {"from": "/m", "to": "m2"}],
+		"databases": [{"kind": "postgres", "from": "postgresql://${M_USER}@h:${M_PORT:-5432}/${M_DB}?user=${M_USER}", "to": "m.sql"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gather(nil, both); err == nil || !strings.HasSuffix(err.Error(), "It looks in $M_DIR (not set), /m, the database in $M_USER and $M_DB (not set)") {
+		t.Fatalf("unset path and database: %v", err)
+	}
+
+	// Errors name the variables the connection came from, or the preset's
+	// default, and never the password.
+	for _, c := range []struct {
+		p    *Preset
+		vars map[string]string
+		want string
+	}{
+		{withDefault, map[string]string{"D_URL": "postgresql://a:s3cret@h"}, "the connection in D_URL, used by the d preset, names no database"},
+		{mk("two", "postgresql://${USER_X}:s3cret@${HOST_X}", "t.sql"), map[string]string{"USER_X": "a", "HOST_X": "h"}, "the connection in USER_X and HOST_X, used by the two preset, names no database"},
+		{mk("same", "postgresql://${H_X}:s3cret@${H_X}", "s.sql"), map[string]string{"H_X": "h"}, "the connection in H_X, used by the same preset, names no database"},
+		{mk("bad", "${B_URL:-mysql://u:s3cret@h/db}", "b.sql"), map[string]string{"OTHER": "x"}, "the bad preset's default database connection is not a Postgres connection"},
+		{mk("lit", "mysql://u:s3cret@h/db", "l.sql"), nil, "the lit preset's database connection is not a Postgres connection"},
+		{mk("mix", "postgresql://${U_X}:s3cret@${H_X:-h}", "x.sql"), map[string]string{"U_X": "u"}, "the connection in U_X, used by the mix preset, names no database"},
+	} {
+		_, err := gather(c.vars, c.p)
+		if err == nil || !strings.HasPrefix(err.Error(), c.want) || strings.Contains(err.Error(), "s3cret") {
+			t.Errorf("%s: %v, want %q", c.p.Name, err, c.want)
+		}
+	}
+
+	// A copy that fails says where the connection came from, and the
+	// database's option is its preset.
+	for _, c := range []struct {
+		p     *Preset
+		vars  map[string]string
+		about string
+	}{
+		{withDefault, nil, "This is the d preset's default connection, used when D_URL is not set. If the database is elsewhere, set D_URL, in the cron line too"},
+		{withDefault, map[string]string{"D_URL": ""}, "This is the d preset's default connection, used when D_URL is not set. If the database is elsewhere, set D_URL, in the cron line too"},
+		{withDefault, map[string]string{"D_URL": "postgresql://h/mem"}, "The d preset read this connection from D_URL"},
+		{mk("mix", "postgresql://${U_X}@${H_X:-h}/db", "x.sql"), map[string]string{"U_X": "u"}, "The mix preset read this connection from U_X, with its default for H_X, which is not set. If the database is elsewhere, set H_X, in the cron line too"},
+		{mk("mix", "postgresql://${U_X}@${H_X:-h}:${P_X:-5432}/db", "x.sql"), map[string]string{"U_X": "u"}, "The mix preset read this connection from U_X, with its defaults for H_X and P_X, which are not set. If the database is elsewhere, set H_X and P_X, in the cron line too"},
+		{mk("a", "postgresql://${A_U:-u}@${A_H:-h}/db", "a.sql"), nil, "This is the a preset's default connection, used when A_U and A_H are not set. If the database is elsewhere, set A_U and A_H, in the cron line too"},
+		{mk("lit", "postgresql://h/db", "l.sql"), nil, ""},
+	} {
+		f, err := gather(c.vars, c.p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db, ok := f.Databases[0].(presetDB)
+		if !ok || db.about != c.about || db.Flag() != "--preset "+c.p.Name {
+			t.Errorf("%s %v: %#v, want about %q", c.p.Name, c.vars, f.Databases[0], c.about)
+		}
+	}
+
+	// A preset built in code, never read by Parse, with a kind a preset
+	// cannot name, is an error rather than a crash.
+	code := &Preset{Name: "code", Databases: []Database{{Kind: "sqlite", From: "/a.db", To: "a.db"}}}
+	if _, err := gather(nil, code); err == nil || err.Error() != `preset code: "sqlite" is not a kind of database a preset can name. A database file is found by its path` {
+		t.Fatalf("a kind no preset can name: %v", err)
+	}
+
+	// Taken in name order, b's path wins over c's, whatever order they are
+	// given in, and both presets count as finding it.
+	same := "${SAME:-postgresql://u:pw1@h/mem}"
+	b, c := mk("b", same, "b/mem.sql"), mk("c", "postgresql://u:pw2@h/mem", "c/mem.sql")
+	f, err := gather(nil, c, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Databases) != 1 || f.Databases[0].Name() != "b/mem.sql" {
+		t.Fatalf("databases %v", f.Databases)
+	}
+	if err := f.CheckGone(); err != nil {
+		t.Fatal(err)
+	}
+	f.Drop([]string{"b/mem.sql"})
+	if err := f.CheckGone(); !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "the b preset") {
+		t.Fatalf("CheckGone after Drop = %v", err)
+	}
+}
+
+// failingDB is a database whose copy fails with err.
+type failingDB struct{ err error }
+
+func (failingDB) Name() string   { return "memory.sql" }
+func (failingDB) String() string { return "postgresql://h/memory" }
+func (failingDB) Flag() string   { return "--postgres" }
+func (d failingDB) Copy(context.Context, source.CopyOptions) (source.Meta, error) {
+	return source.Meta{Mode: 0o600}, d.err
+}
+
+// When a preset database's program fails, its error says where the
+// connection came from, and is still the program's error. It says nothing
+// more when the copy works, is stopped or cannot start the program, or when
+// the connection holds no variables.
+func TestPresetDBCopy(t *testing.T) {
+	about := "The t preset read this connection from T_URL"
+	refused := &proc.Error{Program: "pg_dump", Err: errors.New("exit status 1"), Stderr: "pg_dump: error: connection refused"}
+	running := &proc.Error{Program: "pg_dump", Err: errors.New("exit status 1"), Stderr: "Is the server running on that host?"}
+	silent := &proc.Error{Program: "pg_dump", Err: errors.New("exit status 1")}
+	missing := fmt.Errorf("salt needs the pg_dump program, which %w", proc.ErrMissingProgram)
+	for _, c := range []struct {
+		err   error
+		about string
+		want  string
+	}{
+		{refused, about, refused.Error() + ". " + about},
+		{running, about, running.Error() + " " + about},
+		{silent, about, "pg_dump: exit status 1. " + about},
+		{refused, "", refused.Error()},
+		{context.Canceled, about, context.Canceled.Error()},
+		{missing, about, missing.Error()},
+	} {
+		meta, err := presetDB{Database: failingDB{c.err}, preset: "t", about: c.about}.Copy(context.Background(), source.CopyOptions{})
+		var failed *proc.Error
+		if err == nil || err.Error() != c.want || !errors.Is(err, c.err) || errors.As(c.err, &failed) != errors.As(err, &failed) || meta.Mode != 0o600 {
+			t.Errorf("Copy = %v, %v, want %q", meta, err, c.want)
+		}
+	}
+	if _, err := (presetDB{Database: failingDB{}, about: about}).Copy(context.Background(), source.CopyOptions{}); err != nil {
+		t.Errorf("a copy that works: %v", err)
+	}
+}
+
+// The honcho preset backs up Honcho's database, with Honcho's own default
+// connection when DB_CONNECTION_URI is not set, and Honcho's settings on
+// their own, in Hermes and in each Hermes profile. A settings file holding
+// an API key or a token is left out. HONCHO_CONFIG_DIR and HERMES_HOME name
+// other folders. Given with hermes, it adds only its own files.
+func TestGatherHoncho(t *testing.T) {
+	t.Setenv("PGDATABASE", "")
+	presets, err := GetAll([]string{"hermes", "honcho"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hermes, honcho := presets[0], presets[1]
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, ".hermes")
+	write(t, filepath.Join(home, ".honcho", "config.json"), `{"environmentUrl": "http://localhost:8000"}`)
+	write(t, filepath.Join(home, ".honcho", "profiles", "local", "config.toml"), "[llm]\nOPENAI_API_KEY = \"sk-1\"\n")
+	write(t, filepath.Join(dir, "honcho.json"), `{"hosts": {"hermes": {"workspace": "w", "oauth": {"refreshToken": "rt-1"}}}}`)
+	write(t, filepath.Join(dir, "profiles", "coder", "honcho.json"), `{"apiKey": "hch-1", "workspace": "w"}`)
+	write(t, filepath.Join(dir, "profiles", "writer", "honcho.json"), `{"workspace": "w", "contextTokens": 800}`)
+	write(t, filepath.Join(dir, "SOUL.md"), "soul")
+	gather := func(vars map[string]string, presets ...*Preset) *Found {
+		t.Helper()
+		f, err := envOf(home, vars).Gather(presets, t.TempDir(), plain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+
+	f := gather(nil, honcho)
+	files, dbs := rels(f)
+	if want := []string{"hermes/profiles/writer/honcho.json", "honcho/config.json"}; !slices.Equal(files, want) || !slices.Equal(dbs, []string{"honcho/honcho.sql"}) {
+		t.Fatalf("files %v, databases %v", files, dbs)
+	}
+	if got := f.Databases[0].String(); got != "postgresql://postgres@localhost:5432/postgres" {
+		t.Fatalf("default connection %s", got)
+	}
+	var left []string
+	for _, l := range f.LeftOut {
+		left = append(left, strings.TrimPrefix(l.Path, dir+string(filepath.Separator))+": "+l.Why)
+	}
+	slices.Sort(left)
+	if want := []string{
+		"honcho.json: its setting refreshToken holds a secret",
+		filepath.Join("profiles", "coder", "honcho.json") + ": its setting apiKey holds a secret",
+	}; !slices.Equal(left, want) {
+		t.Fatalf("left out %v, want %v", left, want)
+	}
+
+	other, hermesHome := filepath.Join(home, "honcho-config"), filepath.Join(home, "hermes-home")
+	write(t, filepath.Join(other, "config.json"), `{"environmentUrl": "http://localhost:8001"}`)
+	write(t, filepath.Join(hermesHome, "honcho.json"), `{"workspace": "w"}`)
+	f = gather(map[string]string{
+		"DB_CONNECTION_URI": "postgresql+psycopg://honcho:s3cret@db.internal:6543/memory",
+		"HONCHO_CONFIG_DIR": other,
+		"HERMES_HOME":       hermesHome,
+	}, honcho)
+	files, dbs = rels(f)
+	if !slices.Equal(files, []string{"hermes/honcho.json", "honcho/config.json"}) || !slices.Equal(dbs, []string{"honcho/honcho.sql"}) {
+		t.Fatalf("with variables: files %v, databases %v", files, dbs)
+	}
+	if got := f.Databases[0].String(); got != "postgresql://honcho@db.internal:6543/memory" {
+		t.Fatalf("with DB_CONNECTION_URI: %s", got)
+	}
+	for _, x := range f.Files {
+		if want := map[string]string{"hermes/honcho.json": hermesHome, "honcho/config.json": other}[x.Rel]; filepath.Dir(x.Path) != want {
+			t.Errorf("%s came from %s, want %s", x.Rel, x.Path, want)
+		}
+	}
+
+	f = gather(nil, hermes, honcho)
+	want := []string{"hermes/SOUL.md", "hermes/profiles/writer/honcho.json", "honcho/config.json", "honcho/honcho.sql"}
+	if got := slices.Sorted(slices.Values(f.Paths())); !slices.Equal(got, want) {
+		t.Fatalf("hermes and honcho backed up %v, want %v", got, want)
 	}
 }
 
