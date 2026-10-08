@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/source"
 )
 
@@ -779,21 +780,45 @@ func TestWalkSkipsGoneSpot(t *testing.T) {
 	}
 }
 
-// CheckGone fails for a preset whose every file was deleted before it was
-// sealed, naming the first in name order, and passes while any is left.
-func TestCheckGone(t *testing.T) {
+// Drop removes the paths gone from the files, databases and places found,
+// and from what each preset backs up. CheckGone then fails for a preset left
+// with nothing, naming the first in name order, and passes while each has
+// something left.
+func TestDropAndCheckGone(t *testing.T) {
+	db, err := source.NewSQLite(filepath.Join(t.TempDir(), "x.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	a, b := &Preset{Name: "a"}, &Preset{Name: "b"}
-	f := &Found{by: map[*Preset][]string{a: {"x", "y"}, b: {"y"}}}
-	if err := f.CheckGone(nil); err != nil {
-		t.Fatalf("nothing gone: %v", err)
+	found := func() *Found {
+		return &Found{
+			Files:     []seal.Extra{{Rel: "one.md"}, {Rel: "dir/two.md"}},
+			Databases: []source.Database{db},
+			Places:    []string{"one.md", "dir", "x.db"},
+			by:        map[*Preset][]string{a: {"one.md", "x.db"}, b: {"x.db"}},
+		}
 	}
-	if err := f.CheckGone([]string{"x"}); err != nil {
-		t.Fatalf("x gone: %v", err)
+	f := found()
+	f.Drop(nil)
+	if err := f.CheckGone(); err != nil || len(f.Files) != 2 || len(f.Databases) != 1 || len(f.Places) != 3 {
+		t.Fatalf("nothing gone: %v, %+v", err, f)
 	}
-	if err := f.CheckGone([]string{"y"}); !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "for the b preset") {
-		t.Fatalf("y gone: %v", err)
+	f = found()
+	f.Drop([]string{"one.md", "dir/two.md"})
+	if err := f.CheckGone(); err != nil {
+		t.Fatalf("files gone: %v", err)
 	}
-	if err := f.CheckGone([]string{"y", "x"}); !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "for the a preset") {
+	if len(f.Files) != 0 || len(f.Databases) != 1 || !slices.Equal(f.Places, []string{"dir", "x.db"}) {
+		t.Fatalf("files gone: %+v", f)
+	}
+	f = found()
+	f.Drop([]string{"x.db"})
+	if err := f.CheckGone(); !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "for the b preset") || len(f.Databases) != 0 {
+		t.Fatalf("database gone: %v, %+v", err, f)
+	}
+	f = found()
+	f.Drop([]string{"x.db", "one.md"})
+	if err := f.CheckGone(); !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "for the a preset") {
 		t.Fatalf("both gone: %v", err)
 	}
 }

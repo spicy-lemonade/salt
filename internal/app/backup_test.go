@@ -595,7 +595,8 @@ func TestWarnMissingNestedPlaces(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t)
 			e.ui.out.Reset()
-			e.app.warnMissing(last, []*preset.Preset{p}, &tc.found, tc.gone)
+			tc.found.Drop(tc.gone)
+			e.app.warnMissing(last, []*preset.Preset{p}, &tc.found)
 			var want strings.Builder
 			for _, m := range tc.missing {
 				want.WriteString("salt: " + m + " was in the last backup but was not found this time, so it is no longer backed up. Its earlier copies stay in history until prune drops them\n")

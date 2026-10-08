@@ -95,8 +95,9 @@ func (a *App) Backup(o BackupOptions) error {
 	if err != nil {
 		return err
 	}
-	a.warnMissing(last, o.Presets, found, sealed.Gone)
-	if err := found.CheckGone(sealed.Gone); err != nil {
+	found.Drop(sealed.Gone)
+	a.warnMissing(last, o.Presets, found)
+	if err := found.CheckGone(); err != nil {
 		return fmt.Errorf("the backup was sealed but not committed: %w", err)
 	}
 	if err := a.Git.Stage(r.Root); err != nil {
@@ -160,19 +161,18 @@ func interrupted(ctx context.Context, err error) bool {
 // backup, not counting a place inside it that is found. Such a place may
 // be on a drive that is not mounted, be pointed to by a variable set in the
 // person's shell but not for cron, or be a file a preset names that was
-// deleted before it was sealed. gone lists the backup paths of what found held but was deleted before it
-// was sealed. Its files are no longer backed up, so each place is named
-// once, not each file, and one inside another missing place is not named.
-// Paths no preset names, such as those an earlier salt seal sealed, are not
-// named.
-func (a *App) warnMissing(last []string, presets []*preset.Preset, found *preset.Found, gone []string) {
+// deleted before it was sealed, which found no longer holds once dropped
+// (see preset.Found.Drop). Its files are no longer backed up, so each place
+// is named once, not each file, and one inside another missing place is not
+// named. Paths no preset names, such as those an earlier salt seal sealed,
+// are not named.
+func (a *App) warnMissing(last []string, presets []*preset.Preset, found *preset.Found) {
 	// still records, for each place, whether it is backed up this time:
 	// whether this backup holds a path whose own place it is, so a place
-	// inside it that is found does not count, or it was found and was not
-	// a file deleted before it was sealed.
+	// inside it that is found does not count, or it was found.
 	still := map[string]bool{}
 	for _, rel := range found.Paths() {
-		if place, ok := preset.PlaceOf(presets, rel); ok && !slices.Contains(gone, rel) {
+		if place, ok := preset.PlaceOf(presets, rel); ok {
 			still[place] = true
 		}
 	}
@@ -181,7 +181,7 @@ func (a *App) warnMissing(last []string, presets []*preset.Preset, found *preset
 		if _, seen := still[place]; !ok || seen {
 			continue
 		}
-		still[place] = slices.Contains(found.Places, place) && !slices.Contains(gone, place)
+		still[place] = slices.Contains(found.Places, place)
 	}
 	in := func(p, dir string) bool { return p == dir || strings.HasPrefix(p, dir+"/") }
 	var missing []string

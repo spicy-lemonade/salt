@@ -58,14 +58,32 @@ type Found struct {
 	by map[*Preset][]string
 }
 
-// CheckGone returns ErrNothing for the first preset, in name order, whose
-// every file and database is in gone, the backup paths of those deleted
-// before they were sealed. A preset left with nothing then fails as one that
-// found nothing does.
-func (f *Found) CheckGone(gone []string) error {
+// Drop removes the backup paths in gone, of files and databases deleted
+// before they were sealed, from f's files, databases and places and from
+// what each preset backs up, so f then holds only what the backup does.
+func (f *Found) Drop(gone []string) {
+	if len(gone) == 0 {
+		return
+	}
+	set := make(map[string]bool, len(gone))
+	for _, rel := range gone {
+		set[rel] = true
+	}
+	f.Files = slices.DeleteFunc(f.Files, func(x seal.Extra) bool { return set[x.Rel] })
+	f.Databases = slices.DeleteFunc(f.Databases, func(d source.Database) bool { return set[d.Name()] })
+	f.Places = slices.DeleteFunc(f.Places, func(rel string) bool { return set[rel] })
+	for p, rels := range f.by {
+		f.by[p] = slices.DeleteFunc(rels, func(rel string) bool { return set[rel] })
+	}
+}
+
+// CheckGone returns ErrNothing for the first preset, in name order, that
+// Drop left with nothing, as every file it found was deleted before it was
+// sealed. Such a preset then fails as one that found nothing does.
+func (f *Found) CheckGone() error {
 	presets := slices.SortedFunc(maps.Keys(f.by), func(a, b *Preset) int { return strings.Compare(a.Name, b.Name) })
 	for _, p := range presets {
-		if !slices.ContainsFunc(f.by[p], func(rel string) bool { return !slices.Contains(gone, rel) }) {
+		if len(f.by[p]) == 0 {
 			return fmt.Errorf("%w for the %s preset. What it found was deleted before it could be backed up", ErrNothing, p.Name)
 		}
 	}
