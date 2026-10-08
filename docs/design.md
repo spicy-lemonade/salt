@@ -579,9 +579,9 @@ connection that turns keepalives off with `keepalives=0` gets none, and so
 does one that names a libpq service, or runs with `PGSERVICE` set, so the
 service file's own are kept. Messages show the connection without them.
 A dropped connection or any other `pg_dump` error stops salt before sealing,
-with `pg_dump`'s reason. A connection with no database name uses `PGDATABASE`, as
-libpq does. Without that it is refused, rather than letting `pg_dump` guess
-one.
+with `pg_dump`'s reason. A connection with no database name uses
+`PGDATABASE`, as libpq does. Without that it is refused, rather than letting
+`pg_dump` guess one.
 
 A dump has no last-modified date of its own, so none is recorded, and it is
 owner-only (0600). Recent `pg_dump` releases (18, and 17.6, 16.10, 15.14,
