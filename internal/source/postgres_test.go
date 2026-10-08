@@ -25,9 +25,9 @@ func TestParseURL(t *testing.T) {
 		"postgresql://%2Fvar%2Frun%2Fpostgresql/memory":                     {"postgresql://%2Fvar%2Frun%2Fpostgresql/memory", "", "memory"},
 		"postgresql://localhost":                                            {"postgresql://localhost", "", ""},
 	} {
-		conn, password, dbname, err := parseURL(in)
-		if err != nil || [3]string{conn, password, dbname} != want {
-			t.Errorf("%s: %q, %q, %q, %v; want %q", in, conn, password, dbname, err, want)
+		p, err := parseURL(in)
+		if err != nil || [3]string{p.conn, p.password, p.dbname} != want || !p.url {
+			t.Errorf("%s: %q, %q, %q, %v; want %q", in, p.conn, p.password, p.dbname, err, want)
 		}
 	}
 	for _, in := range []string{
@@ -36,7 +36,7 @@ func TestParseURL(t *testing.T) {
 		"postgresql://localhost/%zz",
 		"postgresql://localhost/memory?dbname=%zz",
 	} {
-		if _, _, _, err := parseURL(in); !errors.Is(err, errNotPostgres) {
+		if _, err := parseURL(in); !errors.Is(err, errNotPostgres) {
 			t.Errorf("%s: %v, want errNotPostgres", in, err)
 		}
 	}
@@ -52,13 +52,13 @@ func TestParseSettings(t *testing.T) {
 		"user=agent":                                               {"user='agent'", "", ""},
 		"dbname=postgresql://h/x":                                  {"dbname='postgresql://h/x'", "", "postgresql://h/x"},
 	} {
-		conn, password, dbname, err := parseSettings(in)
-		if err != nil || [3]string{conn, password, dbname} != want {
-			t.Errorf("%q: %q, %q, %q, %v; want %q", in, conn, password, dbname, err, want)
+		p, err := parseSettings(in)
+		if err != nil || [3]string{p.conn, p.password, p.dbname} != want || p.url {
+			t.Errorf("%q: %q, %q, %q, %v; want %q", in, p.conn, p.password, p.dbname, err, want)
 		}
 	}
 	for _, in := range []string{"", "   ", "memory", "dbname", "=memory", "db name=memory", "dbname='memory", "host=x dbname"} {
-		if _, _, _, err := parseSettings(in); !errors.Is(err, errNotPostgres) {
+		if _, err := parseSettings(in); !errors.Is(err, errNotPostgres) {
 			t.Errorf("%q: %v, want errNotPostgres", in, err)
 		}
 	}
@@ -67,12 +67,12 @@ func TestParseSettings(t *testing.T) {
 // A quoted setting reads back unchanged.
 func TestSettingsRoundTrip(t *testing.T) {
 	for _, v := range []string{"", "plain", "two words", `it's`, `back\slash`, `'\'`, "tab\there"} {
-		conn, _, dbname, err := parseSettings("dbname='" + settingQuoter.Replace(v) + "'")
-		if err != nil || dbname != v {
-			t.Errorf("%q: %q, %v", v, dbname, err)
+		p, err := parseSettings("dbname='" + settingQuoter.Replace(v) + "'")
+		if err != nil || p.dbname != v {
+			t.Errorf("%q: %q, %v", v, p.dbname, err)
 		}
-		if _, _, again, err := parseSettings(conn); err != nil || again != v {
-			t.Errorf("%q: written back as %q, read %q, %v", v, conn, again, err)
+		if again, err := parseSettings(p.conn); err != nil || again.dbname != v {
+			t.Errorf("%q: written back as %q, read %q, %v", v, p.conn, again.dbname, err)
 		}
 	}
 }
@@ -156,18 +156,39 @@ func TestNewPostgresConn(t *testing.T) {
 	}
 }
 
+// The settings a connection gives are named, in the order given, without
+// the password.
+func TestParseKeys(t *testing.T) {
+	for in, want := range map[string][]string{
+		"postgresql://h/m?sslmode=require&password=x&keepalives%5Fidle=5": {"sslmode", "keepalives_idle"},
+		"postgresql://u:x@h/m":                          nil,
+		"host=h password=x keepalives_count=9 dbname=m": {"host", "keepalives_count", "dbname"},
+	} {
+		parse := parseSettings
+		if strings.HasPrefix(in, "postgresql://") {
+			parse = parseURL
+		}
+		if p, err := parse(in); err != nil || !slices.Equal(p.keys, want) {
+			t.Errorf("%q: keys %q, %v; want %q", in, p.keys, err, want)
+		}
+	}
+}
+
 func TestPgDumpCommand(t *testing.T) {
 	t.Setenv("PGPASSWORD", "old")
 	t.Setenv("PGCONNECT_TIMEOUT", "")
 	os.Unsetenv("PGCONNECT_TIMEOUT")
-	p := &Postgres{conn: "postgresql://h/m", password: "new"}
+	t.Setenv("PGSERVICE", "")
+	os.Unsetenv("PGSERVICE")
+	p := &Postgres{conn: "postgresql://h/m", password: "new", url: true}
 	o := CopyOptions{Dst: "/tmp/x/0", Key: "abc"}
 	base := []string{"pg_dump", "--no-password", "--format=plain", "--lock-wait-timeout=30000", "--file=/tmp/x/0"}
+	dbname := "--dbname=postgresql://h/m?keepalives_idle=30&keepalives_interval=10&keepalives_count=3"
 	for help, want := range map[string][]string{
-		"  --restrict-key=RESTRICT_KEY  use provided string": append(slices.Clone(base), "--restrict-key=abc", "--dbname=postgresql://h/m"),
-		"  --no-password  never prompt for password":         append(slices.Clone(base), "--dbname=postgresql://h/m"),
+		"  --restrict-key=RESTRICT_KEY  use provided string": append(slices.Clone(base), "--restrict-key=abc", dbname),
+		"  --no-password  never prompt for password":         append(slices.Clone(base), dbname),
 	} {
-		cmd := pgDumpCommand(context.Background(), p, o, help)
+		cmd := pgDumpCommand(context.Background(), p, o, help, "")
 		if !slices.Equal(cmd.Args, want) {
 			t.Errorf("args = %q, want %q", cmd.Args, want)
 		}
@@ -179,9 +200,49 @@ func TestPgDumpCommand(t *testing.T) {
 	}
 	// The person's own timeout is kept, and no password adds none.
 	t.Setenv("PGCONNECT_TIMEOUT", "5")
-	cmd := pgDumpCommand(context.Background(), &Postgres{conn: "dbname='m'"}, o, "")
+	cmd := pgDumpCommand(context.Background(), &Postgres{conn: "dbname='m'"}, o, "", "")
 	if slices.ContainsFunc(cmd.Env, func(kv string) bool { return kv == "PGPASSWORD=" || kv == "PGCONNECT_TIMEOUT=30" }) {
 		t.Errorf("env = %q", cmd.Env)
+	}
+}
+
+// pg_dump gets the keepalives the connection does not set itself, with
+// tcp_user_timeout only when its libpq is 12 or later.
+func TestDumpConn(t *testing.T) {
+	t.Setenv("PGSERVICE", "")
+	os.Unsetenv("PGSERVICE")
+	const keep = "keepalives_idle=30 keepalives_interval=10 keepalives_count=3"
+	for _, tc := range []struct{ in, version, want string }{
+		{"host=h dbname=m", "pg_dump (PostgreSQL) 11.22", "host='h' dbname='m' " + keep},
+		{"host=h dbname=m", "pg_dump (PostgreSQL) 12.0", "host='h' dbname='m' " + keep + " tcp_user_timeout=60000"},
+		{"host=h dbname=m", "pg_dump (PostgreSQL) 18devel\n", "host='h' dbname='m' " + keep + " tcp_user_timeout=60000"},
+		{"host=h dbname=m", "pg_dump (PostgreSQL) 17.2 (Ubuntu 17.2-1.pgdg24.04+1)\n", "host='h' dbname='m' " + keep + " tcp_user_timeout=60000"},
+		{"host=h dbname=m", "not a version", "host='h' dbname='m' " + keep},
+		{"postgresql://h/m", "pg_dump (PostgreSQL) 17.2", "postgresql://h/m?keepalives_idle=30&keepalives_interval=10&keepalives_count=3&tcp_user_timeout=60000"},
+		{"postgresql://h/m?sslmode=require", "", "postgresql://h/m?sslmode=require&keepalives_idle=30&keepalives_interval=10&keepalives_count=3"},
+		// The connection's own settings are kept, and only the others added.
+		{"postgresql://h/m?keepalives_idle=300&tcp_user_timeout=0", "pg_dump (PostgreSQL) 17.2", "postgresql://h/m?keepalives_idle=300&tcp_user_timeout=0&keepalives_interval=10&keepalives_count=3"},
+		{"dbname=m keepalives_idle=300 keepalives_interval=5 keepalives_count=9", "", "dbname='m' keepalives_idle='300' keepalives_interval='5' keepalives_count='9'"},
+		// A service file may set its own.
+		{"service=agent dbname=m", "pg_dump (PostgreSQL) 17.2", "service='agent' dbname='m'"},
+		{"postgresql://h/m?service=agent", "", "postgresql://h/m?service=agent"},
+	} {
+		p, err := newPostgres("--postgres", "the connection", tc.in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := p.(*Postgres).dumpConn(tc.version); got != tc.want {
+			t.Errorf("%q, %q: %q, want %q", tc.in, tc.version, got, tc.want)
+		}
+		// Messages show the connection as given.
+		if strings.Contains(p.String(), "keepalives_interval=10") {
+			t.Errorf("%q: shown as %q", tc.in, p.String())
+		}
+	}
+	// PGSERVICE names a service for every connection.
+	t.Setenv("PGSERVICE", "agent")
+	if got := (&Postgres{conn: "dbname='m'"}).dumpConn(""); got != "dbname='m'" {
+		t.Errorf("with PGSERVICE: %q", got)
 	}
 }
 

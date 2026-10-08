@@ -213,7 +213,8 @@ func TestSealPostgresNamed(t *testing.T) {
 }
 
 // Every way of giving the password works: in the URL given to --postgres,
-// in PGPASSWORD, and in ~/.pgpass. libpq settings work like a URL.
+// in PGPASSWORD, and in ~/.pgpass. libpq settings work like a URL. The
+// keepalives salt adds work beside a connection's own.
 func TestSealPostgresPasswords(t *testing.T) {
 	e := newEnv(t)
 	s := startPostgres(t, e)
@@ -233,6 +234,7 @@ func TestSealPostgresPasswords(t *testing.T) {
 		"pgpassword": {noPassword, []string{"PGPASSWORD=" + pgPassword}},
 		"pgpass":     {noPassword, []string{"PGPASSFILE=" + pgpass}},
 		"settings":   {"host=127.0.0.1 port=" + port + " user=agent dbname=notes password='" + strings.ReplaceAll(pgPassword, "'", `\'`) + "'", nil},
+		"keepalives": {s.url("notes") + "?keepalives_idle=300&tcp_user_timeout=0", nil},
 	} {
 		t.Run(name, func(t *testing.T) {
 			b := newBackupRepo(t, e)
@@ -249,6 +251,31 @@ func TestSealPostgresPasswords(t *testing.T) {
 	}
 }
 
+// pg_dump is given keepalives, so a connection that dies part way through a
+// dump fails it. A connection's own settings are kept, and an older libpq is
+// not given tcp_user_timeout, which it would refuse.
+func TestSealPostgresKeepalives(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	os.MkdirAll(b.src, 0o755)
+	conn := filepath.Join(t.TempDir(), "conn")
+	stub := e.stubPath(t, "pg_dump", `case "$1" in --help) exit 0;; --version) echo "pg_dump (PostgreSQL) $SALT_TEST_VERSION"; exit 0;; esac
+for a; do case "$a" in --dbname=*) printf '%s' "${a#--dbname=}" > "$SALT_TEST_CONN";; --file=*) echo dump > "${a#--file=}";; esac; done`)
+	for _, tc := range []struct{ version, conn, want string }{
+		{"17.2", "postgresql://agent:s3cret@127.0.0.1/memory", "postgresql://agent@127.0.0.1/memory?keepalives_idle=30&keepalives_interval=10&keepalives_count=3&tcp_user_timeout=60000"},
+		{"11.22", "postgresql://agent:s3cret@127.0.0.1/memory", "postgresql://agent@127.0.0.1/memory?keepalives_idle=30&keepalives_interval=10&keepalives_count=3"},
+		{"17.2", "host=127.0.0.1 dbname=memory keepalives_count=9", "host='127.0.0.1' dbname='memory' keepalives_count='9' keepalives_idle=30 keepalives_interval=10 tcp_user_timeout=60000"},
+		{"17.2", "service=agent dbname=memory", "service='agent' dbname='memory'"},
+	} {
+		salt, tmp := withTemp(t, e.with(stub, "SALT_TEST_VERSION="+tc.version, "SALT_TEST_CONN="+conn))
+		salt.must(b.base, "salt", "seal", "--postgres", tc.conn, b.src, b.dir)
+		assertEmpty(t, tmp)
+		if got, err := os.ReadFile(conn); err != nil || string(got) != tc.want {
+			t.Errorf("pg_dump %s, %q: given %q, %v; want %q", tc.version, tc.conn, got, err, tc.want)
+		}
+	}
+}
+
 // When the dump cannot be made, salt stops before sealing, says why without
 // showing the password, and leaves nothing behind.
 func TestSealPostgresFailures(t *testing.T) {
@@ -259,7 +286,7 @@ func TestSealPostgresFailures(t *testing.T) {
 	os.MkdirAll(b.src, 0o755)
 	port := strconv.Itoa(s.port)
 	wrong := "postgresql://agent:wrong-s3cret@127.0.0.1:" + port + "/memory"
-	failing := e.stubPath(t, "pg_dump", "case \"$1\" in --help) exit 0;; esac\necho \"pg_dump: error: connection to server lost\" >&2\nexit 1")
+	failing := e.stubPath(t, "pg_dump", "case \"$1\" in --help|--version) exit 0;; esac\necho \"pg_dump: error: connection to server lost\" >&2\nexit 1")
 	for name, tc := range map[string]struct {
 		args []string
 		vars []string
@@ -292,7 +319,7 @@ func TestSealPostgresInterrupted(t *testing.T) {
 	e := newEnv(t)
 	b := newBackupRepo(t, e)
 	os.MkdirAll(b.src, 0o755)
-	script := `case "$1" in --help) exit 0;; esac
+	script := `case "$1" in --help|--version) exit 0;; esac
 for a; do case "$a" in --file=*) echo partial > "${a#--file=}";; esac; done
 touch "$SALT_TEST_STARTED"`
 	assertInterruptStopsCopy(t, e, b, "pg_dump", script, "--postgres", "postgresql://agent@127.0.0.1/memory")
