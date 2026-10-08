@@ -785,6 +785,27 @@ func TestGatherHindsight(t *testing.T) {
 		t.Fatalf("a pg0 connection: %v", err)
 	}
 
+	// Every settings file the preset names is checked for its tokens, so a
+	// path added without its secrets rule fails here.
+	bare, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range hindsight.Paths {
+		p, ok := envOf(bare, nil).expand(strings.ReplaceAll(x.From, "*", "p"))
+		if !ok {
+			t.Fatalf("%s did not expand", x.From)
+		}
+		write(t, p, `{"apiToken": "hsk-5"}`)
+	}
+	f, err = envOf(bare, nil).Gather([]*Preset{hindsight}, t.TempDir(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Files) != 0 || len(f.LeftOut) != len(hindsight.Paths) {
+		t.Fatalf("settings holding a token: backed up %v, left out %d of %d", f.Files, len(f.LeftOut), len(hindsight.Paths))
+	}
+
 	f = gather(nil, hermes, hindsight)
 	want = append([]string{"hermes/SOUL.md", "hindsight/hindsight.sql"}, want...)
 	slices.Sort(want)
