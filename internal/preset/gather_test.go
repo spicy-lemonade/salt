@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -49,6 +50,17 @@ func testPreset(t *testing.T) *Preset {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// leftOut lists the files f leaves out as "path: why", each path inside
+// base and relative to it, in order.
+func leftOut(f *Found, base string) []string {
+	var left []string
+	for _, l := range f.LeftOut {
+		left = append(left, strings.TrimPrefix(l.Path, base+string(filepath.Separator))+": "+l.Why)
+	}
+	slices.Sort(left)
+	return left
 }
 
 func rels(f *Found) (files, dbs []string) {
@@ -651,12 +663,7 @@ func TestGatherHoncho(t *testing.T) {
 	if got := f.Databases[0].String(); got != "postgresql://postgres@localhost:5432/postgres" {
 		t.Fatalf("default connection %s", got)
 	}
-	var left []string
-	for _, l := range f.LeftOut {
-		left = append(left, strings.TrimPrefix(l.Path, dir+string(filepath.Separator))+": "+l.Why)
-	}
-	slices.Sort(left)
-	if want := []string{
+	if left, want := leftOut(f, dir), []string{
 		"honcho.json: its setting refreshToken holds a secret",
 		filepath.Join("profiles", "coder", "honcho.json") + ": its setting apiKey holds a secret",
 	}; !slices.Equal(left, want) {
@@ -747,12 +754,7 @@ func TestGatherHindsight(t *testing.T) {
 	if got := f.Databases[0].String(); got != "postgresql://hindsight@localhost:5432/hindsight" {
 		t.Fatalf("default connection %s", got)
 	}
-	var left []string
-	for _, l := range f.LeftOut {
-		left = append(left, strings.TrimPrefix(l.Path, home+string(filepath.Separator))+": "+l.Why)
-	}
-	slices.Sort(left)
-	if want := []string{
+	if left, want := leftOut(f, home), []string{
 		filepath.Join(".hermes", "profiles", "coder", "hindsight", "config.json") + ": its setting api_key holds a secret",
 		filepath.Join(".hindsight", "codex.json") + ": its setting hindsightApiToken holds a secret",
 		filepath.Join(".hindsight", "coding-agent.json") + ": its setting apiToken holds a secret",
@@ -811,6 +813,139 @@ func TestGatherHindsight(t *testing.T) {
 	slices.Sort(want)
 	if got := slices.Sorted(slices.Values(f.Paths())); !slices.Equal(got, want) {
 		t.Fatalf("hermes and hindsight backed up %v, want %v", got, want)
+	}
+}
+
+// The openclaw preset backs up each OpenClaw agent's workspace whole, the
+// wiki, LanceDB memory, shared and learned skills, and openclaw.json when it
+// holds no secret, in OpenClaw's folder and in each OpenClaw profile's. It
+// leaves out OpenClaw's databases, which hold its logins, credential files,
+// sessions and logs, and inside the folders it backs up, .env and key files,
+// caches and an agent database kept there. A secret kept by reference, as
+// an object naming where it is, counts as one. OPENCLAW_STATE_DIR names
+// another folder, and OPENCLAW_WORKSPACE_DIR a workspace elsewhere.
+func TestGatherOpenClaw(t *testing.T) {
+	openclaw, err := Get("openclaw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, work, rescue := filepath.Join(home, ".openclaw"), filepath.Join(home, ".openclaw-work"), filepath.Join(home, ".openclaw-rescue")
+	for _, rel := range []string{
+		"workspace/AGENTS.md", "workspace/SOUL.md", "workspace/USER.md", "workspace/MEMORY.md", "workspace/DREAMS.md",
+		"workspace/memory/2026-10-07.md", "workspace/skills/notes/SKILL.md", "workspace/.agents/skills/go/SKILL.md",
+		"workspace/projects/plan.md", "workspace-coder/MEMORY.md", "wiki/main/index.md",
+		"memory/lancedb/memories.lance/data/0.lance", "skills/shared/SKILL.md",
+		"agents/main/agent/workshop-skills/learned/SKILL.md",
+	} {
+		write(t, filepath.Join(state, rel), rel)
+	}
+	write(t, filepath.Join(state, "workspace", "notes.db"), sqliteFile)
+	write(t, filepath.Join(state, "workspace", "agent", "openclaw-agent.sqlite"), sqliteFile)
+	write(t, filepath.Join(state, "workspace", "agent", "openclaw-agent.sqlite-wal"), "wal")
+	write(t, filepath.Join(state, "state", "openclaw.sqlite"), sqliteFile)
+	write(t, filepath.Join(state, "agents", "main", "agent", "openclaw-agent.sqlite"), sqliteFile)
+	write(t, filepath.Join(state, "memory", "main.sqlite"), sqliteFile)
+	for _, rel := range []string{
+		".env", "secrets.json", "gateway.token", "credentials/oauth.json", "identity/device.json", "devices/paired.json",
+		"logs/commands.log", "agents/main/sessions/s1.jsonl", "agents/main/agent/codex-home/auth.json", "agents/main/qmd/index.bin",
+		"npm/node_modules/x/index.js", "extensions/x/index.js", "sandboxes/s/MEMORY.md", "openclaw.json.bak",
+		"workspace/.env", "workspace/prod.env", "workspace/deploy.pem", "workspace/id.key", "workspace/.git/HEAD",
+		"workspace/node_modules/x/index.js", "workspace/skills/notes/.venv/lib/x.py", "workspace/skills/notes/__pycache__/x.pyc",
+	} {
+		write(t, filepath.Join(state, rel), "left out")
+	}
+	write(t, filepath.Join(state, "openclaw.json"), `{"gateway": {"auth": {"mode": "token", "token": "tok-1"}}}`)
+	write(t, filepath.Join(work, "openclaw.json"), `{"agents": {"defaults": {"model": "m"}}, "env": {"vars": {}}, "channels": {"telegram": {"botToken": "${TG_TOKEN}"}}}`)
+	write(t, filepath.Join(work, "workspace", "MEMORY.md"), "work memory")
+	write(t, filepath.Join(work, "workspace-ops", "SOUL.md"), "ops soul")
+	write(t, filepath.Join(work, "credentials", "whatsapp", "creds.json"), `{"noiseKey": "nk-1"}`)
+	write(t, filepath.Join(rescue, "openclaw.json"), `{"channels": {"telegram": {"botToken": {"source": "env", "provider": "default", "id": "TG"}}}}`)
+	write(t, filepath.Join(home, ".openclaw-", "workspace", "MEMORY.md"), "a folder whose * matches nothing")
+	gather := func(vars map[string]string) *Found {
+		t.Helper()
+		f, err := envOf(home, vars).Gather([]*Preset{openclaw}, t.TempDir(), plain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+
+	f := gather(nil)
+	files, dbs := rels(f)
+	want := []string{
+		"openclaw-profiles/work/openclaw.json",
+		"openclaw-profiles/work/workspace-ops/SOUL.md",
+		"openclaw-profiles/work/workspace/MEMORY.md",
+		"openclaw/agents/main/agent/workshop-skills/learned/SKILL.md",
+		"openclaw/memory/lancedb/memories.lance/data/0.lance",
+		"openclaw/skills/shared/SKILL.md",
+		"openclaw/wiki/main/index.md",
+		"openclaw/workspace-coder/MEMORY.md",
+		"openclaw/workspace/.agents/skills/go/SKILL.md",
+		"openclaw/workspace/AGENTS.md",
+		"openclaw/workspace/DREAMS.md",
+		"openclaw/workspace/MEMORY.md",
+		"openclaw/workspace/SOUL.md",
+		"openclaw/workspace/USER.md",
+		"openclaw/workspace/memory/2026-10-07.md",
+		"openclaw/workspace/projects/plan.md",
+		"openclaw/workspace/skills/notes/SKILL.md",
+	}
+	if !slices.Equal(files, want) || !slices.Equal(dbs, []string{"openclaw/workspace/notes.db"}) {
+		t.Fatalf("files %v, databases %v", files, dbs)
+	}
+	if left, want := leftOut(f, home), []string{
+		filepath.Join(".openclaw-rescue", "openclaw.json") + ": its setting botToken holds a secret",
+		filepath.Join(".openclaw", "openclaw.json") + ": its setting token holds a secret",
+	}; !slices.Equal(left, want) || len(f.Numbers) != 0 || len(f.Skipped) != 0 {
+		t.Fatalf("left out %v, want %v, numbers %v, skipped %v", left, want, f.Numbers, f.Skipped)
+	}
+
+	// OPENCLAW_STATE_DIR naming a profile's folder backs it up once, under
+	// openclaw/, in place of ~/.openclaw, and OPENCLAW_WORKSPACE_DIR adds a
+	// workspace elsewhere.
+	elsewhere := filepath.Join(home, "elsewhere")
+	write(t, filepath.Join(elsewhere, "MEMORY.md"), "elsewhere")
+	f = gather(map[string]string{"OPENCLAW_STATE_DIR": work, "OPENCLAW_WORKSPACE_DIR": elsewhere})
+	got := slices.Sorted(slices.Values(f.Paths()))
+	if want := []string{"openclaw-workspace/MEMORY.md", "openclaw/openclaw.json", "openclaw/workspace-ops/SOUL.md", "openclaw/workspace/MEMORY.md"}; !slices.Equal(got, want) {
+		t.Fatalf("with variables: backed up %v, want %v", got, want)
+	}
+	for _, x := range f.Files {
+		if x.Rel == "openclaw/workspace/MEMORY.md" && filepath.Dir(filepath.Dir(x.Path)) != work {
+			t.Errorf("%s came from %s, want %s", x.Rel, x.Path, work)
+		}
+	}
+
+	// Every openclaw.json the preset names is checked for its secrets, so a
+	// path added without its secrets rule fails here.
+	bare, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configs int
+	for _, x := range openclaw.Paths {
+		if path.Base(x.From) != "openclaw.json" {
+			continue
+		}
+		p, ok := envOf(bare, nil).expand(strings.ReplaceAll(x.From, "*", "p"))
+		if !ok {
+			t.Fatalf("%s did not expand", x.From)
+		}
+		write(t, p, `{"models": {"providers": {"x": {"request": {"auth": {"mode": "header", "value": "v-1"}}}}}}`)
+		configs++
+	}
+	write(t, filepath.Join(bare, ".openclaw", "workspace", "MEMORY.md"), "memory")
+	f, err = envOf(bare, nil).Gather([]*Preset{openclaw}, t.TempDir(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configs != 2 || len(f.Files) != 1 || len(f.LeftOut) != configs {
+		t.Fatalf("settings holding a secret: backed up %v, left out %d of %d", f.Files, len(f.LeftOut), configs)
 	}
 }
 

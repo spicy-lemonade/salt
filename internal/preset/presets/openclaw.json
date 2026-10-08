@@ -1,0 +1,32 @@
+{
+  "name": "openclaw",
+  "about": "OpenClaw agents' workspaces with their memory, persona and skills, its wiki and LanceDB memory, shared and learned skills, and settings, in OpenClaw and each OpenClaw profile",
+  "paths": [
+    {"from": "${OPENCLAW_STATE_DIR:-~/.openclaw}/openclaw.json", "to": "openclaw/openclaw.json"},
+    {"from": "${OPENCLAW_STATE_DIR:-~/.openclaw}/workspace", "to": "openclaw/workspace"},
+    {"from": "${OPENCLAW_STATE_DIR:-~/.openclaw}/workspace-*", "to": "openclaw/workspace-*"},
+    {"from": "${OPENCLAW_STATE_DIR:-~/.openclaw}/wiki", "to": "openclaw/wiki"},
+    {"from": "${OPENCLAW_STATE_DIR:-~/.openclaw}/memory/lancedb", "to": "openclaw/memory/lancedb"},
+    {"from": "${OPENCLAW_STATE_DIR:-~/.openclaw}/skills", "to": "openclaw/skills"},
+    {"from": "${OPENCLAW_STATE_DIR:-~/.openclaw}/agents/*/agent/workshop-skills", "to": "openclaw/agents/*/agent/workshop-skills"},
+    {"from": "${OPENCLAW_WORKSPACE_DIR}", "to": "openclaw-workspace"},
+    {"from": "~/.openclaw-*/openclaw.json", "to": "openclaw-profiles/*/openclaw.json"},
+    {"from": "~/.openclaw-*/workspace", "to": "openclaw-profiles/*/workspace"},
+    {"from": "~/.openclaw-*/workspace-*", "to": "openclaw-profiles/*/workspace-*"},
+    {"from": "~/.openclaw-*/wiki", "to": "openclaw-profiles/*/wiki"},
+    {"from": "~/.openclaw-*/memory/lancedb", "to": "openclaw-profiles/*/memory/lancedb"},
+    {"from": "~/.openclaw-*/skills", "to": "openclaw-profiles/*/skills"},
+    {"from": "~/.openclaw-*/agents/*/agent/workshop-skills", "to": "openclaw-profiles/*/agents/*/agent/workshop-skills"}
+  ],
+  "skip": [
+    ".env", "*.env", "*.key", "*.pem", "openclaw.sqlite*", "openclaw-agent.sqlite*",
+    "__pycache__", "*.pyc", "*.pyo", "node_modules", ".venv", "venv", "site-packages",
+    ".cache", ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache"
+  ],
+  "secrets": [
+    {
+      "files": ["openclaw.json"],
+      "keys": ["*key", "*token", "authtag", "serviceaccount", "value", "vars", "creds"]
+    }
+  ]
+}
