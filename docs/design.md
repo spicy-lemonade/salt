@@ -1029,7 +1029,10 @@ Hindsight's Docker image keeps its embedded database inside the container,
 where salt cannot reach it, so run it with `HINDSIGHT_API_DATABASE_URL`
 naming a Postgres server that salt can reach. Files kept in another store
 (`HINDSIGHT_API_FILE_STORAGE_TYPE`, such as S3), a database on Hindsight's
-Oracle backend and Hindsight Cloud's memory are not backed up.
+Oracle backend and Hindsight Cloud's memory are not backed up. The preset
+always backs up a database, so with none for it to reach, such as when the
+memory is in Hindsight Cloud, every backup stops, and the preset does not
+suit that setup.
 
 The preset also backs up the settings that point each agent at its memory
 in Hindsight, such as the bank it uses. Hindsight's integrations keep these
