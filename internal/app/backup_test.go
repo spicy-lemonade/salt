@@ -534,7 +534,10 @@ func TestBackupPlaceGoneBeforeSealed(t *testing.T) {
 				t.Fatal(err)
 			}
 			// A symlink is named after the presets gather and before seal
-			// reads anything, so the file is deleted then.
+			// reads anything, so the file is deleted then. This keeps the hook
+			// in the fake UI rather than in salt's own code; if that line
+			// ever moves after sealing, the file is not deleted in time and
+			// the test fails rather than passing wrongly.
 			os.Symlink("notes.md", filepath.Join(home, "tool", "profiles", "work", "link.md"))
 			e.ui.onPrintf = func(line string) {
 				if strings.HasPrefix(line, "salt: skipped") {
