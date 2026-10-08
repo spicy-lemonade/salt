@@ -535,9 +535,10 @@ func secretIn(p string, sec Secret) (why string, secret bool, number string) {
 // secretKeys returns the first setting in n, at any depth, whose name
 // matches sec's keys in lower case and that holds a value, and the first
 // such setting that holds a number and no value, or "" for either. comment
-// is true, and the others "", when a setting's name starts with // or /*.
-// Only a JSON5 comment read as YAML gives such a name, joined to the name
-// after it, which then matches no key, so the file cannot be checked.
+// is true, and the others "", when a setting's name is not quoted and
+// starts with // or /*. Only a JSON5 comment read as YAML gives such a name,
+// joined to the name after it, which then matches no key, so the file
+// cannot be checked. A quoted name, such as package.json's "//", is a name.
 func secretKeys(n *yaml.Node, sec Secret) (text, number string, comment bool) {
 	switch n.Kind {
 	case yaml.DocumentNode, yaml.SequenceNode:
@@ -551,7 +552,7 @@ func secretKeys(n *yaml.Node, sec Secret) (text, number string, comment bool) {
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k, v := n.Content[i], n.Content[i+1]
-			if strings.HasPrefix(k.Value, "//") || strings.HasPrefix(k.Value, "/*") {
+			if k.Style&(yaml.DoubleQuotedStyle|yaml.SingleQuotedStyle) == 0 && (strings.HasPrefix(k.Value, "//") || strings.HasPrefix(k.Value, "/*")) {
 				return "", "", true
 			}
 			if matchAny(sec.Keys, strings.ToLower(k.Value)) {

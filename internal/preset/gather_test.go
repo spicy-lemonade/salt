@@ -1050,9 +1050,13 @@ func TestSecretIn(t *testing.T) {
 		"{\"a\": 1 /* note */, \"token\": \"sk-1\"}\n": "its setting token holds a secret",
 		"{\"token\": 512 // a cap\n}\n":                "its setting token holds a secret",
 		"{\"a\": [1, /* note */ 2]}\n":                 "",
-		"{\n  // the keys\n  \"token\": \"\"\n}\n":     "it could not be read as YAML or JSON to check it for secrets",
-		"/* note */ {\"token\": \"\"}\n":               "it could not be read as YAML or JSON to check it for secrets",
-		"{token: \"abc\",}\n":                          "its setting token holds a secret",
+		// A quoted name is never a comment, as package.json's "//" is not.
+		"{\"//\": \"a note\", \"a\": 1}\n":            "",
+		"'/* x */': 1\n":                              "",
+		"{\"//\": \"a note\", \"token\": \"sk-1\"}\n": "its setting token holds a secret",
+		"{\n  // the keys\n  \"token\": \"\"\n}\n":    "it could not be read as YAML or JSON to check it for secrets",
+		"/* note */ {\"token\": \"\"}\n":              "it could not be read as YAML or JSON to check it for secrets",
+		"{token: \"abc\",}\n":                         "its setting token holds a secret",
 		// An object holding exactly the settings a ref lists names where the
 		// secret is kept, compared in lower case. One with more, less, or
 		// more than a value in a setting may hold a secret.

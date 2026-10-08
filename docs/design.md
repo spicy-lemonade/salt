@@ -820,7 +820,9 @@ code reads them all, so adding a tool means adding one file:
   out too. A comment, as JSON5 allows, is not YAML. One that stops salt
   reading the file, or that salt would read as the start of a setting's
   name, as before a setting or a closing brace, keeps the file out, since it
-  would hide the setting after it from the check. A comment after a value
+  would hide the setting after it from the check. A quoted name that starts
+  with `//` or `/*`, such as the `"//"` some JSON files use for a note, is a
+  name, not a comment, and is checked like any other. A comment after a value
   becomes part of the value, so the setting holds text. Remove comments from
   such a file to be sure it is checked as written and backed up. Salt never
   changes the file to remove the secret.
