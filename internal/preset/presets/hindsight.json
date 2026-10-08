@@ -1,0 +1,37 @@
+{
+  "name": "hindsight",
+  "about": "Self-hosted Hindsight's memory database, and the Hindsight settings of each agent that uses it, including Hermes and each Hermes profile",
+  "paths": [
+    {"from": "~/.hindsight/aider.json", "to": "hindsight/aider.json"},
+    {"from": "~/.hindsight/claude-code.json", "to": "hindsight/claude-code.json"},
+    {"from": "~/.hindsight/cline.json", "to": "hindsight/cline.json"},
+    {"from": "~/.hindsight/codex.json", "to": "hindsight/codex.json"},
+    {"from": "~/.hindsight/coding-agent.json", "to": "hindsight/coding-agent.json"},
+    {"from": "~/.hindsight/config.json", "to": "hindsight/config.json"},
+    {"from": "~/.hindsight/copilot.json", "to": "hindsight/copilot.json"},
+    {"from": "~/.hindsight/copilot-cli.json", "to": "hindsight/copilot-cli.json"},
+    {"from": "~/.hindsight/cursor.json", "to": "hindsight/cursor.json"},
+    {"from": "~/.hindsight/cursor-cli.json", "to": "hindsight/cursor-cli.json"},
+    {"from": "~/.hindsight/devin-desktop.json", "to": "hindsight/devin-desktop.json"},
+    {"from": "~/.hindsight/omo.json", "to": "hindsight/omo.json"},
+    {"from": "~/.hindsight/opencode.json", "to": "hindsight/opencode.json"},
+    {"from": "~/.hindsight/openhands.json", "to": "hindsight/openhands.json"},
+    {"from": "~/.hindsight/zcode.json", "to": "hindsight/zcode.json"},
+    {"from": "~/.hindsight/zed.json", "to": "hindsight/zed.json"},
+    {"from": "${HERMES_HOME:-~/.hermes}/hindsight/config.json", "to": "hermes/hindsight/config.json"},
+    {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/hindsight/config.json", "to": "hermes/profiles/*/hindsight/config.json"}
+  ],
+  "databases": [
+    {"kind": "postgres", "from": "${HINDSIGHT_API_DATABASE_URL:-postgresql://hindsight:hindsight@localhost:5432/hindsight}", "to": "hindsight/hindsight.sql"}
+  ],
+  "secrets": [
+    {
+      "files": [
+        "aider.json", "claude-code.json", "cline.json", "codex.json", "coding-agent.json", "config.json",
+        "copilot.json", "copilot-cli.json", "cursor.json", "cursor-cli.json", "devin-desktop.json",
+        "omo.json", "opencode.json", "openhands.json", "zcode.json", "zed.json"
+      ],
+      "keys": ["*token"]
+    }
+  ]
+}
