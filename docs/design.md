@@ -764,15 +764,23 @@ code reads them all, so adding a tool means adding one file:
   and the path is skipped when it is unset or empty. `${VAR:-DEFAULT}` uses
   DEFAULT then. A leading `~` is the home folder. A part that is only `*`
   matches every folder there, such as each profile, leaving out hidden ones.
-  A `*` held by a variable is part of a name, never matched.
+  A part with text around its `*`, such as `workspace-*` or `.tool-*`,
+  matches each folder whose name has that text, with at least one character
+  for the `*`. It matches hidden folders only when it starts with a dot, as
+  in a shell. A part holds at most one `*` and no variable, and the first
+  part holds none. A `*` held by a variable is part of a name, never
+  matched.
 - `to` is where it goes in the backup. It has a `*` for each `*` in `from`,
-  which takes the name that `*` matched. Paths that do not exist are skipped.
+  at most one in a part, which takes the text that `*` matched, so
+  `{"from": "~/.tool-*/data", "to": "tool-profiles/*/data"}` backs up
+  `~/.tool-work/data` as `tool-profiles/work/data`. A `*` that would match a
+  whole `.` or `..` matches nothing. Paths that do not exist are skipped.
 - `databases` lists live databases that are not files, such as one on a
   Postgres server. `kind` is the `salt seal` option for that kind of
   database without its dashes, such as `postgres`. Only a kind given by a
   connection can be named, since `paths` already finds a SQLite file and
   gives it a safe copy. `from` is the connection, with variables and
-  defaults as in a path's `from` and no `*` part. The database is skipped
+  defaults as in a path's `from` and no `*`. The database is skipped
   when a variable without a default is unset or empty. `to` is the path
   the copy is backed up under. The copy is made as `salt seal` makes it, so
   its password is never shown and an unchanged database makes no commit.
@@ -1073,6 +1081,73 @@ database as in "Restoring a Postgres database", on a server with pgvector
 and any other extension Hindsight was set up with, and point
 `HINDSIGHT_API_DATABASE_URL` at it.
 
+The `openclaw` preset covers [OpenClaw](https://github.com/openclaw/openclaw).
+OpenClaw keeps each agent's memory as Markdown in the agent's workspace, in
+`MEMORY.md`, `USER.md`, `DREAMS.md` and the daily notes in `memory/`, beside
+its persona (`SOUL.md` and `IDENTITY.md`), its instructions (`AGENTS.md`)
+and its skills. The preset backs up each workspace whole, with whatever else
+the agent keeps there. It also backs up the Memory Wiki plugin's vaults
+(`wiki`), the LanceDB memory plugin's store (`memory/lancedb`), the skills
+every agent shares (`skills`), the skills each agent has learned
+(`agents/<agent>/agent/workshop-skills`), and OpenClaw's settings
+(`openclaw.json`).
+
+It looks in OpenClaw's folder (`$OPENCLAW_STATE_DIR` or `~/.openclaw`) and
+in each OpenClaw profile's folder (`~/.openclaw-<profile>`). In each, the
+first agent's workspace is `workspace` and each other agent's is
+`workspace-<agent>`. A workspace `OPENCLAW_WORKSPACE_DIR` names is backed up
+too. A workspace set somewhere else in `openclaw.json`, in
+`agents.defaults.workspace` or an agent's own `workspace`, is not found, so
+set `OPENCLAW_WORKSPACE_DIR` to it in the cron line, or back it up with
+`salt seal` into a repo of its own. Nor is a LanceDB store that the plugin's
+`dbPath` puts somewhere else. With `OPENCLAW_HOME` set, set
+`OPENCLAW_STATE_DIR` in the cron line too. A workspace holding large files,
+such as a repository the agent works on, adds them to the backup, apart from
+its `.git` folder.
+
+OpenClaw keeps its sessions, transcripts, scheduled jobs and memory search
+index in SQLite databases, `state/openclaw.sqlite` and each agent's
+`agents/<agent>/agent/openclaw-agent.sqlite`. The same databases hold its
+logins, API keys and the tokens of paired devices, and salt never changes a
+file to take them out. So the preset leaves these databases out, and
+sessions, transcripts and scheduled jobs are not backed up. OpenClaw builds
+the search index again from the workspace's Markdown. OpenClaw's own Git
+backup, `openclaw backup git create --exclude-secrets`, can copy the
+databases without the logins.
+
+Nothing else in OpenClaw's folder is backed up. That leaves out its
+credential files (`.env`, `credentials`, `secrets.json`, `gateway.token`,
+`gateway.password`, `identity` and `devices`), each agent's `codex-home`,
+the old `sessions` folders, logs, sandboxes, installed plugins and tools,
+downloaded models and caches. Inside the folders it backs up, it leaves out
+`.env` files, key files (`*.key` and `*.pem`), an OpenClaw database kept
+there, and the Python and Node caches and packages a skill or project can
+hold, which are installed again when needed. Any other SQLite database in a
+workspace gets a safe copy.
+
+`openclaw.json` can hold API keys and tokens, such as the gateway's
+`gateway.auth.token`, which OpenClaw's setup writes there by default, a
+channel's `botToken`, or a key in `env.vars`. So it is checked for them, with
+`*key`, `*token`, `authtag`, `serviceaccount`, `value`, `vars` and `creds`
+checked as well as salt's usual settings. A file holding one is left out, and
+salt names it. A key written as `${NAME}` names a variable, not a key, so a
+file holding only such keys is backed up. A key kept as an OpenClaw
+SecretRef, such as `{"source": "env", "id": "NAME"}`, names where the key is
+in an object, which salt counts as a secret, so that file is left out too.
+After restoring, set up OpenClaw's logins and keys again, as on a new
+machine.
+
+| On the machine | In the backup |
+|---|---|
+| `~/.openclaw/<file or folder>` (or under `$OPENCLAW_STATE_DIR`) | `openclaw/<file or folder>` |
+| `~/.openclaw-<profile>/<file or folder>` | `openclaw-profiles/<profile>/<file or folder>` |
+| `$OPENCLAW_WORKSPACE_DIR` | `openclaw-workspace/` |
+
+`OPENCLAW_STATE_DIR` naming a profile's folder backs that profile up under
+`openclaw/`. To get OpenClaw's memory back, restore into a new folder, stop
+OpenClaw, and copy `openclaw/` to `~/.openclaw/` and each
+`openclaw-profiles/<profile>/` to `~/.openclaw-<profile>/`.
+
 Hermes sets `HERMES_HOME` to a profile's folder while it runs that profile.
 A `salt backup` started from inside Hermes, such as from one of its
 scheduled jobs, then sees only that profile. It backs that profile up as the
@@ -1093,4 +1168,4 @@ Touch ID, and switching recovery method.
 ## Still to build
 
 - OpenViking support. Its data format has not been checked yet.
-- Presets for more tools, such as OpenClaw.
+- Presets for more tools.
