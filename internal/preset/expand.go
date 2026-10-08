@@ -41,10 +41,7 @@ func (e Env) expand(template string) (string, bool) {
 	ok := true
 	out := variable.ReplaceAllStringFunc(template, func(m string) string {
 		sub := variable.FindStringSubmatch(m)
-		v := ""
-		if e.Getenv != nil {
-			v = e.Getenv(sub[1])
-		}
+		v := e.getenv(sub[1])
 		switch {
 		case v != "":
 			return v
@@ -61,6 +58,30 @@ func (e Env) expand(template string) (string, bool) {
 		out = e.Home + out[1:]
 	}
 	return out, ok && out != ""
+}
+
+// vars lists the variables template reads, each once, in order: those set
+// to something, and those unset or empty.
+func (e Env) vars(template string) (set, unset []string) {
+	for _, m := range variable.FindAllStringSubmatch(template, -1) {
+		switch name := m[1]; {
+		case slices.Contains(set, name) || slices.Contains(unset, name):
+		case e.getenv(name) != "":
+			set = append(set, name)
+		default:
+			unset = append(unset, name)
+		}
+	}
+	return set, unset
+}
+
+// getenv returns the environment variable name, or "" when it is unset or
+// e has no Getenv.
+func (e Env) getenv(name string) string {
+	if e.Getenv == nil {
+		return ""
+	}
+	return e.Getenv(name)
 }
 
 // Find returns every place on this machine that the preset path x names and that

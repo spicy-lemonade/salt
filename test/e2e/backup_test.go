@@ -343,7 +343,8 @@ func TestBackupHolographic(t *testing.T) {
 // API key, and never shows a password. The restored dump loads into a new
 // database that matches the live one, and a second run with nothing
 // changed makes no commit. A server that cannot be reached stops the
-// backup with nothing committed or pushed. The test always sets
+// backup with nothing committed or pushed, and the error says where the
+// connection came from. The test always sets
 // DB_CONNECTION_URI, so it never reaches a real Postgres on this machine.
 // Which files the preset finds is tested in internal/preset.
 func TestBackupHoncho(t *testing.T) {
@@ -387,7 +388,8 @@ func TestBackupHoncho(t *testing.T) {
 	s.stop()
 	local := commitCount(e, b.dir)
 	out, code := salt.run(b.base, "salt", "backup", "--preset", "honcho", b.dir)
-	if code != 1 || !strings.Contains(out, "copying the database postgresql://agent@127.0.0.1:"+port+"/honcho: pg_dump") || strings.Contains(out, "s3cret") || strings.Contains(out, "pa:ss") {
+	if code != 1 || !strings.Contains(out, "copying the database postgresql://agent@127.0.0.1:"+port+"/honcho: pg_dump") ||
+		!strings.HasSuffix(strings.TrimSpace(out), "The honcho preset read this connection from DB_CONNECTION_URI") || strings.Contains(out, "s3cret") || strings.Contains(out, "pa:ss") {
 		t.Fatalf("server stopped: exit %d:\n%s", code, out)
 	}
 	if commitCount(e, b.dir) != local || commitCount(e, b.remote) != commits {

@@ -44,7 +44,7 @@ type Postgres struct {
 // postgresql+psycopg://, is dropped, since pg_dump has its own. Without a
 // password in conn, pg_dump looks in ~/.pgpass, PGPASSFILE and PGPASSWORD.
 func NewPostgres(conn string) (Database, error) {
-	return newPostgres("--postgres", "the connection given to --postgres", conn)
+	return NewPostgresConn(conn, "the connection given to --postgres")
 }
 
 // NewPostgresEnv is NewPostgres for the connection held by the environment

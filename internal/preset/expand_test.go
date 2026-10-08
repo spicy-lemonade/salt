@@ -21,6 +21,22 @@ func mkdir(t *testing.T, parts ...string) string {
 	return p
 }
 
+// vars names each variable a template reads once, in order, as set or as
+// unset or empty, whatever its default. Without Getenv, none is set.
+func TestVars(t *testing.T) {
+	e := envOf("/home/me", map[string]string{"A": "a", "C": ""})
+	set, unset := e.vars("${A}/${B:-x}/${A}/${C}/${B}/$D")
+	if !slices.Equal(set, []string{"A"}) || !slices.Equal(unset, []string{"B", "C"}) {
+		t.Fatalf("vars = %v, %v", set, unset)
+	}
+	if set, unset := (Env{}).vars("${A}"); set != nil || !slices.Equal(unset, []string{"A"}) {
+		t.Fatalf("without Getenv: %v, %v", set, unset)
+	}
+	if set, unset := e.vars("/plain"); set != nil || unset != nil {
+		t.Fatalf("no variables: %v, %v", set, unset)
+	}
+}
+
 func TestExpand(t *testing.T) {
 	e := envOf("/home/me", map[string]string{"SET": "/set", "EMPTY": ""})
 	for template, want := range map[string]string{

@@ -69,15 +69,15 @@ type Database struct {
 	To string `json:"to"`
 }
 
-// conn returns how to make the database from its connection, or nil when
-// d's kind is not one given by a connection.
-func (d Database) conn() func(conn, where string) (source.Database, error) {
+// conn returns how to make the database from its connection. It is an
+// error when d's kind is not one given by a connection.
+func (d Database) conn() (func(conn, where string) (source.Database, error), error) {
 	for _, k := range source.Kinds {
-		if k.Flag == d.Kind {
-			return k.Conn
+		if k.Flag == d.Kind && k.Conn != nil {
+			return k.Conn, nil
 		}
 	}
-	return nil
+	return nil, fmt.Errorf("%q is not a kind of database a preset can name. A database file is found by its path", d.Kind)
 }
 
 // Secret names files that may hold secrets, such as API keys, and the
@@ -184,8 +184,8 @@ func (p *Preset) check(name string) error {
 		}
 	}
 	for _, d := range p.Databases {
-		if d.conn() == nil {
-			return fmt.Errorf("%q is not a kind of database a preset can name. A database file is found by its path", d.Kind)
+		if _, err := d.conn(); err != nil {
+			return err
 		}
 		if d.From == "" {
 			return errors.New("a database has no from")

@@ -1,7 +1,9 @@
 package preset
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"maps"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spicy-lemonade/salt/internal/proc"
 	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/source"
 )
@@ -359,7 +362,7 @@ func TestGatherFindsNothing(t *testing.T) {
 	// The second preset is checked too, and with another that finds
 	// something, leaving it out is suggested.
 	write(t, filepath.Join(home, "tool", "a.md"), "a")
-	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t), other}, t.TempDir(), plain); !errors.Is(err, ErrNothing) || !strings.HasSuffix(err.Error(), "other preset. It looks in . If you don't use it, leave out --preset other") {
+	if _, err := envOf(home, nil).Gather([]*Preset{testPreset(t), other}, t.TempDir(), plain); !errors.Is(err, ErrNothing) || !strings.HasSuffix(err.Error(), "other preset. It looks in $UNSET (not set). If you don't use it, leave out --preset other") {
 		t.Fatalf("Gather = %v", err)
 	}
 }
@@ -478,9 +481,19 @@ func TestGatherDatabases(t *testing.T) {
 		}
 	}
 
-	// Without the variable or a default, nothing is found.
-	if _, err := gather(nil, mk("v", "${V_URL}", "v.sql")); !errors.Is(err, ErrNothing) {
+	// Without the variable or a default, nothing is found, and the message
+	// names each variable that is not set, for paths and databases alike,
+	// in the order the preset lists them.
+	if _, err := gather(nil, mk("v", "${V_URL}", "v.sql")); !errors.Is(err, ErrNothing) || !strings.HasSuffix(err.Error(), "for the v preset. It looks in the database in $V_URL (not set)") {
 		t.Fatalf("unset: %v", err)
+	}
+	both, err := Parse("m", []byte(`{"name": "m", "paths": [{"from": "${M_DIR}/data", "to": "m"}, {"from": "/m", "to": "m2"}],
+		"databases": [{"kind": "postgres", "from": "postgresql://${M_USER}@h/${M_DB}?user=${M_USER}", "to": "m.sql"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gather(nil, both); err == nil || !strings.HasSuffix(err.Error(), "It looks in $M_DIR (not set), /m, the database in $M_USER and $M_DB (not set)") {
+		t.Fatalf("unset path and database: %v", err)
 	}
 
 	// Errors name the variables the connection came from, or the preset's
@@ -492,12 +505,43 @@ func TestGatherDatabases(t *testing.T) {
 	}{
 		{withDefault, map[string]string{"D_URL": "postgresql://a:s3cret@h"}, "the connection in D_URL, used by the d preset, names no database"},
 		{mk("two", "postgresql://${USER_X}:s3cret@${HOST_X}", "t.sql"), map[string]string{"USER_X": "a", "HOST_X": "h"}, "the connection in USER_X and HOST_X, used by the two preset, names no database"},
-		{mk("bad", "${B_URL:-mysql://u:s3cret@h/db}", "b.sql"), map[string]string{"OTHER": "x"}, "the bad preset's database connection is not a Postgres connection"},
+		{mk("same", "postgresql://${H_X}:s3cret@${H_X}", "s.sql"), map[string]string{"H_X": "h"}, "the connection in H_X, used by the same preset, names no database"},
+		{mk("bad", "${B_URL:-mysql://u:s3cret@h/db}", "b.sql"), map[string]string{"OTHER": "x"}, "the bad preset's default database connection is not a Postgres connection"},
+		{mk("lit", "mysql://u:s3cret@h/db", "l.sql"), nil, "the lit preset's database connection is not a Postgres connection"},
 	} {
 		_, err := gather(c.vars, c.p)
 		if err == nil || !strings.HasPrefix(err.Error(), c.want) || strings.Contains(err.Error(), "s3cret") {
 			t.Errorf("%s: %v, want %q", c.p.Name, err, c.want)
 		}
+	}
+
+	// A copy that fails says where the connection came from, and the
+	// database's option is its preset.
+	for _, c := range []struct {
+		p     *Preset
+		vars  map[string]string
+		about string
+	}{
+		{withDefault, nil, "This is the d preset's default connection, used when D_URL is not set. If the database is elsewhere, set D_URL, in the cron line too"},
+		{withDefault, map[string]string{"D_URL": "postgresql://h/mem"}, "The d preset read this connection from D_URL"},
+		{mk("a", "postgresql://${A_U:-u}@${A_H:-h}/db", "a.sql"), nil, "This is the a preset's default connection, used when A_U and A_H are not set. If the database is elsewhere, set A_U and A_H, in the cron line too"},
+		{mk("lit", "postgresql://h/db", "l.sql"), nil, ""},
+	} {
+		f, err := gather(c.vars, c.p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db, ok := f.Databases[0].(presetDB)
+		if !ok || db.about != c.about || db.Flag() != "--preset "+c.p.Name {
+			t.Errorf("%s %v: %#v, want about %q", c.p.Name, c.vars, f.Databases[0], c.about)
+		}
+	}
+
+	// A preset built in code, never read by Parse, with a kind a preset
+	// cannot name, is an error rather than a crash.
+	code := &Preset{Name: "code", Databases: []Database{{Kind: "sqlite", From: "/a.db", To: "a.db"}}}
+	if _, err := gather(nil, code); err == nil || err.Error() != `preset code: "sqlite" is not a kind of database a preset can name. A database file is found by its path` {
+		t.Fatalf("a kind no preset can name: %v", err)
 	}
 
 	// Taken in name order, b's path wins over c's, whatever order they are
@@ -517,6 +561,47 @@ func TestGatherDatabases(t *testing.T) {
 	f.Drop([]string{"b/mem.sql"})
 	if err := f.CheckGone(); !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "the b preset") {
 		t.Fatalf("CheckGone after Drop = %v", err)
+	}
+}
+
+// failingDB is a database whose copy fails with err.
+type failingDB struct{ err error }
+
+func (failingDB) Name() string   { return "memory.sql" }
+func (failingDB) String() string { return "postgresql://h/memory" }
+func (failingDB) Flag() string   { return "--postgres" }
+func (d failingDB) Copy(context.Context, source.CopyOptions) (source.Meta, error) {
+	return source.Meta{Mode: 0o600}, d.err
+}
+
+// When a preset database's program fails, its error says where the
+// connection came from, and is still the program's error. It says nothing
+// more when the copy works, is stopped or cannot start the program, or when
+// the connection holds no variables.
+func TestPresetDBCopy(t *testing.T) {
+	about := "The t preset read this connection from T_URL"
+	refused := &proc.Error{Program: "pg_dump", Err: errors.New("exit status 1"), Stderr: "pg_dump: error: connection refused"}
+	running := &proc.Error{Program: "pg_dump", Err: errors.New("exit status 1"), Stderr: "Is the server running on that host?"}
+	missing := fmt.Errorf("salt needs the pg_dump program, which %w", proc.ErrMissingProgram)
+	for _, c := range []struct {
+		err   error
+		about string
+		want  string
+	}{
+		{refused, about, refused.Error() + ". " + about},
+		{running, about, running.Error() + " " + about},
+		{refused, "", refused.Error()},
+		{context.Canceled, about, context.Canceled.Error()},
+		{missing, about, missing.Error()},
+	} {
+		meta, err := presetDB{Database: failingDB{c.err}, preset: "t", about: c.about}.Copy(context.Background(), source.CopyOptions{})
+		var failed *proc.Error
+		if err == nil || err.Error() != c.want || !errors.Is(err, c.err) || errors.As(c.err, &failed) != errors.As(err, &failed) || meta.Mode != 0o600 {
+			t.Errorf("Copy = %v, %v, want %q", meta, err, c.want)
+		}
+	}
+	if _, err := (presetDB{Database: failingDB{}, about: about}).Copy(context.Background(), source.CopyOptions{}); err != nil {
+		t.Errorf("a copy that works: %v", err)
 	}
 }
 

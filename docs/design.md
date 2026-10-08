@@ -672,8 +672,9 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
    approved its keys or has no signing key. It also refuses, before any work
    is done, if REPO is not a git repo or has no remote named `origin`;
 2. gathers what each preset names (see "Presets"), and refuses if a preset
-   finds nothing, naming where it looked. When another preset found
-   something, it says to leave that one out if the person doesn't use it;
+   finds nothing, naming where it looked and each variable it needs that is
+   not set. When another preset found something, it says to leave that one
+   out if the person doesn't use it;
 3. makes a safe copy of each SQLite database found, as `--sqlite` does, and
    of each database a preset names, such as a Postgres one, as `--postgres`
    does. It seals the copies and every other file found into REPO, which then holds
@@ -766,7 +767,10 @@ code reads them all, so adding a tool means adding one file:
   its password is never shown and an unchanged database makes no commit.
   An error reading the connection names the variable it came from, never
   the connection. A server that cannot be reached stops the backup before
-  anything is committed, so the last backup stays the latest. A connection
+  anything is committed, so the last backup stays the latest. That error
+  says which variable the preset read the connection from, or that it is
+  the preset's default, used when the variable is not set, which is then
+  to be set in the cron line too. A connection
   two presets name, compared without its password, is backed up once under
   the first preset's path, taking presets in name order.
 - `skip` lists name patterns of files and folders never backed up, such as
