@@ -60,7 +60,9 @@ type Found struct {
 
 // Drop removes the backup paths in gone, of files and databases deleted
 // before they were sealed, from f's files, databases and places and from
-// what each preset backs up, so f then holds only what the backup does.
+// what each preset backs up, so f then holds only what the backup does. It
+// is for use once f has been sealed: it reuses the memory of f's lists, so
+// any copy of them, such as the files given to seal, changes too.
 func (f *Found) Drop(gone []string) {
 	if len(gone) == 0 {
 		return
@@ -72,6 +74,7 @@ func (f *Found) Drop(gone []string) {
 	f.Files = slices.DeleteFunc(f.Files, func(x seal.Extra) bool { return set[x.Rel] })
 	f.Databases = slices.DeleteFunc(f.Databases, func(d source.Database) bool { return set[d.Name()] })
 	f.Places = slices.DeleteFunc(f.Places, func(rel string) bool { return set[rel] })
+	// A preset left with nothing keeps its entry, empty, so CheckGone finds it.
 	for p, rels := range f.by {
 		f.by[p] = slices.DeleteFunc(rels, func(rel string) bool { return set[rel] })
 	}
