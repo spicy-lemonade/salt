@@ -462,6 +462,47 @@ func TestSealRefusesAPushedSymlink(t *testing.T) {
 	}
 }
 
+// Someone with push access replaces .salt/format.json with a symlink to a
+// file outside the repo. Salt once read through it, and a link to /dev/zero
+// made it read without end. Every command must refuse it before reading
+// anything, and show nothing of the file.
+func TestPushedSymlinkedSettingsAreRefused(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	base, mine, src := b.base, b.dir, b.src
+	theirs := filepath.Join(base, "theirs")
+	write(t, filepath.Join(base, "secret.txt"), "the secret line\n")
+	b.files["USER.md"] = "secret\n"
+	b.backup(t, "2026-09-01")
+	e.must(mine, "git", "push", "-q", "origin", "main")
+
+	e.must(base, "git", "clone", "-q", b.remote, theirs)
+	e.must(theirs, "git", "rm", "-q", ".salt/format.json")
+	if err := os.Symlink("../../secret.txt", filepath.Join(theirs, ".salt", "format.json")); err != nil {
+		t.Fatal(err)
+	}
+	e.must(theirs, "git", "add", ".salt/format.json")
+	e.must(theirs, "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "tidy up")
+	e.must(theirs, "git", "push", "-q", "origin", "main")
+
+	e.must(mine, "git", "pull", "-q", "--ff-only")
+	for _, args := range [][]string{
+		{"seal", "--prune", src, mine},
+		{"verify", mine},
+		{"restore", mine, "--to", filepath.Join(base, "restored")},
+		{"prune", mine},
+		{"doctor", mine},
+	} {
+		out, code := e.run(base, "salt", args...)
+		if code != 1 || !strings.Contains(out, "symlink salt did not create at .salt/format.json") || strings.Contains(out, "the secret line") {
+			t.Fatalf("salt %s after the pushed symlink: exit %d\n%s", args[0], code, out)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(base, "restored")); !os.IsNotExist(err) {
+		t.Fatalf("restore wrote something: %v", err)
+	}
+}
+
 // Someone who can push before the owner sets up salt commits .salt as a link
 // to a folder outside the repo. Init in a fresh clone must refuse and write
 // nothing there.

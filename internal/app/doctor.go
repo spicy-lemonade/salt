@@ -144,9 +144,11 @@ func (a *App) doctorKeys(r *report, rp *repo.Repo) {
 	r.add(ok, "%d recipient(s): %s", n, strings.Join(shortKeys(rp.RecipientStrings), ", "))
 
 	if rp.Format.Recovery == repo.RecoveryPassphrase {
-		if head, err := readHead(filepath.Join(rp.Root, repo.KeyFile)); err != nil {
+		if data, err := repo.ReadSaltFile(rp.Root, repo.KeyFile); errors.Is(err, fs.ErrNotExist) {
 			r.add(fail, "%s is missing: without it your passphrase cannot recover this backup", repo.KeyFile)
-		} else if check.Classify(repo.KeyFile, head, true) != nil {
+		} else if err != nil {
+			r.add(fail, "%v", err)
+		} else if check.Classify(repo.KeyFile, data, true) != nil {
 			r.add(fail, "%s is not an age file", repo.KeyFile)
 		} else {
 			r.add(ok, "%s present (passphrase-protected key)", repo.KeyFile)

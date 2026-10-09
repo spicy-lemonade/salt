@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -266,16 +267,27 @@ func TestDownloadDir(t *testing.T) {
 // in its place.
 func TestRestoreFromURLErrorsNameTheURL(t *testing.T) {
 	e := remoteEnv(t)
+	r, done, err := e.app.openRepo(context.Background(), backupURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = done(fmt.Errorf("reading %s: %w", filepath.Join(r.Root, "x"), fs.ErrNotExist))
+	if want := "reading https://github.com/me/backup.git/x: file does not exist"; err == nil || err.Error() != want || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("done: %v, want %q", err, want)
+	}
+	noDownloadsLeft(t, e)
+
+	// Salt's own files are read by their path in the repo, so their errors
+	// do not name the download at all.
 	e.git.clone = func(_ context.Context, dir string) error {
 		if err := os.CopyFS(dir, os.DirFS(e.root)); err != nil {
 			return err
 		}
 		return os.Remove(filepath.Join(dir, repo.RecipientsFile))
 	}
-	err := e.app.Restore(RestoreOptions{Repo: backupURL, To: filepath.Join(t.TempDir(), "r")})
-	want := "open https://github.com/me/backup.git/" + repo.RecipientsFile + ": no such file or directory"
-	if err == nil || err.Error() != want || !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("Restore: %v, want %q", err, want)
+	err = e.app.Restore(RestoreOptions{Repo: backupURL, To: filepath.Join(t.TempDir(), "r")})
+	if err == nil || !strings.Contains(err.Error(), " "+repo.RecipientsFile+": ") || strings.Contains(err.Error(), "salt-download-") || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Restore: %v, want %s missing", err, repo.RecipientsFile)
 	}
 	noDownloadsLeft(t, e)
 
@@ -294,9 +306,32 @@ func TestRestoreFromURLErrorsNameTheURL(t *testing.T) {
 	}
 	e.app.Store = &keys.MemStore{}
 	err = e.app.Restore(RestoreOptions{Repo: backupURL, To: filepath.Join(t.TempDir(), "r")})
-	want = "reading " + repo.KeyFile + ": open https://github.com/me/backup.git/" + repo.KeyFile + ": no such file or directory"
-	if err == nil || err.Error() != want {
-		t.Fatalf("Restore: %v, want %q", err, want)
+	if err == nil || !strings.HasPrefix(err.Error(), "reading "+repo.KeyFile+": ") || strings.Contains(err.Error(), "salt-download-") || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Restore: %v, want %s missing", err, repo.KeyFile)
+	}
+	noDownloadsLeft(t, e)
+}
+
+// Someone who can push commits .salt/format.json as a link to a file outside
+// the repo. The download holds the link, and restore must refuse it without
+// showing what it points at.
+func TestRestoreFromURLRefusesASymlinkedFormat(t *testing.T) {
+	e := remoteEnv(t)
+	secret := filepath.Join(t.TempDir(), "secret.txt")
+	os.WriteFile(secret, []byte("the secret line\n"), 0o644)
+	e.git.clone = func(_ context.Context, dir string) error {
+		if err := os.CopyFS(dir, os.DirFS(e.root)); err != nil {
+			return err
+		}
+		p := filepath.Join(dir, repo.FormatFile)
+		if err := os.Remove(p); err != nil {
+			return err
+		}
+		return os.Symlink(secret, p)
+	}
+	err := e.app.Restore(RestoreOptions{Repo: backupURL, To: filepath.Join(t.TempDir(), "r")})
+	if !errors.Is(err, repo.ErrForeignSymlink) || !strings.Contains(err.Error(), "at "+repo.FormatFile) || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("Restore: %v, want a foreign symlink at %s", err, repo.FormatFile)
 	}
 	noDownloadsLeft(t, e)
 }
