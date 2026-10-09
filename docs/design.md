@@ -445,12 +445,12 @@ holds the keys for two repos, someone who can push to one and read the other
 could add the other's key to the first and copy its backup in. It would be
 genuinely signed with your key. Restore and verify therefore accept only a
 signature from a key this machine approved for the repo. They name the added
-key, and if it signed the backup they say so, rather than calling it
-unsigned. A local repo this machine never approved, for example one opened
-by another path such as a symlink, has no approved keys to check against, so
-any key that opens the backup may have signed it, and they warn. A restore
-from a URL is the same, without the warning. A repo ID inside the signed data would close that, but needs a new
-index version.
+key, and if it signed the backup they say so, rather than calling it unsigned.
+A local repo this machine never approved, for example one opened by another
+path such as a symlink, has no approved keys to check against, so any key that
+opens the backup may have signed it, and they warn. A restore from a URL is
+the same, without the warning. A repo ID inside the signed data would close
+that, but needs a new index version.
 
 Each key in the repo signs with its own signing key, and a backup is accepted
 only if it was signed with a key the restoring machine holds. With several
