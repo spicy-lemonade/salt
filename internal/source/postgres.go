@@ -247,7 +247,8 @@ func (p *Postgres) dumpConn(libpq int) string {
 }
 
 // parseURL reads a URL in libpq's form. Everything but the password is kept
-// as written, so pg_dump reads the same connection.
+// as written, so pg_dump reads the same connection. As in libpq, only %XX is
+// decoded, and a "+" stays a "+".
 //
 // As in libpq, the user and password end at the first "@" before any "/",
 // so a password may hold "?". A later "@" before the "/", with no "?" in
@@ -289,8 +290,8 @@ func parseURL(s string) (p Postgres, err error) {
 	var kept []string
 	for _, kv := range strings.Split(query, "&") {
 		k, v, _ := strings.Cut(kv, "=")
-		key, err1 := url.QueryUnescape(k)
-		value, err2 := url.QueryUnescape(v)
+		key, err1 := url.PathUnescape(k)
+		value, err2 := url.PathUnescape(v)
 		switch {
 		case kv == "":
 			continue

@@ -28,6 +28,9 @@ func TestParseURL(t *testing.T) {
 		"postgresql://agent:pa?ss@host/memory": {"postgresql://agent@host/memory", "pa?ss", "memory"},
 		"postgresql://agent:pa?ss@host":        {"postgresql://agent@host", "pa?ss", ""},
 		"postgresql://u?x@host/memory":         {"postgresql://u?x@host/memory", "", "memory"},
+		// As in libpq, a "+" is not a space.
+		"postgresql://h/a+b?password=p+w%2Bx&sslmode=require": {"postgresql://h/a+b?sslmode=require", "p+w+x", "a+b"},
+		"postgresql://h?dbname=a+b%20c":                       {"postgresql://h?dbname=a+b%20c", "", "a+b c"},
 		// A setting after the host may hold "@".
 		"postgresql://u:p@h?dbname=m&user=a@b": {"postgresql://u@h?dbname=m&user=a@b", "p", "m"},
 		"postgresql://u:p@h/m?user=a@b":        {"postgresql://u@h/m?user=a@b", "p", "m"},
