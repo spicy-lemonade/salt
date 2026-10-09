@@ -19,6 +19,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/spicy-lemonade/salt/internal/proc"
+	"github.com/spicy-lemonade/salt/internal/regular"
 	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/source"
 )
@@ -516,7 +517,7 @@ func isSidecar(p string) (bool, error) {
 // skips. number is the first setting sec's keys name that holds a number
 // and no text, which is not taken for a secret.
 func secretIn(p string, sec Secret) (why string, secret bool, number string) {
-	file, err := os.Open(p)
+	file, _, err := regular.Open(os.OpenFile, p)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", false, ""
 	}

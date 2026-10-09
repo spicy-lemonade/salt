@@ -573,6 +573,28 @@ func TestDoctorDoesNotOpenAPipe(t *testing.T) {
 	}
 }
 
+// seal --prune leaves .salt alone, so doctor never tells the person it will
+// remove what is there. A file there that is not salt's is named apart.
+func TestDoctorStrayFilesInSaltDir(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	os.WriteFile(filepath.Join(e.root, repo.Dir, "notes.txt"), []byte("plain"), 0o644)
+	os.Symlink("x", filepath.Join(e.root, repo.Dir, "link"))
+	e.ui.out.Reset()
+	err := e.app.Doctor(e.root)
+	out := e.ui.out.String()
+	want := "2 unexpected file(s) in .salt, e.g. .salt/link, .salt/notes.txt; `salt seal --prune` leaves .salt alone"
+	if !errors.Is(err, ErrReported) || !strings.Contains(out, want) || strings.Contains(out, "unencrypted file(s)") || strings.Contains(out, "working tree contains only") {
+		t.Fatalf("Doctor: %v\n%s", err, out)
+	}
+	os.WriteFile(filepath.Join(e.root, "USER.md"), []byte("plain"), 0o644)
+	e.ui.out.Reset()
+	e.app.Doctor(e.root)
+	if out := e.ui.out.String(); !strings.Contains(out, "1 unencrypted file(s) in the working tree, e.g. USER.md;") || !strings.Contains(out, want) {
+		t.Fatalf("doctor with both:\n%s", out)
+	}
+}
+
 func TestInstallHookError(t *testing.T) {
 	e := newEnv(t)
 	e.app.Git = &failingGit{}

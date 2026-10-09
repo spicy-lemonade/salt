@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/spicy-lemonade/salt/internal/regular"
 )
 
 // extraCopy writes content to a file outside the source tree, standing in
@@ -266,6 +268,39 @@ func TestSealLiveExtraNotAFile(t *testing.T) {
 	}
 	if !slices.Equal(res.Gone, []string{"a/pipe"}) {
 		t.Fatalf("gone = %v", res.Gone)
+	}
+}
+
+// A file made a named pipe after seal checked it, but before it is
+// encrypted, is never waited on. A live extra file is left out as a deleted
+// one is, and a file in the source folder fails the seal with its path.
+func TestSealFileMadeAPipeWhileSealed(t *testing.T) {
+	toPipe := func(name string) {
+		hashedHook = func(p string) {
+			if filepath.Base(p) == name {
+				os.Remove(p)
+				if err := syscall.Mkfifo(p, 0o600); err != nil {
+					t.Error("mkfifo:", err)
+				}
+			}
+		}
+	}
+	t.Cleanup(func() { hashedHook = nil })
+
+	toPipe("late.md")
+	f := newFixture(t, true)
+	late := filepath.Join(t.TempDir(), "late.md")
+	os.WriteFile(late, []byte("made a pipe after it was measured"), 0o600)
+	res, err := f.sealExtra(Extra{Rel: "a/late.md", Path: late, Live: true})
+	if err != nil || !slices.Equal(res.Gone, []string{"a/late.md"}) {
+		t.Fatalf("seal: %+v, %v", res, err)
+	}
+
+	toPipe("NOTES.md")
+	f = newFixture(t, true)
+	_, err = Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer})
+	if !errors.Is(err, regular.ErrNotRegular) || !strings.HasPrefix(err.Error(), "NOTES.md: ") {
+		t.Fatalf("seal of a file made a pipe: %v", err)
 	}
 }
 

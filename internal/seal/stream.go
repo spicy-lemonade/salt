@@ -18,6 +18,7 @@ import (
 
 	"filippo.io/age"
 	"github.com/klauspost/compress/zstd"
+	"github.com/spicy-lemonade/salt/internal/regular"
 )
 
 // zstd settings chosen for bounded memory rather than maximum ratio.
@@ -290,9 +291,9 @@ func (p *partReader) close() {
 	p.f, p.r = nil, nil
 }
 
-// hashFile streams a file through SHA-256.
+// hashFile streams a regular file through SHA-256.
 func hashFile(path string) (string, int64, error) {
-	f, err := os.Open(path)
+	f, _, err := regular.Open(os.OpenFile, path)
 	if err != nil {
 		return "", 0, err
 	}

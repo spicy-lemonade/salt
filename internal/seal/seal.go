@@ -23,6 +23,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/spicy-lemonade/salt/internal/regular"
 	"github.com/spicy-lemonade/salt/internal/repo"
 )
 
@@ -200,20 +201,25 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			entries[i] = e
 			return nil
 		}
-		// A live file deleted since it was listed is left out. Only the file
-		// itself being gone counts, never a path missing in the repo.
+		// A live file deleted since it was listed is left out, and so is one
+		// no longer a file when it is opened. Only the file itself being gone
+		// counts, never a path missing in the repo.
 		vanished := func(err error) bool {
-			if !it.live || !errors.Is(err, fs.ErrNotExist) {
+			if !it.live {
 				return false
 			}
-			_, statErr := os.Lstat(it.abs)
-			gone[i] = errors.Is(statErr, fs.ErrNotExist)
+			switch {
+			case errors.Is(err, regular.ErrNotRegular):
+				gone[i] = true
+			case errors.Is(err, fs.ErrNotExist):
+				_, statErr := os.Lstat(it.abs)
+				gone[i] = errors.Is(statErr, fs.ErrNotExist)
+			}
 			return gone[i]
 		}
 		// A live file's permissions and date are read now, just before its
 		// contents, as the tool may have changed it since it was found. One
-		// that is no longer a file is left out, as a deleted one is, and
-		// never opened: opening a named pipe would wait for ever.
+		// that is no longer a file is left out, as a deleted one is.
 		if it.live {
 			fi, err := os.Stat(it.abs)
 			if vanished(err) {
@@ -390,7 +396,7 @@ func dropGone(items []item, entries []Entry, newCache []cacheEntry, gone []bool)
 // encryptFile seals the file at abs into obj, in parts of limit compressed
 // bytes if limit is above zero. It returns the plaintext size it read.
 func encryptFile(rt *os.Root, r *repo.Repo, abs, obj string, limit int64) (cacheEntry, int64, error) {
-	f, err := os.Open(abs)
+	f, _, err := regular.Open(os.OpenFile, abs)
 	if err != nil {
 		return cacheEntry{}, 0, err
 	}
@@ -416,7 +422,7 @@ func encryptFile(rt *os.Root, r *repo.Repo, abs, obj string, limit int64) (cache
 // On failure it removes the chunks it wrote, so a full disk is not left
 // fuller for the next try.
 func encryptChunks(rt *os.Root, r *repo.Repo, abs string, gear *gearTable, prev cacheEntry, known map[string]cachePart) (ce cacheEntry, size, newBytes int64, err error) {
-	f, err := os.Open(abs)
+	f, _, err := regular.Open(os.OpenFile, abs)
 	if err != nil {
 		return cacheEntry{}, 0, 0, err
 	}
