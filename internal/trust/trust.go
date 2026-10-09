@@ -66,6 +66,10 @@ func (s Store) Load(root string) (Pin, error) {
 	if err := json.Unmarshal(b, &pin); err != nil {
 		return Pin{}, fmt.Errorf("%s: %w", p, err)
 	}
+	// Every repo has a key, so an approval with none is broken.
+	if len(pin.Recipients) == 0 {
+		return Pin{}, fmt.Errorf("%s: no keys", p)
+	}
 	return pin, nil
 }
 

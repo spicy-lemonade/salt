@@ -36,6 +36,10 @@ type Index struct {
 	// Unsigned is set by ReadIndex when it was allowed to accept an index
 	// whose signature is missing or does not match. It is never written.
 	Unsigned bool `json:"-"`
+	// Unapproved is the key that signed an index accepted as Unsigned, when
+	// it opened the index but SignatureOptions.SignedBy does not list it
+	// (see UnapprovedError). It is never written.
+	Unapproved string `json:"-"`
 }
 
 // Entry is one file or symlink in a snapshot.
@@ -95,6 +99,29 @@ func (ix *Index) marshal() ([]byte, string, error) {
 // to plant files.
 var ErrNotSigned = errors.New("the backup's index is not signed by your key")
 
+// UnapprovedError means the index is signed by one of the keys that opened
+// it, but not by one listed in SignatureOptions.SignedBy: one added to the
+// repo since this machine approved its keys. Someone who can push may have
+// added it to copy in a backup from another repo. It counts as ErrNotSigned.
+type UnapprovedError struct{ Key string }
+
+func (e *UnapprovedError) Error() string {
+	return fmt.Sprintf("the backup's index is signed by %s, a key not approved for this repo on this machine", e.Key)
+}
+
+func (e *UnapprovedError) Is(target error) bool { return target == ErrNotSigned }
+
+// SignatureOptions says which signatures on the index are accepted.
+type SignatureOptions struct {
+	// SignedBy, if not empty, are the only public keys whose signing keys
+	// may have signed the index, such as the keys this machine approved.
+	SignedBy []string
+	// AllowUnsigned accepts an index whose signature is missing or not made
+	// by an accepted key, and marks it Unsigned. The files are still checked
+	// against it.
+	AllowUnsigned bool
+}
+
 // signatureContext keeps index signatures apart from anything else.
 const signatureContext = "salt index signature v1\n"
 
@@ -147,8 +174,9 @@ func stored(e Entry) Entry {
 }
 
 // checkSignature reports whether ix.Signature signs digest with the signing
-// key of one of ids.
-func checkSignature(ix *Index, digest []byte, ids []age.Identity) error {
+// key of one of ids. If signedBy is not empty, the key must also be one it
+// lists, and an index signed by another of ids gives an UnapprovedError.
+func checkSignature(ix *Index, digest []byte, ids []age.Identity, signedBy []string) error {
 	if ix.Signature == "" {
 		return fmt.Errorf("%w: it has no signature", ErrNotSigned)
 	}
@@ -156,15 +184,24 @@ func checkSignature(ix *Index, digest []byte, ids []age.Identity) error {
 	if err != nil || len(sig) != ed25519.SignatureSize {
 		return fmt.Errorf("%w: its signature is malformed", ErrNotSigned)
 	}
+	unapproved := ""
 	for _, id := range ids {
 		x, ok := id.(*age.X25519Identity)
 		if !ok {
 			continue
 		}
 		k := keys.SigningKey(x)
-		if ed25519.Verify(k.Public().(ed25519.PublicKey), digest, sig) {
+		if !ed25519.Verify(k.Public().(ed25519.PublicKey), digest, sig) {
+			continue
+		}
+		rcpt := x.Recipient().String()
+		if len(signedBy) == 0 || slices.Contains(signedBy, rcpt) {
 			return nil
 		}
+		unapproved = rcpt
+	}
+	if unapproved != "" {
+		return &UnapprovedError{Key: unapproved}
 	}
 	return fmt.Errorf("%w: its signature does not match", ErrNotSigned)
 }
@@ -180,11 +217,11 @@ func writeIndex(root string, b []byte, recipients []age.Recipient) error {
 }
 
 // ReadIndex decrypts and validates a repository's index, and checks it is
-// signed by the signing key of one of ids. It decodes one entry at a time, so
-// memory stays bounded however the index was crafted. allowUnsigned accepts
-// an index whose signature is missing or does not match, and marks it
-// Unsigned; the files are still checked against it.
-func ReadIndex(root string, ids []age.Identity, allowUnsigned bool) (*Index, error) {
+// signed by the signing key of one of ids, as opt allows. A key added to the
+// repo since this machine approved it can decrypt the index but, if
+// opt.SignedBy lists the approved keys, not sign it. It decodes one entry at
+// a time, so memory stays bounded however the index was crafted.
+func ReadIndex(root string, ids []age.Identity, opt SignatureOptions) (*Index, error) {
 	rt, err := os.OpenRoot(root)
 	if err != nil {
 		return nil, err
@@ -207,11 +244,14 @@ func ReadIndex(root string, ids []age.Identity, allowUnsigned bool) (*Index, err
 	if ix.Version != repo.FormatVersion && ix.Version != partsIndexVersion {
 		return nil, fmt.Errorf("index version %d is not supported by this salt; upgrade salt", ix.Version)
 	}
-	if err := checkSignature(ix, d.sum(), ids); err != nil {
-		if !allowUnsigned || !errors.Is(err, ErrNotSigned) {
+	if err := checkSignature(ix, d.sum(), ids, opt.SignedBy); err != nil {
+		if !opt.AllowUnsigned || !errors.Is(err, ErrNotSigned) {
 			return nil, err
 		}
 		ix.Unsigned = true
+		if u := (*UnapprovedError)(nil); errors.As(err, &u) {
+			ix.Unapproved = u.Key
+		}
 	}
 	return ix, nil
 }

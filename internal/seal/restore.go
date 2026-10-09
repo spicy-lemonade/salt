@@ -34,9 +34,9 @@ type RestoreOptions struct {
 	Track func(tmp string) (done func())
 	// Show, if set, is how paths are written in messages, such as "~/…".
 	Show func(path string) string
-	// AllowUnsigned restores even if the index is not signed by one of the
-	// keys (see ReadIndex).
-	AllowUnsigned bool
+	// SignatureOptions says which signatures on the index are accepted
+	// (see ReadIndex).
+	SignatureOptions
 }
 
 // RestoreResult summarises a restore.
@@ -46,6 +46,9 @@ type RestoreResult struct {
 	// Unsigned means the index was not signed by one of the keys, and was
 	// accepted only because of AllowUnsigned.
 	Unsigned bool
+	// Unapproved is the key that signed it, if one of the keys signed it
+	// but SignedBy does not list it (see Index.Unapproved).
+	Unapproved string
 	// MovedAside is where an existing destination was moved, if any.
 	MovedAside string
 }
@@ -57,7 +60,7 @@ func Restore(root string, ids []age.Identity, dest string, opt RestoreOptions) (
 	if err := CheckNoSymlinks(root); err != nil {
 		return nil, err
 	}
-	ix, err := ReadIndex(root, ids, opt.AllowUnsigned)
+	ix, err := ReadIndex(root, ids, opt.SignatureOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +109,7 @@ func Restore(root string, ids []age.Identity, dest string, opt RestoreOptions) (
 		ctx = context.Background()
 	}
 
-	res := &RestoreResult{Unsigned: ix.Unsigned}
+	res := &RestoreResult{Unsigned: ix.Unsigned, Unapproved: ix.Unapproved}
 	var files, links []Entry
 	for _, e := range entries {
 		if e.Symlink != "" {

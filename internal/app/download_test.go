@@ -68,6 +68,10 @@ func TestRestoreFromURL(t *testing.T) {
 			if strings.Contains(out, "secret") {
 				t.Fatalf("output shows the token:\n%s", out)
 			}
+			// A download has no approval on this machine to check.
+			if strings.Contains(out, "salt: !") {
+				t.Fatalf("restore from a URL warned:\n%s", out)
+			}
 			noDownloadsLeft(t, e)
 		})
 	}
@@ -162,8 +166,8 @@ func TestRestoreFromURLWithoutADownloadFolder(t *testing.T) {
 
 func TestOpenRepo(t *testing.T) {
 	e := remoteEnv(t)
-	r, done, err := e.app.openRepo(context.Background(), e.root)
-	if err != nil || r.Root != e.root {
+	r, downloaded, done, err := e.app.openRepo(context.Background(), e.root)
+	if err != nil || r.Root != e.root || downloaded {
 		t.Fatalf("openRepo(folder) = %v, %v", r, err)
 	}
 	if err := done(nil); err != nil {
@@ -173,8 +177,8 @@ func TestOpenRepo(t *testing.T) {
 		t.Fatalf("a folder was downloaded or removed: %v, %q", err, e.git.cloned)
 	}
 
-	r, done, err = e.app.openRepo(context.Background(), backupURL)
-	if err != nil || filepath.Dir(r.Root) != e.app.Home {
+	r, downloaded, done, err = e.app.openRepo(context.Background(), backupURL)
+	if err != nil || filepath.Dir(r.Root) != e.app.Home || !downloaded {
 		t.Fatalf("openRepo(URL) = %v, %v", r, err)
 	}
 	if _, err := os.Stat(filepath.Join(r.Root, "index.age")); err != nil {
@@ -267,7 +271,7 @@ func TestDownloadDir(t *testing.T) {
 // in its place.
 func TestRestoreFromURLErrorsNameTheURL(t *testing.T) {
 	e := remoteEnv(t)
-	r, done, err := e.app.openRepo(context.Background(), backupURL)
+	r, _, done, err := e.app.openRepo(context.Background(), backupURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +342,7 @@ func TestRestoreFromURLRefusesASymlinkedFormat(t *testing.T) {
 
 func TestDoneKeepsAFolderError(t *testing.T) {
 	e := remoteEnv(t)
-	_, done, err := e.app.openRepo(context.Background(), e.root)
+	_, _, done, err := e.app.openRepo(context.Background(), e.root)
 	if err != nil {
 		t.Fatal(err)
 	}

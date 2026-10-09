@@ -24,26 +24,26 @@ var errDownloadStopped = fmt.Errorf("the download was stopped: %w", context.Canc
 // decrypted until the download is complete. A download left behind by an
 // earlier one is pointed out.
 //
-// done must be called with the command's result once the repo is no longer
-// needed. For a download, it removes the download, reporting it if it
-// cannot, and returns err with the URL in place of the download's folder,
-// which is gone by the time the message is read. For a folder it returns
-// err as it is.
-func (a *App) openRepo(ctx context.Context, spec string) (r *repo.Repo, done func(err error) error, err error) {
+// downloaded says whether spec was a URL. done must be called with the
+// command's result once the repo is no longer needed. For a download, it
+// removes the download, reporting it if it cannot, and returns err with the
+// URL in place of the download's folder, which is gone by the time the
+// message is read. For a folder it returns err as it is.
+func (a *App) openRepo(ctx context.Context, spec string) (r *repo.Repo, downloaded bool, done func(err error) error, err error) {
 	remote, err := gitx.IsRemote(spec)
 	if err != nil {
-		return nil, nil, err
+		return nil, false, nil, err
 	}
 	if !remote {
 		r, err := repo.Open(spec)
-		return r, func(err error) error { return err }, err
+		return r, false, func(err error) error { return err }, err
 	}
 	for _, d := range a.leftoverDownloads() {
 		a.UI.Printf("salt: %s\n", leftoverDownload(a.short(d)))
 	}
 	tmp, err := os.MkdirTemp(a.downloadDir(), downloadPattern)
 	if err != nil {
-		return nil, nil, fmt.Errorf("making a folder to download the backup into: %w", err)
+		return nil, true, nil, fmt.Errorf("making a folder to download the backup into: %w", err)
 	}
 	shown := gitx.RedactURL(spec)
 	named := strings.NewReplacer(tmp, shown, a.short(tmp), shown)
@@ -63,16 +63,16 @@ func (a *App) openRepo(ctx context.Context, spec string) (r *repo.Repo, done fun
 		} else {
 			err = fmt.Errorf("downloading the backup: %w", err)
 		}
-		return nil, nil, done(err)
+		return nil, true, nil, done(err)
 	}
 	r, err = repo.Open(tmp)
 	if errors.Is(err, repo.ErrNotInitialised) {
 		err = fmt.Errorf("%s is not a salt backup repo (its default branch has no %s)", shown, repo.FormatFile)
 	}
 	if err != nil {
-		return nil, nil, done(err)
+		return nil, true, nil, done(err)
 	}
-	return r, done, nil
+	return r, true, done, nil
 }
 
 // renamedError is err with its message passed through a replacer.

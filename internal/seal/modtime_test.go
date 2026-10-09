@@ -53,7 +53,7 @@ func (f *fixture) restoredModTime(rel string) time.Time {
 // rewriteIndex applies fn to every entry in the repo's index.
 func (f *fixture) rewriteIndex(fn func(*Entry)) []byte {
 	f.t.Helper()
-	ix, err := ReadIndex(f.root, f.ids(), false)
+	ix, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestRestoreKeepsModTimes(t *testing.T) {
 			if target, err := os.Readlink(filepath.Join(dest, "notes-link")); err != nil || target != "NOTES.md" {
 				t.Errorf("notes-link = %q, %v", target, err)
 			}
-			ix, err := ReadIndex(f.root, f.ids(), false)
+			ix, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -196,7 +196,7 @@ func TestUnixNano(t *testing.T) {
 func TestIndexRecordsDates(t *testing.T) {
 	f := newFixture(t, true)
 	f.seal(false)
-	ix, err := ReadIndex(f.root, f.ids(), false)
+	ix, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -32,6 +32,10 @@ func TestSaveLoad(t *testing.T) {
 	if _, err := s.Load(root); err == nil || errors.Is(err, ErrNotApproved) {
 		t.Fatalf("corrupt pin: %v", err)
 	}
+	os.WriteFile(p, []byte(`{"recipients":[],"encrypt_paths":true}`), 0o600)
+	if _, err := s.Load(root); err == nil || !strings.Contains(err.Error(), "no keys") {
+		t.Fatalf("pin with no keys: %v", err)
+	}
 }
 
 func TestSaveErrors(t *testing.T) {

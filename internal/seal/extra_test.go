@@ -53,7 +53,7 @@ func TestSealExtraRoundTrip(t *testing.T) {
 			t.Fatalf("restored state.db is dated %v, want %v", got, at)
 		}
 		// Restore makes files owner-only, so the mode is checked in the index.
-		ix, err := ReadIndex(f.root, f.ids(), false)
+		ix, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -153,7 +153,7 @@ func TestSealExtraKeepsCase(t *testing.T) {
 	if _, err := f.sealExtra(extra...); err != nil {
 		t.Fatal(err)
 	}
-	ix, err := ReadIndex(f.root, f.ids(), false)
+	ix, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestSealLiveExtraReadsItsOwnDetails(t *testing.T) {
 	if got := modTime(t, f.restore(RestoreOptions{}), "a/notes.md"); !got.Equal(at) {
 		t.Fatalf("restored notes.md is dated %v, want %v", got, at)
 	}
-	ix, err := ReadIndex(f.root, f.ids(), false)
+	ix, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,7 @@ func TestSealLiveExtraGone(t *testing.T) {
 		t.Fatalf("the cache still holds %d files", len(c.Files))
 	}
 	assertAllCiphertext(t, f.root, true)
-	ix, err := ReadIndex(f.root, f.ids(), false)
+	ix, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

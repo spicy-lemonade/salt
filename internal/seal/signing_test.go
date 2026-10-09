@@ -50,7 +50,7 @@ func signWith(k ed25519.PrivateKey) func(*Index) {
 func TestSealSignsIndex(t *testing.T) {
 	f := newFixture(t, true)
 	f.seal(false)
-	ix, err := ReadIndex(f.root, f.ids(), false)
+	ix, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestPlantedIndexRefused(t *testing.T) {
 			f.seal(false)
 			f.plant(tt.edit(t, f))
 
-			if _, err := ReadIndex(f.root, f.ids(), false); !errors.Is(err, ErrNotSigned) || !strings.Contains(err.Error(), tt.want) {
+			if _, err := ReadIndex(f.root, f.ids(), SignatureOptions{}); !errors.Is(err, ErrNotSigned) || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("ReadIndex: %v, want %q", err, tt.want)
 			}
 			dest := filepath.Join(t.TempDir(), "r")
@@ -115,12 +115,13 @@ func TestPlantedIndexRefused(t *testing.T) {
 
 			// Allowed, the files are still checked against the index, and
 			// the result says the index was not signed.
-			vr, err := Verify(f.root, f.ids(), VerifyOptions{AllowUnsigned: true})
-			if err != nil || !vr.Unsigned || vr.ProblemCount != 0 {
+			allow := SignatureOptions{AllowUnsigned: true}
+			vr, err := Verify(f.root, f.ids(), VerifyOptions{SignatureOptions: allow})
+			if err != nil || !vr.Unsigned || vr.Unapproved != "" || vr.ProblemCount != 0 {
 				t.Fatalf("Verify allowing unsigned: %+v, %v", vr, err)
 			}
-			rr, err := Restore(f.root, f.ids(), dest, RestoreOptions{AllowUnsigned: true})
-			if err != nil || !rr.Unsigned {
+			rr, err := Restore(f.root, f.ids(), dest, RestoreOptions{SignatureOptions: allow})
+			if err != nil || !rr.Unsigned || rr.Unapproved != "" {
 				t.Fatalf("Restore allowing unsigned: %+v, %v", rr, err)
 			}
 		})
@@ -135,11 +136,11 @@ func TestAllowUnsignedKeepsOtherChecks(t *testing.T) {
 	if err := writeIndex(f.root, []byte(body), f.repo.Recipients); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReadIndex(f.root, f.ids(), true); err == nil || errors.Is(err, ErrNotSigned) || !strings.Contains(err.Error(), "cannot unmarshal") {
+	if _, err := ReadIndex(f.root, f.ids(), SignatureOptions{AllowUnsigned: true}); err == nil || errors.Is(err, ErrNotSigned) || !strings.Contains(err.Error(), "cannot unmarshal") {
 		t.Fatalf("signature that is not a string: %v", err)
 	}
 	f.writeIndex(&Index{Version: partsIndexVersion + 1, Entries: []Entry{}})
-	if _, err := ReadIndex(f.root, f.ids(), true); err == nil || !strings.Contains(err.Error(), "version 3") {
+	if _, err := ReadIndex(f.root, f.ids(), SignatureOptions{AllowUnsigned: true}); err == nil || !strings.Contains(err.Error(), "version 3") {
 		t.Fatalf("unsupported version: %v", err)
 	}
 }
@@ -152,8 +153,53 @@ func TestSignatureSkipsOtherIdentities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReadIndex(f.root, []age.Identity{pw, f.id}, false); err != nil {
+	if _, err := ReadIndex(f.root, []age.Identity{pw, f.id}, SignatureOptions{}); err != nil {
 		t.Fatalf("with a passphrase identity first: %v", err)
+	}
+}
+
+// With SignedBy set, an index signed by a key that opens it is refused,
+// naming the key, unless SignedBy lists it, as when someone who can push
+// added the key to the repo after this machine approved its keys.
+func TestSignatureOnlyFromSignedBy(t *testing.T) {
+	f := newFixture(t, true)
+	f.seal(false)
+	other, _ := age.GenerateX25519Identity()
+	ids := []age.Identity{other, f.id}
+	mine := f.id.Recipient().String()
+	if _, err := ReadIndex(f.root, ids, SignatureOptions{SignedBy: []string{other.Recipient().String(), mine}}); err != nil {
+		t.Fatalf("signed by a listed key: %v", err)
+	}
+	notMine := SignatureOptions{SignedBy: []string{other.Recipient().String()}}
+	_, err := ReadIndex(f.root, ids, notMine)
+	var unapproved *UnapprovedError
+	if !errors.As(err, &unapproved) || unapproved.Key != mine || !errors.Is(err, ErrNotSigned) || !strings.Contains(err.Error(), mine) {
+		t.Fatalf("signed by a key not listed: %v", err)
+	}
+	dest := filepath.Join(t.TempDir(), "r")
+	if _, err := Restore(f.root, ids, dest, RestoreOptions{SignatureOptions: notMine}); !errors.As(err, &unapproved) {
+		t.Fatalf("Restore: %v", err)
+	}
+	if _, err := os.Stat(dest); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused restore wrote %s: %v", dest, err)
+	}
+	if _, err := Verify(f.root, ids, VerifyOptions{SignatureOptions: notMine}); !errors.As(err, &unapproved) {
+		t.Fatalf("Verify: %v", err)
+	}
+	notMine.AllowUnsigned = true
+	if vr, err := Verify(f.root, ids, VerifyOptions{SignatureOptions: notMine}); err != nil || !vr.Unsigned || vr.Unapproved != mine || vr.ProblemCount != 0 {
+		t.Fatalf("Verify allowing unsigned: %+v, %v", vr, err)
+	}
+	if rr, err := Restore(f.root, ids, dest, RestoreOptions{SignatureOptions: notMine}); err != nil || !rr.Unsigned || rr.Unapproved != mine {
+		t.Fatalf("Restore allowing unsigned: %+v, %v", rr, err)
+	}
+
+	// An index signed by none of the keys still just does not match.
+	stranger, _ := age.GenerateX25519Identity()
+	f.plant(signWith(keys.SigningKey(stranger)))
+	notMine.AllowUnsigned = false
+	if _, err := ReadIndex(f.root, ids, notMine); errors.As(err, &unapproved) || !errors.Is(err, ErrNotSigned) || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("signed by no key that opens it: %v", err)
 	}
 }
 
@@ -163,7 +209,7 @@ func TestSignatureCoversEntryOrder(t *testing.T) {
 	f := newFixture(t, true)
 	f.write("b.md", "b\n")
 	f.seal(false)
-	ix, err := ReadIndex(f.root, f.ids(), false)
+	ix, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +221,7 @@ func TestSignatureCoversEntryOrder(t *testing.T) {
 	if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReadIndex(f.root, f.ids(), false); !errors.Is(err, ErrNotSigned) {
+	if _, err := ReadIndex(f.root, f.ids(), SignatureOptions{}); !errors.Is(err, ErrNotSigned) {
 		t.Fatalf("reordered entries: %v", err)
 	}
 }
@@ -191,7 +237,7 @@ func TestSignatureWithNonUTF8Name(t *testing.T) {
 			t.Skipf("this file system refuses a name that is not UTF-8: %v", err)
 		}
 		f.seal(false)
-		if _, err := ReadIndex(f.root, f.ids(), false); err != nil {
+		if _, err := ReadIndex(f.root, f.ids(), SignatureOptions{}); err != nil {
 			t.Fatalf("encryptPaths %v: %v", encryptPaths, err)
 		}
 	}

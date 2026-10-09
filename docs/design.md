@@ -129,6 +129,8 @@ If you lose them and this laptop, your backups cannot be recovered.
   reported by the next restore from a URL and by `salt doctor`.
 - `salt restore` and `salt verify` first check that the index is signed by
   the signing key of one of the keys that decrypts it, and refuse it if not.
+  If this machine approved the repo's keys, only an approved key may have
+  signed it, and they warn if the repo's keys or settings changed since.
   `--allow-unsigned` goes ahead with a warning, for example to look at a
   backup someone else replaced. Every file is still checked against the
   index.
@@ -389,7 +391,11 @@ against someone who can push to it:
   init` saves an approved copy on the user's machine, and `salt seal` refuses
   if the repo's copy differs. `salt trust` approves a genuine change, or a
   repo cloned onto a new machine. It warns before asking about any key not
-  stored on the machine, and about visible file names.
+  stored on the machine, and about visible file names. `salt restore` and
+  `salt verify` accept a backup only if an approved key signed it (see
+  "Planted files"). An approved copy that can't be read stops seal, restore
+  and verify, unless restore or verify is given `--allow-unsigned`. `salt
+  trust` replaces it.
 - **Hiding plaintext from the hook.** `salt check` reads staged files as
   `:0:<path>`, so a file named like `0:x` can't hide behind `x`.
 - **Symlinks.** Salt never creates symlinks where it keeps data (`.salt/`,
@@ -433,6 +439,18 @@ against someone who can push to it:
 The signature does not stop someone who can push from putting back an older
 backup from the repo's history, since that backup is still genuinely signed
 with your key.
+
+Nor does the signature say which repo a backup belongs to. If one machine
+holds the keys for two repos, someone who can push to one and read the other
+could add the other's key to the first and copy its backup in. It would be
+genuinely signed with your key. Restore and verify therefore accept only a
+signature from a key this machine approved for the repo. They name the added
+key, and if it signed the backup they say so, rather than calling it unsigned.
+A local repo this machine never approved, for example one opened by another
+path such as a symlink, has no approved keys to check against, so any key that
+opens the backup may have signed it, and they warn. A restore from a URL is
+the same, without the warning. A repo ID inside the signed data would close
+that, but needs a new index version.
 
 Each key in the repo signs with its own signing key, and a backup is accepted
 only if it was signed with a key the restoring machine holds. With several
