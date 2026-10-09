@@ -37,6 +37,10 @@ type RestoreOptions struct {
 	// AllowUnsigned restores even if the index is not signed by one of the
 	// keys (see ReadIndex).
 	AllowUnsigned bool
+	// SignedBy, if not empty, are the only public keys whose signing keys
+	// may have signed the index, such as the keys this machine approved
+	// (see ReadIndex).
+	SignedBy []string
 }
 
 // RestoreResult summarises a restore.
@@ -57,7 +61,7 @@ func Restore(root string, ids []age.Identity, dest string, opt RestoreOptions) (
 	if err := CheckNoSymlinks(root); err != nil {
 		return nil, err
 	}
-	ix, err := ReadIndex(root, ids, opt.AllowUnsigned)
+	ix, err := ReadIndex(root, ids, opt.SignedBy, opt.AllowUnsigned)
 	if err != nil {
 		return nil, err
 	}

@@ -66,6 +66,11 @@ func (s Store) Load(root string) (Pin, error) {
 	if err := json.Unmarshal(b, &pin); err != nil {
 		return Pin{}, fmt.Errorf("%s: %w", p, err)
 	}
+	// Every repo has a key, and restore reads no keys as no limit on who
+	// signed a backup.
+	if len(pin.Recipients) == 0 {
+		return Pin{}, fmt.Errorf("%s: no keys", p)
+	}
 	return pin, nil
 }
 

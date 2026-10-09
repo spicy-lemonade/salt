@@ -99,6 +99,10 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 		return err
 	}
 	defer func() { err = done(err) }()
+	signedBy, err := a.approvedSigners(r, o.AllowUnsigned)
+	if err != nil {
+		return err
+	}
 	ids, err := a.identities(r)
 	if err != nil {
 		return err
@@ -106,7 +110,7 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 	a.warnLeftoverRestores(o.To)
 	res, err := seal.Restore(r.Root, ids, o.To, seal.RestoreOptions{
 		Paths: o.Paths, Force: o.Force, Context: o.Context, Track: a.trackRestore, Show: a.short,
-		AllowUnsigned: o.AllowUnsigned,
+		AllowUnsigned: o.AllowUnsigned, SignedBy: signedBy,
 	})
 	if errors.Is(err, context.Canceled) {
 		return fmt.Errorf("restore %w: the partly restored files were removed and %s was not changed", ErrInterrupted, a.short(o.To))

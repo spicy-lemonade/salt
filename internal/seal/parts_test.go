@@ -49,7 +49,7 @@ func (f *fixture) writeNoise(rel string, n int) {
 // entry returns the index entry for rel.
 func (f *fixture) entry(rel string) Entry {
 	f.t.Helper()
-	ix, err := ReadIndex(f.root, f.ids(), false)
+	ix, err := ReadIndex(f.root, f.ids(), nil, false)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func (f *fixture) entry(rel string) Entry {
 // indexVersion returns the version of the repo's index.
 func (f *fixture) indexVersion() int {
 	f.t.Helper()
-	ix, err := ReadIndex(f.root, f.ids(), false)
+	ix, err := ReadIndex(f.root, f.ids(), nil, false)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -471,7 +471,7 @@ func TestReadIndexRejectsBadParts(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t, true)
 			f.writeIndex(&Index{Version: partsIndexVersion, Entries: []Entry{e}})
-			if _, err := ReadIndex(f.root, f.ids(), false); err == nil {
+			if _, err := ReadIndex(f.root, f.ids(), nil, false); err == nil {
 				t.Fatal("ReadIndex accepted it")
 			}
 		})
@@ -591,7 +591,7 @@ func TestSignatureCoversInvalidUTF8Part(t *testing.T) {
 	f.writeIndex(&Index{Version: partsIndexVersion, Entries: []Entry{
 		{Path: "a", Object: "objects/aa/a.age", Parts: []string{"objects/bb/\xff.age"}, SHA256: strings.Repeat("0", 64), Mode: 0o644},
 	}})
-	ix, err := ReadIndex(f.root, f.ids(), false)
+	ix, err := ReadIndex(f.root, f.ids(), nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -320,11 +320,15 @@ func (a *App) Verify(repoRoot string, allowUnsigned bool) error {
 	if err != nil {
 		return err
 	}
+	signedBy, err := a.approvedSigners(rp, allowUnsigned)
+	if err != nil {
+		return err
+	}
 	ids, err := a.identities(rp)
 	if err != nil {
 		return err
 	}
-	res, err := seal.Verify(rp.Root, ids, seal.VerifyOptions{AllowUnsigned: allowUnsigned})
+	res, err := seal.Verify(rp.Root, ids, seal.VerifyOptions{AllowUnsigned: allowUnsigned, SignedBy: signedBy})
 	if err != nil {
 		return explainUnsigned(err)
 	}

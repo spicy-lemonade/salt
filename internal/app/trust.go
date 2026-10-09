@@ -35,6 +35,35 @@ func (a *App) checkTrusted(r *repo.Repo) error {
 	return nil
 }
 
+// approvedSigners returns the keys this machine approved for r, the only
+// ones restore and verify accept a signature from. Otherwise someone who can
+// push could add another of the person's keys to the repo, with a backup
+// that key signed for a different repo, and it would restore as genuine. It
+// warns if r's keys or settings changed since they were approved. With no
+// approval it returns nil, and any key that opens the backup may have signed
+// it. An approval that can't be read stops the command, unless allowUnsigned,
+// which skips the signature check anyway.
+func (a *App) approvedSigners(r *repo.Repo, allowUnsigned bool) ([]string, error) {
+	approved, err := a.trustStore().Load(r.Root)
+	if errors.Is(err, trust.ErrNotApproved) {
+		return nil, nil
+	}
+	if err != nil && allowUnsigned {
+		a.UI.Printf("salt: ! cannot read the keys approved for %s on this machine (%v)\n", a.short(r.Root), err)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("cannot read the keys approved for %s on this machine (%w). Delete that file and run `salt trust %q`, or pass --allow-unsigned",
+			a.short(r.Root), err, r.Root)
+	}
+	if d := trust.Diff(approved, trust.For(r)); len(d) > 0 {
+		a.UI.Printf("salt: ! the keys or settings in %s changed since you approved them:\n  %s\n"+
+			"Only a backup signed by an approved key is accepted. If you made this change, run `salt trust %q`\n",
+			a.short(r.Root), strings.Join(d, "\n  "), r.Root)
+	}
+	return approved.Recipients, nil
+}
+
 // Trust shows a repo's keys and settings and approves them for backups from
 // this machine. yes skips the question, for scripts.
 func (a *App) Trust(repoRoot string, yes bool) error {

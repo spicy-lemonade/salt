@@ -11,6 +11,7 @@ import (
 	"filippo.io/age"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
+	"github.com/spicy-lemonade/salt/internal/seal"
 )
 
 // addAttackerKey plays someone with push access adding their own key.
@@ -216,5 +217,127 @@ func TestTrustErrors(t *testing.T) {
 	e.app.TrustDir = file
 	if err := e.app.Init(InitOptions{Repo: e.root}); err == nil || !strings.Contains(err.Error(), "approved keys") {
 		t.Errorf("init with an unwritable approval store: %v", err)
+	}
+}
+
+// transplant plays someone who can push to the repo at to, and can read the
+// one at from, both opened by this machine's keys: they add from's key to
+// to's key list and copy from's backup into to. It returns from's key.
+func transplant(t *testing.T, from, to string) string {
+	t.Helper()
+	r, err := repo.Open(from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(to, repo.RecipientsFile), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(r.RecipientStrings[0] + "\n")
+	f.Close()
+	os.RemoveAll(filepath.Join(to, repo.ObjectsDir))
+	if err := os.CopyFS(filepath.Join(to, repo.ObjectsDir), os.DirFS(filepath.Join(from, repo.ObjectsDir))); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(from, repo.IndexFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(to, repo.IndexFile), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return r.RecipientStrings[0]
+}
+
+// A backup signed for one repo is refused by another whose key list gained
+// the first repo's key, because only the keys this machine approved for a
+// repo may have signed its backups.
+func TestRestoreRefusesABackupFromAnotherRepo(t *testing.T) {
+	e := newEnv(t)
+	other := filepath.Join(t.TempDir(), "other")
+	os.MkdirAll(filepath.Join(other, ".git"), 0o755)
+	e.ui.answer = phraseAnswers(0)
+	if err := e.app.Init(InitOptions{Repo: other}); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(t.TempDir(), "other-src")
+	os.MkdirAll(src, 0o755)
+	os.WriteFile(filepath.Join(src, "USER.md"), []byte("from the other repo"), 0o644)
+	if err := e.app.Seal(SealOptions{Src: src, Repo: other, Prune: true}); err != nil {
+		t.Fatal(err)
+	}
+	healthyRepo(t, e)
+
+	// The genuine backup restores with no warning.
+	if err := e.app.Verify(e.root, false); err != nil || strings.Contains(e.ui.out.String(), "changed since") {
+		t.Fatalf("verify of the genuine backup: %v\n%s", err, e.ui.out.String())
+	}
+	e.ui.out.Reset()
+
+	added := transplant(t, other, e.root)
+	err := e.app.Verify(e.root, false)
+	if !errors.Is(err, seal.ErrNotSigned) || !strings.Contains(e.ui.out.String(), "key added: "+added) {
+		t.Fatalf("verify of the copied backup: %v\n%s", err, e.ui.out.String())
+	}
+	dest := filepath.Join(t.TempDir(), "restored")
+	if err := e.app.Restore(RestoreOptions{Repo: e.root, To: dest}); !errors.Is(err, seal.ErrNotSigned) {
+		t.Fatalf("restore of the copied backup: %v", err)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("a refused restore wrote files")
+	}
+
+	// It can still be looked at on purpose, with both warnings.
+	e.ui.out.Reset()
+	if err := e.app.Restore(RestoreOptions{Repo: e.root, To: dest, AllowUnsigned: true}); err != nil {
+		t.Fatal(err)
+	}
+	out := e.ui.out.String()
+	if !strings.Contains(out, "key added: "+added) || !strings.Contains(out, "not signed by your key") {
+		t.Fatalf("restore --allow-unsigned output:\n%s", out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dest, "USER.md")); string(b) != "from the other repo" {
+		t.Fatalf("restored %q", b)
+	}
+
+	// A machine that never approved the repo has nothing to check against.
+	e.app.TrustDir = t.TempDir()
+	if err := e.app.Verify(e.root, false); err != nil {
+		t.Fatalf("verify with no approval: %v", err)
+	}
+}
+
+// An approval that can't be read stops restore and verify, unless
+// --allow-unsigned, which skips the signature check anyway.
+func TestRestoreWithUnreadableApproval(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	pins, _ := filepath.Glob(filepath.Join(e.app.TrustDir, "*.json"))
+	if len(pins) != 1 {
+		t.Fatalf("approvals: %v", pins)
+	}
+	for name, body := range map[string]string{"corrupt": "{", "no keys": `{"recipients":[],"encrypt_paths":true}`} {
+		t.Run(name, func(t *testing.T) {
+			os.WriteFile(pins[0], []byte(body), 0o600)
+			dest := filepath.Join(t.TempDir(), "restored")
+			for cmd, run := range map[string]func(allow bool) error{
+				"verify": func(allow bool) error { return e.app.Verify(e.root, allow) },
+				"restore": func(allow bool) error {
+					return e.app.Restore(RestoreOptions{Repo: e.root, To: dest, AllowUnsigned: allow})
+				},
+			} {
+				err := run(false)
+				if err == nil || errors.Is(err, seal.ErrNotSigned) || !strings.Contains(err.Error(), "--allow-unsigned") || !strings.Contains(err.Error(), pins[0]) {
+					t.Fatalf("%s: %v", cmd, err)
+				}
+				e.ui.out.Reset()
+				if err := run(true); err != nil || !strings.Contains(e.ui.out.String(), "cannot read the keys approved") {
+					t.Fatalf("%s --allow-unsigned: %v\n%s", cmd, err, e.ui.out.String())
+				}
+			}
+			if b, _ := os.ReadFile(filepath.Join(dest, "USER.md")); string(b) != "hello" {
+				t.Fatalf("restored %q", b)
+			}
+		})
 	}
 }

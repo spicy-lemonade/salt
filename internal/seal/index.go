@@ -147,8 +147,9 @@ func stored(e Entry) Entry {
 }
 
 // checkSignature reports whether ix.Signature signs digest with the signing
-// key of one of ids.
-func checkSignature(ix *Index, digest []byte, ids []age.Identity) error {
+// key of one of ids. If signedBy is not empty, only the ids whose public key
+// it lists are tried.
+func checkSignature(ix *Index, digest []byte, ids []age.Identity, signedBy []string) error {
 	if ix.Signature == "" {
 		return fmt.Errorf("%w: it has no signature", ErrNotSigned)
 	}
@@ -158,7 +159,7 @@ func checkSignature(ix *Index, digest []byte, ids []age.Identity) error {
 	}
 	for _, id := range ids {
 		x, ok := id.(*age.X25519Identity)
-		if !ok {
+		if !ok || len(signedBy) > 0 && !slices.Contains(signedBy, x.Recipient().String()) {
 			continue
 		}
 		k := keys.SigningKey(x)
@@ -180,11 +181,13 @@ func writeIndex(root string, b []byte, recipients []age.Recipient) error {
 }
 
 // ReadIndex decrypts and validates a repository's index, and checks it is
-// signed by the signing key of one of ids. It decodes one entry at a time, so
-// memory stays bounded however the index was crafted. allowUnsigned accepts
-// an index whose signature is missing or does not match, and marks it
-// Unsigned; the files are still checked against it.
-func ReadIndex(root string, ids []age.Identity, allowUnsigned bool) (*Index, error) {
+// signed by the signing key of one of ids. If signedBy is not empty, only the
+// ids whose public key it lists may have signed it, so a key added to the
+// repo since this machine approved it can decrypt but not sign. It decodes
+// one entry at a time, so memory stays bounded however the index was
+// crafted. allowUnsigned accepts an index whose signature is missing or does
+// not match, and marks it Unsigned; the files are still checked against it.
+func ReadIndex(root string, ids []age.Identity, signedBy []string, allowUnsigned bool) (*Index, error) {
 	rt, err := os.OpenRoot(root)
 	if err != nil {
 		return nil, err
@@ -207,7 +210,7 @@ func ReadIndex(root string, ids []age.Identity, allowUnsigned bool) (*Index, err
 	if ix.Version != repo.FormatVersion && ix.Version != partsIndexVersion {
 		return nil, fmt.Errorf("index version %d is not supported by this salt; upgrade salt", ix.Version)
 	}
-	if err := checkSignature(ix, d.sum(), ids); err != nil {
+	if err := checkSignature(ix, d.sum(), ids, signedBy); err != nil {
 		if !allowUnsigned || !errors.Is(err, ErrNotSigned) {
 			return nil, err
 		}

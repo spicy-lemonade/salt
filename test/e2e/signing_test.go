@@ -94,3 +94,46 @@ func lastLine(t *testing.T, path string) string {
 	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 	return lines[len(lines)-1]
 }
+
+// One machine holds the keys for two backup repos. Someone who can push to
+// one, and read the other, adds the other's key to it and copies the other's
+// backup in. Verify and restore must refuse it, because that key was not
+// approved for this repo on this machine, and say what changed.
+func TestRestoreRefusesABackupFromAnotherRepo(t *testing.T) {
+	e := newEnv(t)
+	base := t.TempDir()
+	passFile := filepath.Join(base, "pass")
+	write(t, passFile, "correct horse battery staple\n")
+	repos := map[string]string{}
+	for _, name := range []string{"first", "second"} {
+		root := filepath.Join(base, name)
+		src := filepath.Join(base, name+"-src")
+		e.must(base, "git", "init", "-q", root)
+		e.must(base, "salt", "init", root, "--recovery", "passphrase", "--passphrase-file", passFile)
+		write(t, filepath.Join(src, "USER.md"), "Notes kept in the "+name+" repo.\n")
+		e.must(base, "salt", "seal", "--prune", src, root)
+		repos[name] = root
+	}
+	first, second := repos["first"], repos["second"]
+
+	firstKey := lastLine(t, filepath.Join(first, ".salt", "recipients.txt"))
+	f, err := os.OpenFile(filepath.Join(second, ".salt", "recipients.txt"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(firstKey + "\n")
+	f.Close()
+	os.RemoveAll(filepath.Join(second, "objects"))
+	e.must(base, "cp", "-R", filepath.Join(first, "objects"), filepath.Join(second, "objects"))
+	e.must(base, "cp", filepath.Join(first, "index.age"), filepath.Join(second, "index.age"))
+
+	for _, args := range [][]string{{"verify", second}, {"restore", second, "--to", filepath.Join(base, "restored")}} {
+		out, code := e.run(base, "salt", args...)
+		if code != 1 || !strings.Contains(out, "not signed by your key") || !strings.Contains(out, "key added: "+firstKey) {
+			t.Fatalf("salt %s of the copied backup: exit %d\n%s", args[0], code, out)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(base, "restored")); !os.IsNotExist(err) {
+		t.Fatal("a refused restore wrote files")
+	}
+}
