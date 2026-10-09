@@ -122,6 +122,9 @@ func readHead(path string) (head []byte, size int64, err error) {
 	if !fi.Mode().IsRegular() {
 		return nil, 0, ErrNotSQLite
 	}
+	if fi.Size() == 0 {
+		return nil, 0, nil
+	}
 	f, fi, err := regular.Open(os.OpenFile, path)
 	if errors.Is(err, regular.ErrNotRegular) {
 		return nil, 0, ErrNotSQLite
@@ -130,9 +133,6 @@ func readHead(path string) (head []byte, size int64, err error) {
 		return nil, 0, err
 	}
 	defer f.Close()
-	if fi.Size() == 0 {
-		return nil, 0, nil
-	}
 	head = make([]byte, headLen)
 	n, _ := io.ReadFull(f, head)
 	return head[:n], fi.Size(), nil

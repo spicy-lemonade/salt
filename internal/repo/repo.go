@@ -137,8 +137,8 @@ func Open(root string) (*Repo, error) {
 	return r, nil
 }
 
-// ReadSaltFile reads name, one of salt's own files in .salt, from the repo at
-// root. Someone who can push could commit it, or .salt, as a symlink. os.Root
+// ReadSaltFile reads name, one of salt's own files, such as those in .salt
+// or .gitattributes, from the repo at root. Someone who can push could commit it, or .salt, as a symlink. os.Root
 // refuses a link that leads outside the repo but follows one that stays
 // inside it, so ReadSaltFile refuses a symlink anywhere on the way, and
 // anything at name that is not a regular file, both before it opens it and
@@ -169,7 +169,7 @@ func ReadSaltFile(root, name string) ([]byte, error) {
 		}
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file. Check the repo's recent commits before backing up or restoring", name)
+		return nil, fmt.Errorf("%s is %w. Check the repo's recent commits before backing up or restoring", name, regular.ErrNotRegular)
 	}
 	f, _, err := regular.Open(rt.OpenFile, filepath.FromSlash(name))
 	if err != nil {

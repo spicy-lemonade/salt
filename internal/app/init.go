@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +12,6 @@ import (
 	"filippo.io/age"
 	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/keys"
-	"github.com/spicy-lemonade/salt/internal/regular"
 	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/trust"
@@ -301,24 +300,21 @@ func writeKeyFile(root string, keyFile []byte) error {
 }
 
 // ensureGitattributes marks ciphertext as binary so git never tries to diff
-// or merge it as text. It works through os.Root, so a symlink can't lead it
-// to a file outside the repo.
+// or merge it as text. It reads the file as salt reads its own in .salt, so
+// a symlink, a named pipe or a file far larger than salt writes is refused,
+// and writes it through os.Root, so a symlink can't lead it to a file
+// outside the repo.
 func ensureGitattributes(root string) error {
+	const p = ".gitattributes"
+	b, err := repo.ReadSaltFile(root, p)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
 	rt, err := os.OpenRoot(root)
 	if err != nil {
 		return err
 	}
 	defer rt.Close()
-	const p = ".gitattributes"
-	var b []byte
-	f, _, err := regular.Open(rt.OpenFile, p)
-	if err == nil {
-		b, err = io.ReadAll(f)
-		f.Close()
-	}
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
 	if strings.Contains(string(b), "*.age binary") {
 		return nil
 	}

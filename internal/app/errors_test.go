@@ -322,3 +322,13 @@ func TestEnsureGitattributesRefusesAPipe(t *testing.T) {
 		t.Fatalf("ensureGitattributes with a pipe: %v", err)
 	}
 }
+
+// A .gitattributes far larger than salt writes is refused before init reads
+// it all, as salt's own files in .salt are.
+func TestEnsureGitattributesRefusesAHugeFile(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, ".gitattributes"), []byte(strings.Repeat("*.md text\n", 10000)), 0o644)
+	if err := ensureGitattributes(root); err == nil || !strings.HasPrefix(err.Error(), ".gitattributes is larger than 64 KiB") {
+		t.Fatalf("ensureGitattributes with a huge file: %v", err)
+	}
+}

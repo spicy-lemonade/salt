@@ -5,7 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+
+	"github.com/spicy-lemonade/salt/internal/regular"
 )
 
 func TestInstall(t *testing.T) {
@@ -44,5 +47,21 @@ func TestScriptCallsSaltByName(t *testing.T) {
 	}
 	if strings.Contains(Script, "/salt ") || strings.Contains(Script, ".test") {
 		t.Fatal("hook must not reference a binary path")
+	}
+}
+
+// A named pipe where the hook goes, which only a process on this machine can
+// put there, is refused rather than waited on, by both install and doctor's
+// check. Install never writes to it.
+func TestHookRefusesAPipe(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "pre-commit")
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Skip("mkfifo:", err)
+	}
+	if err := Install(p); !errors.Is(err, regular.ErrNotRegular) {
+		t.Fatalf("Install over a pipe: %v", err)
+	}
+	if Installed(p) {
+		t.Fatal("a pipe counts as salt's hook")
 	}
 }
