@@ -132,6 +132,10 @@ If you lose them and this laptop, your backups cannot be recovered.
   `--allow-unsigned` goes ahead with a warning, for example to look at a
   backup someone else replaced. Every file is still checked against the
   index.
+- Restore and verify read each file only one byte past its size in the
+  signed index, so an object swapped for one that expands hugely is refused
+  as soon as it runs past that size. With `--allow-unsigned` the sizes come
+  from whoever wrote the index, so they limit nothing.
 - `salt verify` decrypts everything without writing it to disk, and reports
   any file that cannot be restored. It needs the key.
 - `salt doctor` checks the hook, the key, the repo and the last backup. It

@@ -1067,12 +1067,11 @@ func TestRestoreAndVerifyStopAtSignedSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var e Entry
-	for _, x := range ix.Entries {
-		if x.Path == "SOUL.md" {
-			e = x
-		}
+	i := slices.IndexFunc(ix.Entries, func(x Entry) bool { return x.Path == "SOUL.md" })
+	if i < 0 {
+		t.Fatal("SOUL.md is not in the index")
 	}
+	e := ix.Entries[i]
 	const bomb = 32 << 20
 	rt := openRoot(t, f.root)
 	if _, _, err := encryptTo(rt, e.Object, io.LimitReader(zeros{}, bomb), f.repo.Recipients, 0); err != nil {
