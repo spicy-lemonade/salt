@@ -14,7 +14,7 @@ func TestCachedPaths(t *testing.T) {
 		t.Fatalf("before any seal: %v", got)
 	}
 	f.seal(false)
-	want := []string{"SOUL.md", "data/memory.db", "memories/MEMORY.md", "memories/USER.md", "skills/tax-return-2026/SKILL.md"}
+	want := []string{"NOTES.md", "data/store.db", "notes/facts.md", "notes/profile.md", "projects/tax-return-2026/plan.md"}
 	if got := CachedPaths(f.cache, f.root); !slices.Equal(got, want) {
 		t.Fatalf("CachedPaths = %v, want %v", got, want)
 	}

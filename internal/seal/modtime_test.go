@@ -68,9 +68,9 @@ func TestRestoreKeepsModTimes(t *testing.T) {
 		t.Run(map[bool]string{true: "encrypted-paths", false: "plain-paths"}[encryptPaths], func(t *testing.T) {
 			f := newFixture(t, encryptPaths)
 			dates := map[string]time.Time{
-				"memories/USER.md": time.Date(2024, 3, 1, 9, 30, 15, 123456789, time.UTC),
-				"data/memory.db":   time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC),
-				"SOUL.md":          time.Date(1969, 7, 20, 20, 17, 0, 0, time.UTC), // before 1970
+				"notes/profile.md": time.Date(2024, 3, 1, 9, 30, 15, 123456789, time.UTC),
+				"data/store.db":    time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC),
+				"NOTES.md":         time.Date(1969, 7, 20, 20, 17, 0, 0, time.UTC), // before 1970
 			}
 			for rel, at := range dates {
 				f.setModTime(rel, at)
@@ -90,8 +90,8 @@ func TestRestoreKeepsModTimes(t *testing.T) {
 				}
 			}
 			// The link keeps its target; symlink dates are not recorded.
-			if target, err := os.Readlink(filepath.Join(dest, "soul-link")); err != nil || target != "SOUL.md" {
-				t.Errorf("soul-link = %q, %v", target, err)
+			if target, err := os.Readlink(filepath.Join(dest, "notes-link")); err != nil || target != "NOTES.md" {
+				t.Errorf("notes-link = %q, %v", target, err)
 			}
 			ix, err := ReadIndex(f.root, f.ids(), false)
 			if err != nil {
@@ -111,12 +111,12 @@ func TestRestoreKeepsModTimes(t *testing.T) {
 // rewritten, and a restore gives the new date.
 func TestDateOnlyChangeRecordsNewDate(t *testing.T) {
 	f := newFixture(t, true)
-	f.setModTime("data/memory.db", time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC))
+	f.setModTime("data/store.db", time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC))
 	f.seal(false)
 	before := snapshot(t, f.root)
 
 	touched := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
-	f.setModTime("data/memory.db", touched)
+	f.setModTime("data/store.db", touched)
 	res := f.seal(false)
 	if res.Encrypted != 0 || res.Reused != 5 || !res.IndexNew {
 		t.Fatalf("seal after a date-only change: %+v", res)
@@ -126,7 +126,7 @@ func TestDateOnlyChangeRecordsNewDate(t *testing.T) {
 			t.Errorf("%s changed although only a date did", k)
 		}
 	}
-	if got := f.restoredModTime("data/memory.db"); !got.Equal(touched) {
+	if got := f.restoredModTime("data/store.db"); !got.Equal(touched) {
 		t.Fatalf("last-modified after a date-only change = %v, want %v", got, touched)
 	}
 
@@ -140,14 +140,14 @@ func TestDateOnlyChangeRecordsNewDate(t *testing.T) {
 // restore normally, with the time of the restore.
 func TestRestoreIndexWithoutDates(t *testing.T) {
 	f := newFixture(t, true)
-	f.setModTime("SOUL.md", time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+	f.setModTime("NOTES.md", time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
 	f.seal(false)
 	b := f.rewriteIndex(func(e *Entry) { e.MTime = 0 })
 	if bytes.Contains(b, []byte(`"mtime"`)) {
 		t.Fatalf("index without dates still names mtime: %s", b)
 	}
 	start := time.Now().Add(-time.Minute)
-	if got := f.restoredModTime("SOUL.md"); got.Before(start) {
+	if got := f.restoredModTime("NOTES.md"); got.Before(start) {
 		t.Fatalf("last-modified = %v, want the time of the restore", got)
 	}
 }
@@ -219,7 +219,7 @@ func TestIndexRecordsDates(t *testing.T) {
 func TestSealAddsDatesToAnOlderBackup(t *testing.T) {
 	f := newFixture(t, true)
 	at := time.Date(2024, 2, 29, 12, 0, 0, 0, time.UTC)
-	f.setModTime("memories/USER.md", at)
+	f.setModTime("notes/profile.md", at)
 	f.seal(false)
 	b := f.rewriteIndex(func(e *Entry) { e.MTime = 0 })
 
@@ -249,7 +249,7 @@ func TestSealAddsDatesToAnOlderBackup(t *testing.T) {
 			t.Errorf("%s changed although only dates were added", k)
 		}
 	}
-	if got := f.restoredModTime("memories/USER.md"); !got.Equal(at) {
+	if got := f.restoredModTime("notes/profile.md"); !got.Equal(at) {
 		t.Fatalf("last-modified = %v, want %v", got, at)
 	}
 	if res := f.seal(false); res.IndexNew {
@@ -264,12 +264,12 @@ func TestMixedChangesKeepEveryDate(t *testing.T) {
 	f := newFixture(t, true)
 	f.seal(false)
 
-	f.write("memories/USER.md", "The user moved to Cork.\n")
-	f.setModTime("memories/USER.md", time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC))
-	f.setModTime("SOUL.md", time.Date(2026, 1, 2, 8, 0, 0, 0, time.UTC))
-	f.write("memories/NEW.md", "new\n")
-	f.setModTime("memories/NEW.md", time.Date(2026, 1, 3, 8, 0, 0, 0, time.UTC))
-	if err := os.Remove(filepath.Join(f.src, "memories/MEMORY.md")); err != nil {
+	f.write("notes/profile.md", "The user moved to Cork.\n")
+	f.setModTime("notes/profile.md", time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC))
+	f.setModTime("NOTES.md", time.Date(2026, 1, 2, 8, 0, 0, 0, time.UTC))
+	f.write("notes/new.md", "new\n")
+	f.setModTime("notes/new.md", time.Date(2026, 1, 3, 8, 0, 0, 0, time.UTC))
+	if err := os.Remove(filepath.Join(f.src, "notes/facts.md")); err != nil {
 		t.Fatal(err)
 	}
 	res := f.seal(false)
@@ -282,7 +282,7 @@ func TestMixedChangesKeepEveryDate(t *testing.T) {
 // Losing the cache re-encrypts everything, and the dates are still recorded.
 func TestCacheLossKeepsDates(t *testing.T) {
 	f := newFixture(t, true)
-	f.setModTime("SOUL.md", time.Date(2022, 10, 10, 10, 10, 10, 0, time.UTC))
+	f.setModTime("NOTES.md", time.Date(2022, 10, 10, 10, 10, 10, 0, time.UTC))
 	f.seal(false)
 	if err := os.RemoveAll(f.cache); err != nil {
 		t.Fatal(err)
@@ -297,25 +297,25 @@ func TestCacheLossKeepsDates(t *testing.T) {
 func TestPartialAndForcedRestoreKeepDates(t *testing.T) {
 	f := newFixture(t, true)
 	at := time.Date(2021, 6, 7, 8, 9, 10, 11, time.UTC)
-	f.setModTime("memories/USER.md", at)
+	f.setModTime("notes/profile.md", at)
 	f.seal(false)
 
-	dest := f.restore(RestoreOptions{Paths: []string{"memories"}})
-	if got := modTime(t, dest, "memories/USER.md"); !got.Equal(at) {
+	dest := f.restore(RestoreOptions{Paths: []string{"notes"}})
+	if got := modTime(t, dest, "notes/profile.md"); !got.Equal(at) {
 		t.Errorf("partial restore: last-modified = %v, want %v", got, at)
 	}
-	if _, err := os.Stat(filepath.Join(dest, "SOUL.md")); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("partial restore wrote SOUL.md: %v", err)
+	if _, err := os.Stat(filepath.Join(dest, "NOTES.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("partial restore wrote NOTES.md: %v", err)
 	}
 
 	res, err := Restore(f.root, f.ids(), dest, RestoreOptions{Force: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := modTime(t, dest, "memories/USER.md"); !got.Equal(at) {
+	if got := modTime(t, dest, "notes/profile.md"); !got.Equal(at) {
 		t.Errorf("forced restore: last-modified = %v, want %v", got, at)
 	}
-	if got := modTime(t, res.MovedAside, "memories/USER.md"); !got.Equal(at) {
+	if got := modTime(t, res.MovedAside, "notes/profile.md"); !got.Equal(at) {
 		t.Errorf("moved-aside copy: last-modified = %v, want %v", got, at)
 	}
 }

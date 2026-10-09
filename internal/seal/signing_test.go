@@ -31,7 +31,7 @@ func (f *fixture) plant(edit func(*Index)) {
 		f.t.Fatal(err)
 	}
 	ix := &Index{Version: repo.FormatVersion, Entries: []Entry{
-		{Path: "MEMORY.md", Object: obj, SHA256: sha, Size: int64(len(planted)), Mode: 0o644},
+		{Path: "facts.md", Object: obj, SHA256: sha, Size: int64(len(planted)), Mode: 0o644},
 	}}
 	edit(ix)
 	b, _, err := ix.marshal()
@@ -90,7 +90,7 @@ func TestPlantedIndexRefused(t *testing.T) {
 		"edited after signing": {func(t *testing.T, f *fixture) func(*Index) {
 			return func(ix *Index) {
 				signWith(f.signer)(ix)
-				ix.Entries[0].Path = "SOUL.md"
+				ix.Entries[0].Path = "NOTES.md"
 			}
 		}, "does not match"},
 	} {

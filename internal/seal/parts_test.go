@@ -501,7 +501,7 @@ func TestOversizedObjectIsSealedAgain(t *testing.T) {
 			f := newFixture(t, true)
 			f.seal(false)
 			c, cPath := f.loadCache()
-			const rel = "data/memory.db"
+			const rel = "data/store.db"
 			ce := c.Files[rel]
 			// Truncate makes the object sparse, so it takes no space on disk.
 			if err := os.Truncate(filepath.Join(f.root, filepath.FromSlash(ce.Object)), size); err != nil {
@@ -685,13 +685,13 @@ func TestPartReaderDataWithEOF(t *testing.T) {
 func TestSealFileRemovedWhileSealed(t *testing.T) {
 	f := newFixture(t, true)
 	hashedHook = func(p string) {
-		if filepath.Base(p) == "SOUL.md" {
+		if filepath.Base(p) == "NOTES.md" {
 			os.Remove(p)
 		}
 	}
 	t.Cleanup(func() { hashedHook = nil })
 	_, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer})
-	if !errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), "SOUL.md") {
+	if !errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), "NOTES.md") {
 		t.Fatalf("seal of a removed file: %v", err)
 	}
 	for p := range snapshot(t, f.root) {

@@ -102,12 +102,12 @@ func TestSealExtraRefusesClashes(t *testing.T) {
 	copy := extraCopy(t, "SQLite format 3\x00")
 	x := func(rel string) Extra { return Extra{Rel: rel, Path: copy, Mode: 0o644} }
 	for name, extra := range map[string][]Extra{
-		"source file":         {x("SOUL.md")},
-		"source folder":       {x("memories")},
-		"under a source file": {x("SOUL.md/state.db")},
+		"source file":         {x("NOTES.md")},
+		"source folder":       {x("notes")},
+		"under a source file": {x("NOTES.md/state.db")},
 		"two extra files":     {x("state.db"), x("state.db")},
 		"extra folder":        {x("dbs/state.db"), x("dbs")},
-		"cleaned path":        {x("./memories/USER.md")},
+		"cleaned path":        {x("./notes/profile.md")},
 	} {
 		if _, err := f.sealExtra(extra...); !errors.Is(err, ErrDuplicatePath) {
 			t.Errorf("%s: %v, want ErrDuplicatePath", name, err)
@@ -145,7 +145,7 @@ func TestSealExtraKeepsCase(t *testing.T) {
 	x := func(rel, content string) Extra {
 		return Extra{Rel: rel, Path: extraCopy(t, content), Mode: 0o644}
 	}
-	want := map[string]string{"soul.md": "lower", "MEMORIES/state.db": "upper", "state.db": "a", "State.DB": "b"}
+	want := map[string]string{"notes.md": "lower", "NOTES/state.db": "upper", "state.db": "a", "State.DB": "b"}
 	var extra []Extra
 	for rel, content := range want {
 		extra = append(extra, x(rel, content))
@@ -161,7 +161,7 @@ func TestSealExtraKeepsCase(t *testing.T) {
 	for _, e := range ix.Entries {
 		sealed[e.Path] = true
 	}
-	for _, rel := range []string{"soul.md", "SOUL.md", "MEMORIES/state.db", "memories/USER.md", "state.db", "State.DB"} {
+	for _, rel := range []string{"notes.md", "NOTES.md", "NOTES/state.db", "notes/profile.md", "state.db", "State.DB"} {
 		if !sealed[rel] {
 			t.Errorf("%s is not in the index", rel)
 		}
@@ -182,8 +182,8 @@ func TestSealExtraKeepsCase(t *testing.T) {
 			t.Errorf("restored %s = %q, %v; want %q", rel, b, err, content)
 		}
 	}
-	if b, err := os.ReadFile(filepath.Join(dest, "SOUL.md")); err != nil || string(b) != "be kind\n" {
-		t.Errorf("restored SOUL.md = %q, %v", b, err)
+	if b, err := os.ReadFile(filepath.Join(dest, "NOTES.md")); err != nil || string(b) != "be kind\n" {
+		t.Errorf("restored NOTES.md = %q, %v", b, err)
 	}
 }
 
@@ -196,11 +196,11 @@ func TestSealExtraPlainPathsRefusesCase(t *testing.T) {
 	copy := extraCopy(t, "SQLite format 3\x00")
 	x := func(rel string) Extra { return Extra{Rel: rel, Path: copy, Mode: 0o644} }
 	for want, extra := range map[string][]Extra{
-		"SOUL.md and soul.md differ only by case":          {x("soul.md")},
-		"memories and MEMORIES differ only by case":        {x("MEMORIES")},
-		"SOUL.md and Soul.md/state.db differ only by case": {x("Soul.md/state.db")},
-		"state.db and State.DB differ only by case":        {x("state.db"), x("State.DB")},
-		"memories and Memorie\u017f differ only by case":   {x("Memorie\u017f")},
+		"NOTES.md and notes.md differ only by case":          {x("notes.md")},
+		"notes and NOTES differ only by case":                {x("NOTES")},
+		"NOTES.md and Notes.md/state.db differ only by case": {x("Notes.md/state.db")},
+		"state.db and State.DB differ only by case":          {x("state.db"), x("State.DB")},
+		"notes and Note\u017f differ only by case":           {x("Note\u017f")},
 	} {
 		_, err := f.sealExtra(extra...)
 		if !errors.Is(err, ErrDuplicatePath) || !strings.Contains(err.Error(), want+", and with --plain-paths the repo would keep them as one file on macOS and Windows") {
@@ -208,7 +208,7 @@ func TestSealExtraPlainPathsRefusesCase(t *testing.T) {
 		}
 	}
 	// An exact clash keeps the plain message.
-	if _, err := f.sealExtra(x("SOUL.md")); err == nil || err.Error() != ErrDuplicatePath.Error()+": SOUL.md" {
+	if _, err := f.sealExtra(x("NOTES.md")); err == nil || err.Error() != ErrDuplicatePath.Error()+": NOTES.md" {
 		t.Errorf("exact clash: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(f.root, "index.age")); !errors.Is(err, os.ErrNotExist) {
@@ -360,7 +360,7 @@ func TestClash(t *testing.T) {
 		{"\u212a/x.db", "k", false, true},
 		{"\u017ftate.db", "State.db", false, true},
 		{"\u212a", "kk/x.db", false, false},
-		{"agent/state.db", "agent/SOUL.md", false, false},
+		{"agent/state.db", "agent/NOTES.md", false, false},
 		{"agent", "agent2/state.db", false, false},
 		{"state.db", "state.db2", false, false},
 		{"state", "state.db", false, false},
