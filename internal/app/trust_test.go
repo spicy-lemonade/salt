@@ -78,6 +78,25 @@ func TestSealRecordsRecoveryInAnOlderApproval(t *testing.T) {
 	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); !errors.Is(err, ErrNotTrusted) {
 		t.Fatalf("seal after the change: %v", err)
 	}
+
+	// A repo that names no recovery method leaves the approval as it is.
+	setRecovery(t, e.root, "")
+	pin.Recovery = ""
+	if err := e.app.trustStore().Save(e.root, pin); err != nil {
+		t.Fatal(err)
+	}
+	// Saving puts a new file in place, so the same file means no save.
+	pins, _ := filepath.Glob(filepath.Join(e.app.TrustDir, "*.json"))
+	if len(pins) != 1 {
+		t.Fatalf("approvals: %v", pins)
+	}
+	before, _ := os.Stat(pins[0])
+	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); err != nil {
+		t.Fatalf("seal with no recovery method: %v", err)
+	}
+	if after, err := os.Stat(pins[0]); err != nil || !os.SameFile(before, after) {
+		t.Fatalf("the approval was saved again: %v", err)
+	}
 }
 
 func TestSealRefusesChangedKeysOrSettings(t *testing.T) {

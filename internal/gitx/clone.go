@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"os/exec"
 	"regexp"
 	"slices"
@@ -90,6 +91,11 @@ func Clone(ctx context.Context, remote, dir string) error {
 func cloneStep(ctx context.Context, dir, remote string, stdout io.Writer, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", Args(dir, args...)...)
 	cmd.Stdout = stdout
+	// ls-remote runs only after a fetch failed, which may have been a
+	// password typed wrong, so it never asks for one again.
+	if args[0] == "ls-remote" {
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	}
 	err := proc.Run(ctx, cmd)
 	var failed *proc.Error
 	if errors.As(err, &failed) {

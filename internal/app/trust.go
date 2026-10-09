@@ -49,7 +49,7 @@ func (a *App) checkTrusted(r *repo.Repo) error {
 	// An approval saved by a salt that did not record how the key is
 	// recovered records it now, as the rest was recorded when approved.
 	// Losing this save only means trying again next time.
-	if pin.Recovery == "" {
+	if pin.Recovery == "" && r.Format.Recovery != "" {
 		pin.Recovery = r.Format.Recovery
 		a.trustStore().Save(r.Root, pin)
 	}
