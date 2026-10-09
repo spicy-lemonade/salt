@@ -30,8 +30,15 @@ func TestOpenRegularFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Open(%s): %v", name, err)
 		}
-		flags, err := unix.FcntlInt(f.Fd(), unix.F_GETFL, 0)
-		if err != nil || flags&unix.O_NONBLOCK != 0 {
+		// Fd would itself set the file to wait, so the flags are read
+		// through SyscallConn.
+		var flags int
+		var flagsErr error
+		rc, err := f.SyscallConn()
+		if err == nil {
+			err = rc.Control(func(fd uintptr) { flags, flagsErr = unix.FcntlInt(fd, unix.F_GETFL, 0) })
+		}
+		if err = errors.Join(err, flagsErr); err != nil || flags&unix.O_NONBLOCK != 0 {
 			t.Errorf("%s left non-blocking: flags %#x, %v", name, flags, err)
 		}
 		b, err := io.ReadAll(f)
@@ -70,7 +77,10 @@ func TestOpenRefusesWhatIsNotAFile(t *testing.T) {
 			// does not outlive the test.
 			if w, err := os.OpenFile(pipe, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
 				w.Close()
-				<-done
+				select {
+				case <-done:
+				case <-time.After(10 * time.Second):
+				}
 			}
 			t.Fatalf("Open(%s) is still waiting", name)
 		}

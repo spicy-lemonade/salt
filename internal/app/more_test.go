@@ -567,7 +567,10 @@ func TestDoctorDoesNotOpenAPipe(t *testing.T) {
 		// does not outlive the test.
 		if w, err := os.OpenFile(filepath.Join(e.root, "pipe"), os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
 			w.Close()
-			<-done
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+			}
 		}
 		t.Fatal("doctor is still waiting on the pipe")
 	}
