@@ -108,13 +108,13 @@ func IsSQLite(path string) (bool, error) {
 const headLen = 20
 
 // readHead returns as much of the first headLen bytes of the regular file at
-// path as could be read, and its size. Anything but a regular file is
-// ErrNotSQLite. The type is checked before opening, so a named pipe is not
-// opened at all, which would let a tool waiting to write to it go on, and
-// again once open, in case it became one in between, which is
-// regular.ErrNotRegular. A short file or a read
-// error leaves fewer bytes than the header, and the file is not taken for a
-// database. sqlite3 would fail on the same read error.
+// path as could be read, and its size. The type is checked before opening,
+// and anything but a regular file is then ErrNotSQLite, so a named pipe is
+// not opened at all, which would let a tool waiting to write to it go on. It
+// is checked again once open, in case the file became one in between, which
+// is regular.ErrNotRegular. A short file or a read error leaves fewer bytes
+// than the header, and the file is not taken for a database. sqlite3 would
+// fail on the same read error.
 func readHead(path string) (head []byte, size int64, err error) {
 	fi, err := os.Stat(path)
 	if err != nil {

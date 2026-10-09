@@ -30,8 +30,9 @@ func TestOpenRegularFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Open(%s): %v", name, err)
 		}
-		// Fd would itself set the file to wait, so the flags are read
-		// through SyscallConn.
+		// The flags are read through SyscallConn rather than Fd, which can
+		// set a file to wait when Go made it non-blocking, so the check
+		// never depends on that.
 		var flags int
 		var flagsErr error
 		rc, err := f.SyscallConn()
