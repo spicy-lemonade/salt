@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"errors"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -212,14 +214,29 @@ func TestSealPostgresNamed(t *testing.T) {
 	if strings.Contains(out, "s3cret") || strings.Contains(out, "pa:ss") {
 		t.Fatalf("the output shows the password:\n%s", out)
 	}
+}
 
-	// An SSL key's passphrase in the connection is refused before pg_dump
-	// runs, without showing it.
-	out = assertSealFails(t, e.with("PATH="+filepath.Dir(e.bin), "HONCHO_DB="+second.url("postgres")+"?sslpassword=key%20phrase"), b,
-		"the connection in HONCHO_DB, given to --postgres-env, gives sslpassword, which would show in the process list. Put it in a libpq service file",
-		"--postgres-env", "HONCHO_DB")
-	if strings.Contains(out, "key phrase") || strings.Contains(out, "key%20phrase") || strings.Contains(out, "s3cret") {
-		t.Fatalf("the output shows a secret:\n%s", out)
+// A connection holding a secret salt cannot keep out of pg_dump's command
+// line, such as an SSL key's passphrase, is refused before pg_dump runs,
+// however it is given, without showing the secret or the password.
+func TestSealPostgresRefusesSecrets(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	os.MkdirAll(b.src, 0o755)
+	ran := filepath.Join(t.TempDir(), "ran")
+	e = e.with(e.stubPath(t, "pg_dump", `touch "$SALT_TEST_RAN"`), "SALT_TEST_RAN="+ran,
+		"AGENT_DB=postgresql://agent:pa%3Ass%40w0rd%20s3cret@127.0.0.1/memory?sslpassword=key%20phrase")
+	for want, args := range map[string][]string{
+		"the connection given to --postgres gives sslpassword, which would show in the process list. Put it in a libpq service file, such as ~/.pg_service.conf, and name the service with service=NAME": {"--postgres", "host=127.0.0.1 dbname=memory password=s3cret sslpassword='key phrase'"},
+		"the connection in AGENT_DB, given to --postgres-env, gives sslpassword, which would show in the process list":                                                                                   {"--postgres-env", "AGENT_DB"},
+	} {
+		out := assertSealFails(t, e, b, want, args...)
+		if strings.Contains(out, "key phrase") || strings.Contains(out, "key%20phrase") || strings.Contains(out, "s3cret") || strings.Contains(out, "pa:ss") {
+			t.Fatalf("the output shows a secret:\n%s", out)
+		}
+	}
+	if _, err := os.Stat(ran); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("pg_dump ran: %v", err)
 	}
 }
 

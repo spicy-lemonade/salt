@@ -175,24 +175,31 @@ func TestNewPostgresRefusesSecrets(t *testing.T) {
 		"host=localhost dbname=memory sslpassword=s3cret":                        "sslpassword",
 		`host=localhost sslpassword='it\'s s3cret' dbname=memory`:                "sslpassword",
 		"dbname=memory oauth_client_secret = s3cret":                             "oauth_client_secret",
+		"postgresql://localhost/memory?scram_client_key=s3cret":                  "scram_client_key",
+		"dbname=memory scram_server_key=s3cret":                                  "scram_server_key",
 		// Refused even when the connection is wrong in another way.
 		"host=localhost sslpassword=s3cret": "sslpassword",
 	} {
 		t.Setenv("SALT_TEST_DB", in)
 		for where, newDB := range map[string]func() (Database, error){
-			"the connection given to --postgres ":                       func() (Database, error) { return NewPostgres(in) },
-			"the connection in SALT_TEST_DB, given to --postgres-env, ": func() (Database, error) { return NewPostgresEnv("SALT_TEST_DB") },
-			"the connection in DB_URL, ":                                func() (Database, error) { return NewPostgresConn(in, "the connection in DB_URL,") },
+			"the connection given to --postgres":                       func() (Database, error) { return NewPostgres(in) },
+			"the connection in SALT_TEST_DB, given to --postgres-env,": func() (Database, error) { return NewPostgresEnv("SALT_TEST_DB") },
+			"the connection in DB_URL,":                                func() (Database, error) { return NewPostgresConn(in, "the connection in DB_URL,") },
 		} {
 			db, err := newDB()
 			var got secretKeyError
-			if db != nil || !errors.As(err, &got) || string(got) != key || err.Error() != where+secretKeyError(key).Error() {
+			if db != nil || !errors.As(err, &got) || string(got) != key || err.Error() != where+" "+secretKeyError(key).Error() {
 				t.Errorf("%q: %v, %v; want %s refused", in, db, err, key)
 			}
-			if err != nil && strings.Contains(err.Error(), "s3cret") {
+			if err != nil && (strings.Contains(err.Error(), "s3cret") || strings.Contains(err.Error(), "pw")) {
 				t.Errorf("%q: the error shows the secret: %v", in, err)
 			}
 		}
+	}
+	// A connection that is also written wrongly gets that error, which is
+	// just as safe.
+	if _, err := NewPostgres("sslpassword=s3cret dbname"); !errors.Is(err, errNotPostgres) || strings.Contains(err.Error(), "s3cret") {
+		t.Errorf("written wrongly: %v", err)
 	}
 	// A value that only holds the setting's name, and a service, are kept.
 	for in, want := range map[string]string{

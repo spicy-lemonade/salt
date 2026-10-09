@@ -34,8 +34,10 @@ var (
 // secretKeys are the libpq settings, other than password, that hold a
 // secret. libpq reads them only from the connection or a service file, never
 // from the environment, so salt cannot keep them out of pg_dump's command
-// line and refuses a connection that gives one.
-var secretKeys = []string{"sslpassword", "oauth_client_secret"}
+// line and refuses a connection that gives one. When libpq adds settings,
+// check PQconninfoOptions in libpq's fe-connect.c for new ones marked "*"
+// (a password) or "D" (hidden), and add those that hold a secret.
+var secretKeys = []string{"sslpassword", "oauth_client_secret", "scram_client_key", "scram_server_key"}
 
 // secretKeyError is a connection that gives one of secretKeys. It holds only
 // the key, so its message never repeats the secret.
@@ -133,9 +135,12 @@ func newPostgres(flag, where, s string) (Database, error) {
 		// As in libpq, which pg_dump uses.
 		p.dbname = os.Getenv("PGDATABASE")
 	}
+	secret := slices.IndexFunc(p.keys, func(k string) bool { return slices.Contains(secretKeys, k) })
 	switch {
 	case err != nil:
 		// parse's error says what is wrong.
+	case secret >= 0:
+		err = secretKeyError(p.keys[secret])
 	case p.dbname == "":
 		err = errNoDatabase
 	case p.dbname == "." || p.dbname == ".." || strings.ContainsAny(p.dbname, "/\\") || strings.ContainsFunc(p.dbname, unicode.IsControl):
@@ -294,8 +299,6 @@ func parseURL(s string) (p Postgres, err error) {
 		case key == "password":
 			p.password = value
 			continue
-		case slices.Contains(secretKeys, key):
-			return Postgres{}, secretKeyError(key)
 		case key == "dbname":
 			p.dbname = value
 		case key == "keepalives":
@@ -332,9 +335,6 @@ func parseSettings(s string) (p Postgres, err error) {
 			return Postgres{}, errNotPostgres
 		}
 		rest = strings.TrimLeft(rest, spaces)
-		if slices.Contains(secretKeys, key) {
-			return Postgres{}, secretKeyError(key)
-		}
 		switch key {
 		case "password":
 			p.password = value
