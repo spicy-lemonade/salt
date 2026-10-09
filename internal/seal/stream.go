@@ -243,7 +243,7 @@ func (p *partReader) next() error {
 	p.close()
 	name := p.names[0]
 	p.names = p.names[1:]
-	f, err := p.rt.Open(filepath.FromSlash(name))
+	f, _, err := regular.Open(p.rt.OpenFile, filepath.FromSlash(name))
 	if err != nil {
 		return err
 	}

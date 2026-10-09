@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"filippo.io/age"
+	"github.com/spicy-lemonade/salt/internal/regular"
 )
 
 const (
@@ -140,7 +141,8 @@ func Open(root string) (*Repo, error) {
 // root. Someone who can push could commit it, or .salt, as a symlink. os.Root
 // refuses a link that leads outside the repo but follows one that stays
 // inside it, so ReadSaltFile refuses a symlink anywhere on the way, and
-// anything at name that is not a regular file. It reads at most maxSaltFile
+// anything at name that is not a regular file, both before it opens it and
+// once it is open. It reads at most maxSaltFile
 // bytes. A missing file is fs.ErrNotExist.
 func ReadSaltFile(root, name string) ([]byte, error) {
 	rt, err := os.OpenRoot(root)
@@ -169,7 +171,7 @@ func ReadSaltFile(root, name string) ([]byte, error) {
 	if !fi.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not a regular file. Check the repo's recent commits before backing up or restoring", name)
 	}
-	f, err := rt.Open(filepath.FromSlash(name))
+	f, _, err := regular.Open(rt.OpenFile, filepath.FromSlash(name))
 	if err != nil {
 		return nil, err
 	}

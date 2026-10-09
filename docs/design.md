@@ -530,9 +530,9 @@ start another until the machine runs out of memory. These rules prevent that:
 8. Salt never waits on something that is not a file. Opening a named pipe
    waits until something writes to it, which could be for ever, and a file
    can become one after salt has looked at it. So every file salt reads from
-   a source folder or the backup repo is opened without waiting, checked once
-   it is open, and refused at once if it is not a regular file
-   (`internal/regular`).
+   a source folder or the backup repo's working tree is opened without
+   waiting, checked once it is open, and refused at once if it is not a
+   regular file (`internal/regular`).
 
 ## Databases
 

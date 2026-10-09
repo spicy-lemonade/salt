@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"filippo.io/age"
 	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/keys"
+	"github.com/spicy-lemonade/salt/internal/regular"
 	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/trust"
@@ -308,7 +310,12 @@ func ensureGitattributes(root string) error {
 	}
 	defer rt.Close()
 	const p = ".gitattributes"
-	b, err := rt.ReadFile(p)
+	var b []byte
+	f, _, err := regular.Open(rt.OpenFile, p)
+	if err == nil {
+		b, err = io.ReadAll(f)
+		f.Close()
+	}
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}

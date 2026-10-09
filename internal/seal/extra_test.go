@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/spicy-lemonade/salt/internal/regular"
+	"github.com/spicy-lemonade/salt/internal/repo"
 )
 
 // extraCopy writes content to a file outside the source tree, standing in
@@ -483,5 +484,34 @@ func TestFirstClash(t *testing.T) {
 	tk.add("Agent/x/state.db")
 	if j, other, ok := tk.clash("agent/X"); !ok || j != 0 || other != "Agent/x" {
 		t.Errorf("folder: %d %q %v", j, other, ok)
+	}
+}
+
+// An object or the index that a process on this machine replaced with a
+// named pipe fails verify at once, rather than waiting for a writer. git
+// cannot store a pipe, so only something local can put one there.
+func TestVerifyRefusesAPipeInTheRepo(t *testing.T) {
+	f := newFixture(t, true)
+	f.seal(false)
+	ix, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toPipe := func(rel string) {
+		p := filepath.Join(f.root, filepath.FromSlash(rel))
+		os.Remove(p)
+		if err := syscall.Mkfifo(p, 0o600); err != nil {
+			t.Skip("mkfifo:", err)
+		}
+	}
+	e := ix.Entries[0]
+	toPipe(e.Object)
+	vr, err := Verify(f.root, f.ids(), VerifyOptions{})
+	if err != nil || vr.ProblemCount != 1 || !strings.Contains(vr.Problems[0], e.Path) || !strings.Contains(vr.Problems[0], "not a regular file") {
+		t.Fatalf("verify with an object a pipe: %+v, %v", vr, err)
+	}
+	toPipe(repo.IndexFile)
+	if _, err := Verify(f.root, f.ids(), VerifyOptions{}); !errors.Is(err, regular.ErrNotRegular) {
+		t.Fatalf("verify with the index a pipe: %v", err)
 	}
 }

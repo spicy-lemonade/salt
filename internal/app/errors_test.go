@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/spicy-lemonade/salt/internal/keys"
+	"github.com/spicy-lemonade/salt/internal/regular"
 	"github.com/spicy-lemonade/salt/internal/repo"
 )
 
@@ -306,5 +308,17 @@ func TestDoctorKeyFileNotAge(t *testing.T) {
 	e.ui.out.Reset()
 	if err := e.app.Doctor(e.root); !errors.Is(err, ErrReported) || !strings.Contains(e.ui.out.String(), "is not an age file") {
 		t.Fatalf("Doctor: %v\n%s", err, e.ui.out.String())
+	}
+}
+
+// A .gitattributes that a process on this machine made a named pipe fails
+// init at once, rather than waiting for a writer.
+func TestEnsureGitattributesRefusesAPipe(t *testing.T) {
+	root := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(root, ".gitattributes"), 0o600); err != nil {
+		t.Skip("mkfifo:", err)
+	}
+	if err := ensureGitattributes(root); !errors.Is(err, regular.ErrNotRegular) {
+		t.Fatalf("ensureGitattributes with a pipe: %v", err)
 	}
 }
