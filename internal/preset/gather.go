@@ -32,6 +32,7 @@ const maxSecretsFile = 1 << 20
 const (
 	notYAML   = "it could not be read as YAML or JSON to check it for secrets"
 	commented = "a comment in it stops it being checked for secrets"
+	noSpace   = "a name with no space after its colon stops it being checked for secrets"
 )
 
 // sidecars are the files SQLite keeps beside a database while it is in use.
@@ -540,6 +541,12 @@ func secretIn(p string, sec Secret) (why string, secret bool, number string) {
 		if err != nil {
 			return notYAML, false, ""
 		}
+		// A comment before the opening brace, with no ": " after it, makes
+		// the whole document one piece of text holding settings YAML cannot
+		// see.
+		if isComment(doc.Content[0]) {
+			return commented, false, ""
+		}
 		text, num, unread := secretKeys(&doc, sec)
 		if unread != "" {
 			return unread, false, ""
@@ -556,17 +563,14 @@ func secretIn(p string, sec Secret) (why string, secret bool, number string) {
 // such setting that holds a number and no value, or "" for either. unread,
 // with the others "", says why n cannot be checked, when YAML reads JSON5
 // so that a setting's name matches no key. A comment joins the name before
-// or after it, or makes the whole document one piece of text (see
-// isComment). A name and value with no space between them, as in
-// {apiKey:"x"}, become one name, so a name not quoted inside {} that holds
-// : cannot be read. A quoted name, such as "a:b", and a YAML name outside
-// {}, such as llama3:8b, are names.
+// or after it (see isComment). A name and value with no space between them,
+// as in {apiKey:"x"}, become one name, so a name not quoted inside {} that
+// holds : stops the check, even where YAML means it, as in {llama3:8b: 1}.
+// A quoted name, such as "a:b", and a YAML name outside {}, such as
+// llama3:8b, are names.
 func secretKeys(n *yaml.Node, sec Secret) (text, number, unread string) {
 	switch n.Kind {
 	case yaml.DocumentNode, yaml.SequenceNode:
-		if n.Kind == yaml.DocumentNode && len(n.Content) == 1 && isComment(n.Content[0]) {
-			return "", "", commented
-		}
 		for _, c := range n.Content {
 			t, num, u := secretKeys(c, sec)
 			if t != "" || u != "" {
@@ -581,7 +585,7 @@ func secretKeys(n *yaml.Node, sec Secret) (text, number, unread string) {
 				return "", "", commented
 			}
 			if n.Style&yaml.FlowStyle != 0 && k.Style&(yaml.DoubleQuotedStyle|yaml.SingleQuotedStyle) == 0 && strings.Contains(k.Value, ":") {
-				return "", "", notYAML
+				return "", "", noSpace
 			}
 			if matchAny(sec.Keys, strings.ToLower(k.Value)) {
 				if hasValue(v, sec.Refs) {
