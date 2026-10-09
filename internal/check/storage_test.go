@@ -33,6 +33,13 @@ func TestBadAttr(t *testing.T) {
 		if got := badAttr(gitx.Attr{Path: "objects/ab/c.age", Name: tt.name, Value: tt.value}); got != tt.bad {
 			t.Errorf("%s=%s: bad = %v, want %v", tt.name, tt.value, got, tt.bad)
 		}
+		// salt's settings files are text: only their line ends may change.
+		settingsBad := tt.bad && tt.name != "text" && tt.name != "eol"
+		for _, p := range settingsFiles {
+			if got := badAttr(gitx.Attr{Path: p, Name: tt.name, Value: tt.value}); got != settingsBad {
+				t.Errorf("%s %s=%s: bad = %v, want %v", p, tt.name, tt.value, got, settingsBad)
+			}
+		}
 	}
 }
 
@@ -60,6 +67,8 @@ func TestStorageProblemMessages(t *testing.T) {
 			`git may change "index\r.age" when storing it (*.age is not marked binary); backups could not be restored. Add "*.age binary" to .gitattributes.`},
 		{StorageProblem{Path: "index.age", Attrs: []BadAttr{{"text", "unspecified"}}},
 			`git may change index.age when storing it (*.age is not marked binary); backups could not be restored. Add "*.age binary" to .gitattributes.`},
+		{StorageProblem{Path: ".salt/format.json", Attrs: []BadAttr{{"working-tree-encoding", "UTF-16"}}},
+			"git would change .salt/format.json when storing it or checking it out (working-tree-encoding is set to UTF-16), so salt could not read it from another copy of the repo. Remove the attribute from .gitattributes (or your git config)."},
 	} {
 		if got := tt.p.String(); got != tt.want {
 			t.Errorf("message = %q\nwant      %q", got, tt.want)
@@ -126,8 +135,11 @@ func TestOnDisk(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "objects", "ab", "kept.age"), []byte("x"), 0o644)
 	os.WriteFile(filepath.Join(dir, "index.age"), []byte("x"), 0o644)
 	os.WriteFile(filepath.Join(dir, ".salt-format.json"), []byte("x"), 0o644)
-	got, err := onDisk(dir, []string{"index.age", "objects/ab/kept.age", "objects/ab/deleted.age", ".salt-format.json"})
-	if err != nil || !slices.Equal(got, []string{"index.age", "objects/ab/kept.age"}) {
+	os.MkdirAll(filepath.Join(dir, ".salt"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".salt", "format.json"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(dir, ".salt", "notes.txt"), []byte("x"), 0o644)
+	got, err := onDisk(dir, []string{"index.age", "objects/ab/kept.age", "objects/ab/deleted.age", ".salt-format.json", ".salt/format.json", ".salt/notes.txt", ".salt/recipients.txt"})
+	if err != nil || !slices.Equal(got, []string{"index.age", "objects/ab/kept.age", ".salt/format.json"}) {
 		t.Fatalf("onDisk = %v, %v", got, err)
 	}
 	if _, err := onDisk(filepath.Join(dir, "missing"), nil); err == nil {

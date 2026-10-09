@@ -297,7 +297,7 @@ func (a *App) openToSeal(path string) (*repo.Repo, ed25519.PrivateKey, error) {
 	if err := a.checkTrusted(r); err != nil {
 		return nil, nil, err
 	}
-	signer, err := a.signingKey(r)
+	signer, _, err := a.signingKey(r)
 	if errors.Is(err, errNoSigningKey) {
 		return nil, nil, fmt.Errorf("this machine has no key to sign backups to %s. salt now signs every backup, so restore can tell if someone planted files in it. Run `salt trust %q` once to set it up",
 			a.short(r.Root), r.Root)

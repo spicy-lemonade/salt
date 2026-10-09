@@ -39,12 +39,57 @@ func showFileNames(t *testing.T, root string) {
 	os.WriteFile(p, b, 0o644)
 }
 
+// setRecovery plays someone with push access changing the recovery method.
+func setRecovery(t *testing.T, root, method string) {
+	t.Helper()
+	p := filepath.Join(root, repo.FormatFile)
+	var f repo.Format
+	b, _ := os.ReadFile(p)
+	json.Unmarshal(b, &f)
+	f.Recovery = method
+	b, _ = json.Marshal(f)
+	os.WriteFile(p, b, 0o644)
+}
+
+// An approval saved by a salt that did not record the recovery method gains
+// it on the next seal, which then refuses a change to it.
+func TestSealRecordsRecoveryInAnOlderApproval(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	r, err := repo.Open(e.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin, err := e.app.trustStore().Load(e.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin.Recovery = ""
+	if err := e.app.trustStore().Save(e.root, pin); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); err != nil {
+		t.Fatalf("seal with an older approval: %v", err)
+	}
+	if pin, err := e.app.trustStore().Load(e.root); err != nil || pin.Recovery != r.Format.Recovery {
+		t.Fatalf("approval after the seal: %+v, %v", pin, err)
+	}
+	setRecovery(t, e.root, repo.RecoveryPassphrase)
+	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); !errors.Is(err, ErrNotTrusted) {
+		t.Fatalf("seal after the change: %v", err)
+	}
+}
+
 func TestSealRefusesChangedKeysOrSettings(t *testing.T) {
 	for name, tamper := range map[string]func(t *testing.T, root string) string{
 		"attacker key": func(t *testing.T, root string) string { return "key added: " + addAttackerKey(t, root) },
 		"visible names": func(t *testing.T, root string) string {
 			showFileNames(t, root)
 			return "file names changed from hidden to visible"
+		},
+		"recovery": func(t *testing.T, root string) string {
+			setRecovery(t, root, repo.RecoveryPassphrase)
+			return "recovery changed from a recovery phrase to a passphrase"
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

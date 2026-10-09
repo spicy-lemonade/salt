@@ -139,7 +139,7 @@ func (a *App) Init(o InitOptions) error {
 	if err := repo.Write(root, f, []string{rcpt}); err != nil {
 		return err
 	}
-	if err := a.trustStore().Save(root, trust.Pin{Recipients: []string{rcpt}, EncryptPaths: f.EncryptPaths}); err != nil {
+	if err := a.trustStore().Save(root, trust.Pin{Recipients: []string{rcpt}, EncryptPaths: f.EncryptPaths, Recovery: f.Recovery}); err != nil {
 		return fmt.Errorf("saving the approved keys: %w", err)
 	}
 	if err := ensureGitattributes(root); err != nil {

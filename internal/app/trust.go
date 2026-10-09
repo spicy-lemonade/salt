@@ -33,7 +33,7 @@ func (a *App) approval(r *repo.Repo) (trust.Pin, []string, error) {
 // checkTrusted refuses to seal unless the repo's keys and settings match the
 // ones approved on this machine.
 func (a *App) checkTrusted(r *repo.Repo) error {
-	_, d, err := a.approval(r)
+	pin, d, err := a.approval(r)
 	if errors.Is(err, trust.ErrNotApproved) {
 		return fmt.Errorf("%w: this machine has not approved the keys in %s yet. Check them and run `salt trust %q`",
 			ErrNotTrusted, a.short(r.Root), r.Root)
@@ -45,6 +45,13 @@ func (a *App) checkTrusted(r *repo.Repo) error {
 		return fmt.Errorf("%w: the keys or settings in %s changed since you approved them:\n  %s\n"+
 			"If you made this change, run `salt trust %q`. If you didn't, someone else changed your backup repo. Don't back up until you've checked it",
 			ErrNotTrusted, a.short(r.Root), strings.Join(d, "\n  "), r.Root)
+	}
+	// An approval saved by a salt that did not record how the key is
+	// recovered records it now, as the rest was recorded when approved.
+	// Losing this save only means trying again next time.
+	if pin.Recovery == "" {
+		pin.Recovery = r.Format.Recovery
+		a.trustStore().Save(r.Root, pin)
 	}
 	return nil
 }
@@ -91,10 +98,14 @@ func (a *App) Trust(repoRoot string, yes bool) error {
 	unknown := 0
 	for _, rcpt := range pin.Recipients {
 		mark := "  (your key on this machine)"
-		if _, err := a.Store.Get(rcpt); errors.Is(err, keys.ErrNotFound) {
+		switch _, err := a.storedIdentity(rcpt); {
+		case errors.Is(err, keys.ErrNotFound):
 			mark = "  ⚠ NOT on this machine"
 			unknown++
-		} else if err != nil {
+		case errors.Is(err, errDamagedKey):
+			mark = "  ⚠ " + errDamagedKey.Error()
+			unknown++
+		case err != nil:
 			return err
 		}
 		a.UI.Printf("  %s%s\n", rcpt, mark)

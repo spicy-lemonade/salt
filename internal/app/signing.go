@@ -20,19 +20,28 @@ func (a *App) signStore() keys.FileStore { return keys.FileStore{Dir: a.SignDir}
 var errNoSigningKey = errors.New("no signing key")
 
 // signingKey returns this machine's key for signing backups to r: the one
-// saved for the first of r's recipients that has one.
-func (a *App) signingKey(r *repo.Repo) (ed25519.PrivateKey, error) {
+// saved for the first of r's recipients that has one, and that recipient.
+func (a *App) signingKey(r *repo.Repo) (ed25519.PrivateKey, string, error) {
 	for _, rcpt := range r.RecipientStrings {
 		s, err := a.signStore().Get(rcpt)
 		if errors.Is(err, keys.ErrNotFound) {
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, rcpt, err
 		}
-		return s.SigningKey()
+		k, err := s.SigningKey()
+		return k, rcpt, err
 	}
-	return nil, errNoSigningKey
+	return nil, "", errNoSigningKey
+}
+
+// wrongSigningKey reports whether k, the signing key saved for rcpt, is not
+// the one rcpt's key derives, when that key is saved on this machine to
+// check it with. Seal never reads that key, so it cannot check this itself.
+func (a *App) wrongSigningKey(k ed25519.PrivateKey, rcpt string) bool {
+	id, err := a.storedIdentity(rcpt)
+	return err == nil && !k.Equal(keys.SigningKey(id))
 }
 
 // saveSigningKey derives the signing key from id and saves it.
@@ -46,10 +55,15 @@ func (a *App) saveSigningKey(id *age.X25519Identity) error {
 
 // ensureSigningKey makes sure this machine can sign backups to r. The key is
 // derived from r's decryption key, taken from the keychain or by asking for
-// the recovery phrase or passphrase.
+// the recovery phrase or passphrase. A saved key that does not match the
+// decryption key saved here is replaced (see wrongSigningKey).
 func (a *App) ensureSigningKey(r *repo.Repo) error {
-	if _, err := a.signingKey(r); !errors.Is(err, errNoSigningKey) {
+	switch k, rcpt, err := a.signingKey(r); {
+	case errors.Is(err, errNoSigningKey):
+	case err != nil:
 		return err
+	case !a.wrongSigningKey(k, rcpt):
+		return nil
 	}
 	ids, err := a.identities(r)
 	if err != nil {

@@ -632,6 +632,17 @@ func TestPushedAttributeStopsTheBackup(t *testing.T) {
 	}
 }
 
+// A pushed attribute that would change salt's settings files, as a fresh
+// clone checks them out, stops the backup too.
+func TestPushedSettingsAttributeStopsTheBackup(t *testing.T) {
+	e := newEnv(t)
+	mine, src := pushedChange(t, e, ".gitattributes", "/.salt/format.json filter=nope")
+	out, code := e.run(mine, "salt", "seal", "--prune", src, mine)
+	if code != 1 || !strings.Contains(out, "git would change .salt/format.json when storing it or checking it out (filter is set to nope), so salt could not read it from another copy of the repo.") {
+		t.Fatalf("seal after the attribute: exit %d\n%s", code, out)
+	}
+}
+
 // Someone who can push chooses file names and attribute values. Salt's
 // messages show the control codes in them escaped, never raw, whether the UI
 // prints them or main prints the error, and quote a name holding a newline,
