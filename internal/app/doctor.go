@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/spicy-lemonade/salt/internal/check"
+	"github.com/spicy-lemonade/salt/internal/escape"
 	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/regular"
@@ -108,7 +109,7 @@ func (a *App) Doctor(repoRoot string) error {
 		r.add(warn, "could not inspect the last commit: %v", err)
 	} else if len(vs) > 0 {
 		r.add(fail, "the last commit contains %d unencrypted file(s), e.g. %s; if it was pushed, that plaintext is on the remote",
-			len(vs), vs[0].Path)
+			len(vs), escape.Name(vs[0].Path))
 	} else {
 		r.add(ok, "last commit contains no unencrypted files")
 	}
@@ -290,30 +291,45 @@ func (a *App) doctorTree(r *report, root string) {
 			*list = append(*list, rel)
 		}
 		if fi, err := d.Info(); err == nil && fi.Size() > repo.GitHubFileLimit {
-			big = append(big, fmt.Sprintf("%s (%d MB)", rel, fi.Size()>>20))
+			big = append(big, fmt.Sprintf("%s (%d MB)", escape.Name(rel), fi.Size()>>20))
 		}
 		return nil
 	})
 	if err != nil {
+		// The path in the error can be a name someone pushed.
+		var pathErr *fs.PathError
+		if errors.As(err, &pathErr) {
+			err = fmt.Errorf("%s %s: %w", pathErr.Op, escape.Name(pathErr.Path), pathErr.Err)
+		}
 		r.add(warn, "could not scan the working tree: %v", err)
 		return
 	}
 	if len(plain) > 0 {
 		slices.Sort(plain)
 		r.add(fail, "%d unencrypted file(s) in the working tree, e.g. %s; `salt seal --prune` removes them",
-			len(plain), strings.Join(plain[:min(3, len(plain))], ", "))
+			len(plain), examples(plain))
 	}
 	if len(stray) > 0 {
 		slices.Sort(stray)
 		r.add(fail, "%d unexpected file(s) in %s, e.g. %s; `salt seal --prune` leaves %s alone, so check the repo's recent commits and remove them by hand",
-			len(stray), repo.Dir, strings.Join(stray[:min(3, len(stray))], ", "), repo.Dir)
+			len(stray), repo.Dir, examples(stray), repo.Dir)
 	}
 	if len(plain)+len(stray) == 0 {
 		r.add(ok, "working tree contains only encrypted files and public salt settings")
 	}
 	if len(big) > 0 {
-		r.add(warn, "file(s) over GitHub's 100 MB limit, so the push will fail: %s", strings.Join(big, ", "))
+		r.add(warn, "%d file(s) over GitHub's 100 MB limit, so the push will fail, e.g. %s", len(big), examples(big))
 	}
+}
+
+// examples names the first three of names, which can come from the repo, so
+// each goes through escape.Name. Text escape.Name returned is unchanged by it.
+func examples(names []string) string {
+	shown := make([]string, min(3, len(names)))
+	for i := range shown {
+		shown[i] = escape.Name(names[i])
+	}
+	return strings.Join(shown, ", ")
 }
 
 // readHead reads the start of the file rel in rt, refusing anything that is
@@ -358,7 +374,7 @@ func (a *App) Verify(repoRoot string, allowUnsigned bool) error {
 		a.UI.Printf("%s", unsignedWarning(res.Unapproved))
 	}
 	for _, u := range res.Unreferenced {
-		a.UI.Printf("  ! %s is not in the index (the next `salt seal` removes it)\n", u)
+		a.UI.Printf("  ! %s is not in the index (the next `salt seal` removes it)\n", escape.Name(u))
 	}
 	if res.ProblemCount > 0 {
 		a.UI.Printf("✗ %d of %d files cannot be restored:\n", res.ProblemCount, res.Files)

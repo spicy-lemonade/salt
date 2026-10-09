@@ -16,18 +16,28 @@ import (
 
 	"filippo.io/age"
 	"github.com/spicy-lemonade/salt/internal/check"
+	"github.com/spicy-lemonade/salt/internal/escape"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
 )
 
+// fakeTerminal makes isTerminal report on for every file until the test
+// ends, so a test behaves the same whether or not it runs in a terminal.
+func fakeTerminal(t *testing.T, on bool) {
+	orig := isTerminal
+	isTerminal = func(int) bool { return on }
+	t.Cleanup(func() { isTerminal = orig })
+}
+
 func TestTerminal(t *testing.T) {
-	var out bytes.Buffer
-	term := &Terminal{in: bufio.NewReader(strings.NewReader("first\r\nlast")), out: &out}
+	fakeTerminal(t, false)
+	var out, raw bytes.Buffer
+	term := &Terminal{in: bufio.NewReader(strings.NewReader("first\r\nlast")), out: &out, raw: &raw}
 	term.Printf("hi %d\n", 1)
 	if s, err := term.ReadLine("? "); err != nil || s != "first" {
 		t.Fatalf("ReadLine = %q, %v", s, err)
 	}
-	// stdin is not a terminal in tests, so ReadSecret reads a plain line.
+	// stdin is not a terminal, so ReadSecret reads a plain line.
 	if s, err := term.ReadSecret("pw: "); err != nil || s != "last" {
 		t.Fatalf("ReadSecret = %q, %v", s, err)
 	}
@@ -35,6 +45,9 @@ func TestTerminal(t *testing.T) {
 		t.Fatalf("ReadLine at EOF: %v", err)
 	}
 	term.Clear() // stderr is not a terminal: nothing is printed
+	if raw.Len() != 0 {
+		t.Fatalf("Clear printed %q", raw.String())
+	}
 	if term.Interactive() {
 		t.Error("tests should not look interactive")
 	}
@@ -43,6 +56,33 @@ func TestTerminal(t *testing.T) {
 	}
 	if NewTerminal() == nil {
 		t.Fatal("NewTerminal returned nil")
+	}
+}
+
+// A path or program output holding control characters reaches the terminal
+// escaped, through Printf and prompts alike.
+func TestTerminalEscapes(t *testing.T) {
+	fakeTerminal(t, false)
+	var out, raw bytes.Buffer
+	term := &Terminal{in: bufio.NewReader(strings.NewReader("x\n")), out: escape.Writer(&out), raw: &raw}
+	term.Printf("bad %s\n", "a\x1b[2Jb")
+	if _, err := term.ReadLine("open \x1b]0;title\a? "); err != nil {
+		t.Fatal(err)
+	}
+	if want := "bad a\\x1b[2Jb\nopen \\x1b]0;title\\a? "; out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
+	term.Clear() // stderr is not a terminal: nothing is printed
+	if raw.Len() != 0 {
+		t.Fatalf("Clear printed %q", raw.String())
+	}
+
+	// On a terminal, Clear's own codes reach it unescaped, and only through raw.
+	fakeTerminal(t, true)
+	before := out.String()
+	term.Clear()
+	if raw.String() != "\033[H\033[2J\033[3J" || out.String() != before {
+		t.Fatalf("Clear wrote raw %q, out %q", raw.String(), out.String())
 	}
 }
 
@@ -605,6 +645,41 @@ func TestDoctorTreeCannotOpen(t *testing.T) {
 	e.app.doctorTree(r, filepath.Join(t.TempDir(), "missing"))
 	if r.warns != 1 || !strings.Contains(e.ui.out.String(), "could not scan the working tree") {
 		t.Fatalf("warns %d:\n%s", r.warns, e.ui.out.String())
+	}
+}
+
+// A name someone pushed is shown quoted in doctor's examples, which are
+// sorted by the names themselves, and in an error from scanning the tree.
+func TestDoctorTreeQuotesNames(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads unreadable files")
+	}
+	e := newEnv(t)
+	for _, name := range []string{"b.md", "x\n✓ fine.md", "a.md", "c.md"} {
+		os.WriteFile(filepath.Join(e.root, name), []byte("plaintext"), 0o644)
+	}
+	r := &report{ui: e.ui}
+	e.app.doctorTree(r, e.root)
+	if want := "4 unencrypted file(s) in the working tree, e.g. a.md, b.md, c.md;"; !strings.Contains(e.ui.out.String(), want) {
+		t.Fatalf("want %q:\n%s", want, e.ui.out.String())
+	}
+
+	locked := filepath.Join(e.root, "a\n✓ fine.age")
+	os.WriteFile(locked, []byte("age-encryption.org/v1\n"), 0o000)
+	defer os.Chmod(locked, 0o644)
+	e.ui.out.Reset()
+	e.app.doctorTree(&report{ui: e.ui}, e.root)
+	if out := e.ui.out.String(); !strings.Contains(out, `"a\n✓ fine.age": permission denied`) || strings.Contains(out, "\n✓ fine") {
+		t.Fatalf("scan error:\n%s", out)
+	}
+}
+
+func TestExamplesNamesThree(t *testing.T) {
+	if got := examples([]string{"a", "b\x1b", "c", "d"}); got != `a, "b\x1b", c` {
+		t.Errorf("examples = %s", got)
+	}
+	if got := examples(nil); got != "" {
+		t.Errorf("examples(nil) = %q", got)
 	}
 }
 

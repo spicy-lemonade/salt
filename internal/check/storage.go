@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/spicy-lemonade/salt/internal/escape"
 	"github.com/spicy-lemonade/salt/internal/gitx"
 	"github.com/spicy-lemonade/salt/internal/repo"
 )
@@ -46,18 +47,19 @@ func (a BadAttr) String() string {
 }
 
 func (p StorageProblem) String() string {
+	name := escape.Name(p.Path)
 	switch {
 	case len(p.Attrs) == 0:
-		return fmt.Sprintf("%s is ignored by git (via .gitignore or your git config), so it would never reach the remote. Remove the matching ignore rule.", p.Path)
+		return fmt.Sprintf("%s is ignored by git (via .gitignore or your git config), so it would never reach the remote. Remove the matching ignore rule.", name)
 	case len(p.Attrs) == 1 && p.Attrs[0] == BadAttr{"text", "unspecified"}:
-		return fmt.Sprintf("git may change %s when storing it (*.age is not marked binary); backups could not be restored. Add \"*.age binary\" to .gitattributes.", p.Path)
+		return fmt.Sprintf("git may change %s when storing it (*.age is not marked binary); backups could not be restored. Add \"*.age binary\" to .gitattributes.", name)
 	}
 	descs := make([]string, len(p.Attrs))
 	for i, a := range p.Attrs {
 		descs[i] = a.String()
 	}
 	return fmt.Sprintf("git would change %s when storing it (%s); backups could not be restored. Remove the attribute from .gitattributes (or your git config) so *.age stays binary.",
-		p.Path, strings.Join(descs, ", "))
+		name, strings.Join(descs, ", "))
 }
 
 // badAttr reports whether an attribute would make git change ciphertext.

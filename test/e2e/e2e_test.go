@@ -632,6 +632,41 @@ func TestPushedAttributeStopsTheBackup(t *testing.T) {
 	}
 }
 
+// Someone who can push chooses file names and attribute values. Salt's
+// messages show the control codes in them escaped, never raw, whether the UI
+// prints them or main prints the error, and quote a name holding a newline,
+// so it can't fake a line of salt's own output.
+func TestPushedControlCodesAreEscaped(t *testing.T) {
+	const code = "\x1b[2J"
+	const shown = `\x1b[2J`
+	const fake = "x\n✓ All files decrypt and match the index.age"
+	const fakeShown = `"objects/aa/x\n✓ All files decrypt and match the index.age"`
+	e := newEnv(t)
+	mine, _ := pushedChange(t, e, ".gitattributes", "*.age eol="+code)
+	write(t, filepath.Join(mine, "leak"+code+".md"), "plaintext\n")
+	write(t, filepath.Join(mine, "objects", "aa", fake), "plaintext\n")
+	dest := filepath.Join(e.home, "out"+code)
+	write(t, filepath.Join(dest, "keep.md"), "keep\n")
+
+	// verify only lists a file outside the index, so it passes.
+	for _, tt := range []struct {
+		args  []string
+		want  string
+		fails bool
+	}{
+		{[]string{"doctor", mine}, "eol is set to " + shown, true},
+		{[]string{"doctor", mine}, `"leak` + shown + `.md"`, true},
+		{[]string{"doctor", mine}, fakeShown, true},
+		{[]string{"verify", mine}, "  ! " + fakeShown + " is not in the index", false},
+		{[]string{"restore", mine, "--to", dest}, "out" + shown + " already exists", true},
+	} {
+		out, exit := e.run(mine, "salt", tt.args...)
+		if (exit != 0) != tt.fails || !strings.Contains(out, tt.want) || strings.Contains(out, "\x1b") || strings.Contains(out, fake) {
+			t.Errorf("salt %v: exit %d, want %q, no raw ESC and no faked line:\n%q", tt.args, exit, tt.want, out)
+		}
+	}
+}
+
 // hook install shows a hook inside the home folder as ~/….
 func TestHookInstallShowsHomePath(t *testing.T) {
 	e := newEnv(t)

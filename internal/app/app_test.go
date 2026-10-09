@@ -603,7 +603,7 @@ func TestDoctorGitHubLimit(t *testing.T) {
 		if err := e.app.Doctor(e.root); err != nil {
 			t.Fatalf("Doctor: %v\n%s", err, e.ui.out.String())
 		}
-		warned := strings.Contains(e.ui.out.String(), "file(s) over GitHub's 100 MB limit, so the push will fail: objects/aa/big.age (100 MB)")
+		warned := strings.Contains(e.ui.out.String(), "1 file(s) over GitHub's 100 MB limit, so the push will fail, e.g. objects/aa/big.age (100 MB)")
 		if warned != (size > repo.GitHubFileLimit) {
 			t.Errorf("%d bytes: warned = %v\n%s", size, warned, e.ui.out.String())
 		}

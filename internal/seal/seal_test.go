@@ -613,6 +613,7 @@ func TestValidEntryClipsPaths(t *testing.T) {
 		"short unsafe":   {Entry{Path: "../x"}, `unsafe path "../x"`},
 		"empty path":     {Entry{Path: ""}, `unsafe path ""`},
 		"short readable": {Entry{Path: "a", Object: "objects/aa/b.age"}, `hash for a is not 64 hex characters`},
+		"control codes":  {Entry{Path: "a\x1b[2Jb", Object: "objects/aa/b.age"}, `hash for "a\x1b[2Jb" is not 64 hex characters`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := validEntry(&tt.e)
@@ -1456,9 +1457,44 @@ func TestClip(t *testing.T) {
 	if clip("short") != "short" {
 		t.Error("short value changed")
 	}
+	for in, want := range map[string]string{
+		"a\x1b[2Jb":        `"a\x1b[2Jb"`,
+		"a\nsalt: ok":      `"a\nsalt: ok"`,
+		"tab\there":        `"tab\there"`,
+		"bad \xff":         `"bad \xff"`,
+		"bidi \u202e":      `"bidi \u202e"`,
+		"café/notes.md":    "café/notes.md",
+		"Shot\u202fPM.png": "Shot\u202fPM.png",
+	} {
+		if got := clip(in); got != want {
+			t.Errorf("clip(%q) = %s, want %s", in, got, want)
+		}
+	}
+	if got := clip(strings.Repeat("a\u202f", 30)); !strings.HasPrefix(got, "\"a\u202fa") {
+		t.Errorf("long clip = %s, want its spaces kept", got)
+	}
 	long := clip(strings.Repeat("é", 100))
 	if len(long) > 80 || !strings.Contains(long, "(200 bytes)") {
 		t.Errorf("clip = %q", long)
+	}
+}
+
+// An object the index names but the repo lacks is named through clip, not
+// by the open error's own path, which holds the whole name from the index.
+func TestDecryptStreamClipsMissingObject(t *testing.T) {
+	rt, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	for name, want := range map[string]string{
+		"objects/aa/" + strings.Repeat("b", 200): `"bbbb`,
+		"objects/aa/x\n\x1b[2J.age":              `"x\n\x1b[2J.age": `,
+	} {
+		_, _, err := decryptStream(rt, []string{name}, nil)
+		if !errors.Is(err, fs.ErrNotExist) || !strings.HasPrefix(err.Error(), want) || len(err.Error()) > 120 || strings.ContainsAny(err.Error(), "\n\x1b") {
+			t.Errorf("decryptStream(%.40q) = %v, want it to start with %s", name, err, want)
+		}
 	}
 }
 

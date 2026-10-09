@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"filippo.io/age"
+	"github.com/spicy-lemonade/salt/internal/escape"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
 )
@@ -373,13 +374,14 @@ func isSHA256(s string) bool {
 }
 
 // clip shortens a value from the index before it goes into an error message,
-// so a crafted index can't print megabytes into logs or cron mail.
+// so a crafted index can't print megabytes into logs or cron mail. A short
+// value goes through escape.Name, so one holding a newline or ESC is quoted.
 func clip(s string) string {
 	const max = 40
 	if len(s) <= max {
-		return s
+		return escape.Name(s)
 	}
-	return fmt.Sprintf("%q… (%d bytes)", strings.ToValidUTF8(s[:max], ""), len(s))
+	return fmt.Sprintf("%s… (%d bytes)", strconv.QuoteToGraphic(strings.ToValidUTF8(s[:max], "")), len(s))
 }
 
 // clipQuoted is clip for a value that should be quoted even when short, such
@@ -388,7 +390,7 @@ func clipQuoted(s string) string {
 	if c := clip(s); c != s {
 		return c
 	}
-	return strconv.Quote(s)
+	return strconv.QuoteToGraphic(s)
 }
 
 // clipToken is clip for a JSON token, without first copying a long string.
