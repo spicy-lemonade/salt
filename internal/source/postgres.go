@@ -31,6 +31,20 @@ var (
 	errBadName     = errors.New("names a database whose name cannot be used as a file name")
 )
 
+// secretKeys are the libpq settings, other than password, that hold a
+// secret. libpq reads them only from the connection or a service file, never
+// from the environment, so salt cannot keep them out of pg_dump's command
+// line and refuses a connection that gives one.
+var secretKeys = []string{"sslpassword", "oauth_client_secret"}
+
+// secretKeyError is a connection that gives one of secretKeys. It holds only
+// the key, so its message never repeats the secret.
+type secretKeyError string
+
+func (k secretKeyError) Error() string {
+	return "gives " + string(k) + ", which would show in the process list. Put it in a libpq service file, such as ~/.pg_service.conf, and name the service with service=NAME"
+}
+
 // keepalives are the libpq settings that make pg_dump notice a connection
 // that dies part way through a dump, such as when the server's container
 // restarts or the machine sleeps, after about a minute without a reply.
@@ -86,6 +100,7 @@ func newPgDump(help, version string) pgDump {
 // ("host=localhost dbname=memory"). A driver in the URL's scheme, such as
 // postgresql+psycopg://, is dropped, since pg_dump has its own. Without a
 // password in conn, pg_dump looks in ~/.pgpass, PGPASSFILE and PGPASSWORD.
+// A conn that gives another secret (see secretKeys) is refused.
 func NewPostgres(conn string) (Database, error) {
 	return NewPostgresConn(conn, "the connection given to --postgres")
 }
@@ -279,6 +294,8 @@ func parseURL(s string) (p Postgres, err error) {
 		case key == "password":
 			p.password = value
 			continue
+		case slices.Contains(secretKeys, key):
+			return Postgres{}, secretKeyError(key)
 		case key == "dbname":
 			p.dbname = value
 		case key == "keepalives":
@@ -315,6 +332,9 @@ func parseSettings(s string) (p Postgres, err error) {
 			return Postgres{}, errNotPostgres
 		}
 		rest = strings.TrimLeft(rest, spaces)
+		if slices.Contains(secretKeys, key) {
+			return Postgres{}, secretKeyError(key)
+		}
 		switch key {
 		case "password":
 			p.password = value

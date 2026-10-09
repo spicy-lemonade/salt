@@ -163,6 +163,49 @@ func TestNewPostgresConn(t *testing.T) {
 	}
 }
 
+// A connection that gives a secret other than its password is refused before
+// anything runs, naming the setting but never its value, however the
+// connection is given.
+func TestNewPostgresRefusesSecrets(t *testing.T) {
+	t.Setenv("PGDATABASE", "")
+	for in, key := range map[string]string{
+		"postgresql://agent@localhost/memory?sslmode=require&sslpassword=s3cret": "sslpassword",
+		"postgresql://agent:pw@localhost/memory?ssl%70assword=s3cret":            "sslpassword",
+		"postgresql://localhost/memory?oauth_client_secret=s3cret":               "oauth_client_secret",
+		"host=localhost dbname=memory sslpassword=s3cret":                        "sslpassword",
+		`host=localhost sslpassword='it\'s s3cret' dbname=memory`:                "sslpassword",
+		"dbname=memory oauth_client_secret = s3cret":                             "oauth_client_secret",
+		// Refused even when the connection is wrong in another way.
+		"host=localhost sslpassword=s3cret": "sslpassword",
+	} {
+		t.Setenv("SALT_TEST_DB", in)
+		for where, newDB := range map[string]func() (Database, error){
+			"the connection given to --postgres ":                       func() (Database, error) { return NewPostgres(in) },
+			"the connection in SALT_TEST_DB, given to --postgres-env, ": func() (Database, error) { return NewPostgresEnv("SALT_TEST_DB") },
+			"the connection in DB_URL, ":                                func() (Database, error) { return NewPostgresConn(in, "the connection in DB_URL,") },
+		} {
+			db, err := newDB()
+			var got secretKeyError
+			if db != nil || !errors.As(err, &got) || string(got) != key || err.Error() != where+secretKeyError(key).Error() {
+				t.Errorf("%q: %v, %v; want %s refused", in, db, err, key)
+			}
+			if err != nil && strings.Contains(err.Error(), "s3cret") {
+				t.Errorf("%q: the error shows the secret: %v", in, err)
+			}
+		}
+	}
+	// A value that only holds the setting's name, and a service, are kept.
+	for in, want := range map[string]string{
+		"dbname=memory application_name='sslpassword=x'":     "dbname='memory' application_name='sslpassword=x'",
+		"postgresql://h/memory?application_name=sslpassword": "postgresql://h/memory?application_name=sslpassword",
+		"service=agent dbname=memory":                        "service='agent' dbname='memory'",
+	} {
+		if db, err := NewPostgres(in); err != nil || db.String() != want {
+			t.Errorf("%q: %v, %v; want %q", in, db, err, want)
+		}
+	}
+}
+
 // The settings a connection gives are named, in the order given, without
 // the password. A URL has a query only when it keeps a setting.
 func TestParseKeys(t *testing.T) {

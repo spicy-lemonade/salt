@@ -589,6 +589,11 @@ Apple's `/usr/bin/sqlite3`.
 Salt takes the password out of CONN and gives it to `pg_dump` in
 `PGPASSWORD`, so it never shows in a process list or a message. Without one,
 `pg_dump` looks in `~/.pgpass`, `PGPASSFILE` and `PGPASSWORD` as usual.
+libpq has no environment variable for its other secrets, an SSL key's
+passphrase (`sslpassword`) and `oauth_client_secret`, so salt refuses a CONN
+that gives one, naming the setting but never its value. It would otherwise
+show in `pg_dump`'s command line and in salt's messages. A libpq service file
+(`~/.pg_service.conf`, named with `service=NAME`) keeps it out of both.
 `--no-password` stops `pg_dump` from waiting for someone to type a password.
 Unless the person set `PGCONNECT_TIMEOUT`, salt sets it to 30 seconds, so a
 server that cannot be reached fails the backup instead of stalling it. A

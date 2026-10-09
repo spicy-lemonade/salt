@@ -212,6 +212,15 @@ func TestSealPostgresNamed(t *testing.T) {
 	if strings.Contains(out, "s3cret") || strings.Contains(out, "pa:ss") {
 		t.Fatalf("the output shows the password:\n%s", out)
 	}
+
+	// An SSL key's passphrase in the connection is refused before pg_dump
+	// runs, without showing it.
+	out = assertSealFails(t, e.with("PATH="+filepath.Dir(e.bin), "HONCHO_DB="+second.url("postgres")+"?sslpassword=key%20phrase"), b,
+		"the connection in HONCHO_DB, given to --postgres-env, gives sslpassword, which would show in the process list. Put it in a libpq service file",
+		"--postgres-env", "HONCHO_DB")
+	if strings.Contains(out, "key phrase") || strings.Contains(out, "key%20phrase") || strings.Contains(out, "s3cret") {
+		t.Fatalf("the output shows a secret:\n%s", out)
+	}
 }
 
 // Every way of giving the password works: in the URL given to --postgres,
