@@ -68,6 +68,10 @@ func TestRestoreFromURL(t *testing.T) {
 			if strings.Contains(out, "secret") {
 				t.Fatalf("output shows the token:\n%s", out)
 			}
+			// A download has no approval on this machine to check.
+			if strings.Contains(out, "salt: !") {
+				t.Fatalf("restore from a URL warned:\n%s", out)
+			}
 			noDownloadsLeft(t, e)
 		})
 	}

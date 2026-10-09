@@ -19,13 +19,9 @@ import (
 // VerifyOptions configures Verify.
 type VerifyOptions struct {
 	Workers int
-	// AllowUnsigned checks the files even if the index is not signed by one
-	// of the keys (see ReadIndex).
-	AllowUnsigned bool
-	// SignedBy, if not empty, are the only public keys whose signing keys
-	// may have signed the index, such as the keys this machine approved
+	// SignatureOptions says which signatures on the index are accepted
 	// (see ReadIndex).
-	SignedBy []string
+	SignatureOptions
 }
 
 // VerifyResult summarises a verify.
@@ -60,7 +56,7 @@ func Verify(root string, ids []age.Identity, opt VerifyOptions) (*VerifyResult, 
 	if err := CheckNoSymlinks(root); err != nil {
 		return nil, err
 	}
-	ix, err := ReadIndex(root, ids, opt.SignedBy, opt.AllowUnsigned)
+	ix, err := ReadIndex(root, ids, opt.SignatureOptions)
 	if err != nil {
 		return nil, err
 	}

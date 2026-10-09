@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"filippo.io/age"
+	"github.com/spicy-lemonade/salt/internal/gitx"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/spicy-lemonade/salt/internal/seal"
@@ -99,9 +100,12 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 		return err
 	}
 	defer func() { err = done(err) }()
-	signedBy, err := a.approvedSigners(r, o.AllowUnsigned)
-	if err != nil {
-		return err
+	// A download is new to this machine, so it has no approval to check.
+	var signedBy []string
+	if remote, _ := gitx.IsRemote(o.Repo); !remote {
+		if signedBy, err = a.approvedSigners(r, o.AllowUnsigned); err != nil {
+			return err
+		}
 	}
 	ids, err := a.identities(r)
 	if err != nil {
@@ -110,13 +114,13 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 	a.warnLeftoverRestores(o.To)
 	res, err := seal.Restore(r.Root, ids, o.To, seal.RestoreOptions{
 		Paths: o.Paths, Force: o.Force, Context: o.Context, Track: a.trackRestore, Show: a.short,
-		AllowUnsigned: o.AllowUnsigned, SignedBy: signedBy,
+		SignatureOptions: seal.SignatureOptions{AllowUnsigned: o.AllowUnsigned, SignedBy: signedBy},
 	})
 	if errors.Is(err, context.Canceled) {
 		return fmt.Errorf("restore %w: the partly restored files were removed and %s was not changed", ErrInterrupted, a.short(o.To))
 	}
 	if err != nil {
-		return explainUnsigned(err)
+		return explainUnsigned(err, r.Root)
 	}
 	if res.Unsigned {
 		a.UI.Printf("%s", unsignedWarning)

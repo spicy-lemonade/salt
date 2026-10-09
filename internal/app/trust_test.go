@@ -208,7 +208,7 @@ func TestTrustErrors(t *testing.T) {
 	}
 	e.ui.out.Reset()
 	e.app.Doctor(e.root)
-	if !strings.Contains(e.ui.out.String(), "could not read the approved keys") && !strings.Contains(e.ui.out.String(), "has not approved") {
+	if !strings.Contains(e.ui.out.String(), "cannot read the keys approved") && !strings.Contains(e.ui.out.String(), "has not approved") {
 		t.Errorf("doctor output:\n%s", e.ui.out.String())
 	}
 	e.app.TrustDir = t.TempDir()
@@ -233,9 +233,15 @@ func transplant(t *testing.T, from, to string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.WriteString(r.RecipientStrings[0] + "\n")
-	f.Close()
-	os.RemoveAll(filepath.Join(to, repo.ObjectsDir))
+	if _, err := f.WriteString(r.RecipientStrings[0] + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(to, repo.ObjectsDir)); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.CopyFS(filepath.Join(to, repo.ObjectsDir), os.DirFS(filepath.Join(from, repo.ObjectsDir))); err != nil {
 		t.Fatal(err)
 	}
@@ -249,38 +255,61 @@ func transplant(t *testing.T, from, to string) string {
 	return r.RecipientStrings[0]
 }
 
+// approvalFile returns the one approval file the test env holds.
+func approvalFile(t *testing.T, e *testEnv) string {
+	t.Helper()
+	pins, err := filepath.Glob(filepath.Join(e.app.TrustDir, "*.json"))
+	if err != nil || len(pins) != 1 {
+		t.Fatalf("approvals: %v, %v", pins, err)
+	}
+	return pins[0]
+}
+
 // A backup signed for one repo is refused by another whose key list gained
 // the first repo's key, because only the keys this machine approved for a
 // repo may have signed its backups.
-func TestRestoreRefusesABackupFromAnotherRepo(t *testing.T) {
+func TestApprovedKeysRefuseABackupFromAnotherRepo(t *testing.T) {
 	e := newEnv(t)
 	other := filepath.Join(t.TempDir(), "other")
-	os.MkdirAll(filepath.Join(other, ".git"), 0o755)
+	if err := os.MkdirAll(filepath.Join(other, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	e.ui.answer = phraseAnswers(0)
 	if err := e.app.Init(InitOptions{Repo: other}); err != nil {
 		t.Fatal(err)
 	}
 	src := filepath.Join(t.TempDir(), "other-src")
-	os.MkdirAll(src, 0o755)
-	os.WriteFile(filepath.Join(src, "USER.md"), []byte("from the other repo"), 0o644)
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "USER.md"), []byte("from the other repo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := e.app.Seal(SealOptions{Src: src, Repo: other, Prune: true}); err != nil {
 		t.Fatal(err)
 	}
 	healthyRepo(t, e)
 
 	// The genuine backup restores with no warning.
-	if err := e.app.Verify(e.root, false); err != nil || strings.Contains(e.ui.out.String(), "changed since") {
+	if err := e.app.Verify(e.root, false); err != nil || strings.Contains(e.ui.out.String(), "salt: !") {
 		t.Fatalf("verify of the genuine backup: %v\n%s", err, e.ui.out.String())
 	}
 	e.ui.out.Reset()
 
 	added := transplant(t, other, e.root)
+	var unapproved *seal.UnapprovedError
 	err := e.app.Verify(e.root, false)
-	if !errors.Is(err, seal.ErrNotSigned) || !strings.Contains(e.ui.out.String(), "key added: "+added) {
+	if !errors.As(err, &unapproved) || unapproved.Key != added || !errors.Is(err, seal.ErrNotSigned) ||
+		!strings.Contains(e.ui.out.String(), "key added: "+added) {
 		t.Fatalf("verify of the copied backup: %v\n%s", err, e.ui.out.String())
 	}
+	for _, want := range []string{"not approved for this repo", "salt trust", "copied in a backup from another repo"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("verify error missing %q: %v", want, err)
+		}
+	}
 	dest := filepath.Join(t.TempDir(), "restored")
-	if err := e.app.Restore(RestoreOptions{Repo: e.root, To: dest}); !errors.Is(err, seal.ErrNotSigned) {
+	if err := e.app.Restore(RestoreOptions{Repo: e.root, To: dest}); !errors.As(err, &unapproved) {
 		t.Fatalf("restore of the copied backup: %v", err)
 	}
 	if _, err := os.Stat(dest); !os.IsNotExist(err) {
@@ -300,25 +329,49 @@ func TestRestoreRefusesABackupFromAnotherRepo(t *testing.T) {
 		t.Fatalf("restored %q", b)
 	}
 
-	// A machine that never approved the repo has nothing to check against.
+	// A machine that never approved the repo has nothing to check against,
+	// and says so.
 	e.app.TrustDir = t.TempDir()
+	e.ui.out.Reset()
+	if err := e.app.Verify(e.root, false); err != nil || !strings.Contains(e.ui.out.String(), "has not approved the keys") {
+		t.Fatalf("verify with no approval: %v\n%s", err, e.ui.out.String())
+	}
+}
+
+// A key added to the repo on another machine, such as a second laptop's,
+// and not yet approved here still lets a genuine backup restore, with a
+// warning naming it.
+func TestRestoreWithAKeyAddedElsewhere(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	added := addAttackerKey(t, e.root)
 	if err := e.app.Verify(e.root, false); err != nil {
-		t.Fatalf("verify with no approval: %v", err)
+		t.Fatalf("verify: %v\n%s", err, e.ui.out.String())
+	}
+	dest := filepath.Join(t.TempDir(), "restored")
+	if err := e.app.Restore(RestoreOptions{Repo: e.root, To: dest}); err != nil {
+		t.Fatalf("restore: %v\n%s", err, e.ui.out.String())
+	}
+	out := e.ui.out.String()
+	if strings.Count(out, "key added: "+added) != 2 || !strings.Contains(out, "Only a backup signed by an approved key is accepted") {
+		t.Fatalf("output:\n%s", out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dest, "USER.md")); string(b) != "hello" {
+		t.Fatalf("restored %q", b)
 	}
 }
 
 // An approval that can't be read stops restore and verify, unless
-// --allow-unsigned, which skips the signature check anyway.
+// --allow-unsigned, which warns and accepts any key's signature.
 func TestRestoreWithUnreadableApproval(t *testing.T) {
 	e := newEnv(t)
 	healthyRepo(t, e)
-	pins, _ := filepath.Glob(filepath.Join(e.app.TrustDir, "*.json"))
-	if len(pins) != 1 {
-		t.Fatalf("approvals: %v", pins)
-	}
+	pin := approvalFile(t, e)
 	for name, body := range map[string]string{"corrupt": "{", "no keys": `{"recipients":[],"encrypt_paths":true}`} {
 		t.Run(name, func(t *testing.T) {
-			os.WriteFile(pins[0], []byte(body), 0o600)
+			if err := os.WriteFile(pin, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			dest := filepath.Join(t.TempDir(), "restored")
 			for cmd, run := range map[string]func(allow bool) error{
 				"verify": func(allow bool) error { return e.app.Verify(e.root, allow) },
@@ -327,7 +380,7 @@ func TestRestoreWithUnreadableApproval(t *testing.T) {
 				},
 			} {
 				err := run(false)
-				if err == nil || errors.Is(err, seal.ErrNotSigned) || !strings.Contains(err.Error(), "--allow-unsigned") || !strings.Contains(err.Error(), pins[0]) {
+				if err == nil || errors.Is(err, seal.ErrNotSigned) || !strings.Contains(err.Error(), "--allow-unsigned") || !strings.Contains(err.Error(), pin) {
 					t.Fatalf("%s: %v", cmd, err)
 				}
 				e.ui.out.Reset()
@@ -339,5 +392,24 @@ func TestRestoreWithUnreadableApproval(t *testing.T) {
 				t.Fatalf("restored %q", b)
 			}
 		})
+	}
+}
+
+// salt trust replaces an approval that can't be read, and seal says to run it.
+func TestTrustRepairsAnUnreadableApproval(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	if err := os.WriteFile(approvalFile(t, e), []byte(`{"recipients":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root})
+	if err == nil || !strings.Contains(err.Error(), "no keys") || !strings.Contains(err.Error(), "salt trust") {
+		t.Fatalf("seal with an approval with no keys: %v", err)
+	}
+	if err := e.app.Trust(e.root, true); err != nil || !strings.Contains(e.ui.out.String(), "Approving replaces it") {
+		t.Fatalf("trust: %v\n%s", err, e.ui.out.String())
+	}
+	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); err != nil {
+		t.Fatalf("seal after trust: %v", err)
 	}
 }

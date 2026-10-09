@@ -182,18 +182,15 @@ func (a *App) doctorKeys(r *report, rp *repo.Repo) {
 }
 
 func (a *App) doctorTrust(r *report, rp *repo.Repo) {
-	approved, err := a.trustStore().Load(rp.Root)
-	switch {
+	switch _, d, err := a.approval(rp); {
 	case errors.Is(err, trust.ErrNotApproved):
 		r.add(warn, "this machine has not approved the repo's keys yet, so `salt seal` will refuse; run `salt trust %q`", rp.Root)
 	case err != nil:
-		r.add(warn, "could not read the approved keys: %v", err)
+		r.add(warn, "%v", err)
+	case len(d) > 0:
+		r.add(fail, "the repo's keys or settings changed since you approved them: %s", strings.Join(d, "; "))
 	default:
-		if d := trust.Diff(approved, trust.For(rp)); len(d) > 0 {
-			r.add(fail, "the repo's keys or settings changed since you approved them: %s", strings.Join(d, "; "))
-		} else {
-			r.add(ok, "keys and settings match what you approved")
-		}
+		r.add(ok, "keys and settings match what you approved")
 	}
 }
 
@@ -328,9 +325,11 @@ func (a *App) Verify(repoRoot string, allowUnsigned bool) error {
 	if err != nil {
 		return err
 	}
-	res, err := seal.Verify(rp.Root, ids, seal.VerifyOptions{AllowUnsigned: allowUnsigned, SignedBy: signedBy})
+	res, err := seal.Verify(rp.Root, ids, seal.VerifyOptions{
+		SignatureOptions: seal.SignatureOptions{AllowUnsigned: allowUnsigned, SignedBy: signedBy},
+	})
 	if err != nil {
-		return explainUnsigned(err)
+		return explainUnsigned(err, rp.Root)
 	}
 	if res.Unsigned {
 		a.UI.Printf("%s", unsignedWarning)

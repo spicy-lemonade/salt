@@ -34,13 +34,9 @@ type RestoreOptions struct {
 	Track func(tmp string) (done func())
 	// Show, if set, is how paths are written in messages, such as "~/…".
 	Show func(path string) string
-	// AllowUnsigned restores even if the index is not signed by one of the
-	// keys (see ReadIndex).
-	AllowUnsigned bool
-	// SignedBy, if not empty, are the only public keys whose signing keys
-	// may have signed the index, such as the keys this machine approved
+	// SignatureOptions says which signatures on the index are accepted
 	// (see ReadIndex).
-	SignedBy []string
+	SignatureOptions
 }
 
 // RestoreResult summarises a restore.
@@ -61,7 +57,7 @@ func Restore(root string, ids []age.Identity, dest string, opt RestoreOptions) (
 	if err := CheckNoSymlinks(root); err != nil {
 		return nil, err
 	}
-	ix, err := ReadIndex(root, ids, opt.SignedBy, opt.AllowUnsigned)
+	ix, err := ReadIndex(root, ids, opt.SignatureOptions)
 	if err != nil {
 		return nil, err
 	}

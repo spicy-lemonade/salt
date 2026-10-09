@@ -121,15 +121,21 @@ func TestRestoreRefusesABackupFromAnotherRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.WriteString(firstKey + "\n")
-	f.Close()
-	os.RemoveAll(filepath.Join(second, "objects"))
+	if _, err := f.WriteString(firstKey + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(second, "objects")); err != nil {
+		t.Fatal(err)
+	}
 	e.must(base, "cp", "-R", filepath.Join(first, "objects"), filepath.Join(second, "objects"))
 	e.must(base, "cp", filepath.Join(first, "index.age"), filepath.Join(second, "index.age"))
 
 	for _, args := range [][]string{{"verify", second}, {"restore", second, "--to", filepath.Join(base, "restored")}} {
 		out, code := e.run(base, "salt", args...)
-		if code != 1 || !strings.Contains(out, "not signed by your key") || !strings.Contains(out, "key added: "+firstKey) {
+		if code != 1 || !strings.Contains(out, "not approved for this repo") || !strings.Contains(out, "key added: "+firstKey) {
 			t.Fatalf("salt %s of the copied backup: exit %d\n%s", args[0], code, out)
 		}
 	}

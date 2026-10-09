@@ -16,18 +16,32 @@ func (a *App) trustStore() trust.Store { return trust.Store{Dir: a.TrustDir} }
 // approved on this machine, or have changed since.
 var ErrNotTrusted = errors.New("backup repo not approved")
 
+// approval returns the keys and settings this machine approved for r, and
+// how r differs from them. It returns trust.ErrNotApproved if this machine
+// never approved r.
+func (a *App) approval(r *repo.Repo) (trust.Pin, []string, error) {
+	pin, err := a.trustStore().Load(r.Root)
+	if errors.Is(err, trust.ErrNotApproved) {
+		return trust.Pin{}, nil, err
+	}
+	if err != nil {
+		return trust.Pin{}, nil, fmt.Errorf("cannot read the keys approved for %s on this machine (%w)", a.short(r.Root), err)
+	}
+	return pin, trust.Diff(pin, trust.For(r)), nil
+}
+
 // checkTrusted refuses to seal unless the repo's keys and settings match the
 // ones approved on this machine.
 func (a *App) checkTrusted(r *repo.Repo) error {
-	approved, err := a.trustStore().Load(r.Root)
+	_, d, err := a.approval(r)
 	if errors.Is(err, trust.ErrNotApproved) {
 		return fmt.Errorf("%w: this machine has not approved the keys in %s yet. Check them and run `salt trust %q`",
 			ErrNotTrusted, a.short(r.Root), r.Root)
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("%w. Delete that file and run `salt trust %q`", err, r.Root)
 	}
-	if d := trust.Diff(approved, trust.For(r)); len(d) > 0 {
+	if len(d) > 0 {
 		return fmt.Errorf("%w: the keys or settings in %s changed since you approved them:\n  %s\n"+
 			"If you made this change, run `salt trust %q`. If you didn't, someone else changed your backup repo. Don't back up until you've checked it",
 			ErrNotTrusted, a.short(r.Root), strings.Join(d, "\n  "), r.Root)
@@ -40,28 +54,29 @@ func (a *App) checkTrusted(r *repo.Repo) error {
 // push could add another of the person's keys to the repo, with a backup
 // that key signed for a different repo, and it would restore as genuine. It
 // warns if r's keys or settings changed since they were approved. With no
-// approval it returns nil, and any key that opens the backup may have signed
-// it. An approval that can't be read stops the command, unless allowUnsigned,
-// which skips the signature check anyway.
+// approval it warns and returns nil, and any key that opens the backup may
+// have signed it. An approval that can't be read stops the command, unless
+// allowUnsigned, which then warns and returns nil in the same way.
 func (a *App) approvedSigners(r *repo.Repo, allowUnsigned bool) ([]string, error) {
-	approved, err := a.trustStore().Load(r.Root)
+	pin, d, err := a.approval(r)
 	if errors.Is(err, trust.ErrNotApproved) {
+		a.UI.Printf("salt: ! this machine has not approved the keys in %s, so any of your keys may have signed it. Run `salt trust %q` to approve them\n",
+			a.short(r.Root), r.Root)
 		return nil, nil
 	}
 	if err != nil && allowUnsigned {
-		a.UI.Printf("salt: ! cannot read the keys approved for %s on this machine (%v)\n", a.short(r.Root), err)
+		a.UI.Printf("salt: ! %v, so any of your keys may have signed the backup\n", err)
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("cannot read the keys approved for %s on this machine (%w). Delete that file and run `salt trust %q`, or pass --allow-unsigned",
-			a.short(r.Root), err, r.Root)
+		return nil, fmt.Errorf("%w. Delete that file and run `salt trust %q`, or pass --allow-unsigned", err, r.Root)
 	}
-	if d := trust.Diff(approved, trust.For(r)); len(d) > 0 {
+	if len(d) > 0 {
 		a.UI.Printf("salt: ! the keys or settings in %s changed since you approved them:\n  %s\n"+
 			"Only a backup signed by an approved key is accepted. If you made this change, run `salt trust %q`\n",
 			a.short(r.Root), strings.Join(d, "\n  "), r.Root)
 	}
-	return approved.Recipients, nil
+	return pin.Recipients, nil
 }
 
 // Trust shows a repo's keys and settings and approves them for backups from
@@ -93,14 +108,15 @@ func (a *App) Trust(repoRoot string, yes bool) error {
 		a.UI.Printf("\n⚠ File names are visible. Anyone who can see the repo can read your folder and file names.\n" +
 			"  The contents are still encrypted.\n")
 	}
-	if approved, err := a.trustStore().Load(r.Root); err == nil {
-		if d := trust.Diff(approved, pin); len(d) > 0 {
-			a.UI.Printf("\nChanged since you last approved:\n  %s\n", strings.Join(d, "\n  "))
-		} else {
-			a.UI.Printf("\nNothing has changed since you last approved.\n")
-		}
-	} else if !errors.Is(err, trust.ErrNotApproved) {
-		return err
+	// An approval that can't be read is replaced, since this is how to fix it.
+	switch _, d, err := a.approval(r); {
+	case errors.Is(err, trust.ErrNotApproved):
+	case err != nil:
+		a.UI.Printf("\n⚠ %v. Approving replaces it.\n", err)
+	case len(d) > 0:
+		a.UI.Printf("\nChanged since you last approved:\n  %s\n", strings.Join(d, "\n  "))
+	default:
+		a.UI.Printf("\nNothing has changed since you last approved.\n")
 	}
 	if !yes {
 		if !a.UI.Interactive() {

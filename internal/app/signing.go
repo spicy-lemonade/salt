@@ -67,8 +67,12 @@ func (a *App) ensureSigningKey(r *repo.Repo) error {
 }
 
 // explainUnsigned adds what to do to an error from an index that is not
-// signed by the person's key.
-func explainUnsigned(err error) error {
+// signed by the person's key, or by one approved for the repo at root.
+func explainUnsigned(err error, root string) error {
+	if unapproved := (*seal.UnapprovedError)(nil); errors.As(err, &unapproved) {
+		return fmt.Errorf("%w. If you added that key to the repo, run `salt trust %q`. "+
+			"If you didn't, someone who can push may have copied in a backup from another repo, so check the repo's history before passing --allow-unsigned", err, root)
+	}
 	if !errors.Is(err, seal.ErrNotSigned) {
 		return err
 	}

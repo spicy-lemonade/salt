@@ -393,7 +393,7 @@ func TestReadIndexRejectsUnsafePaths(t *testing.T) {
 		if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := ReadIndex(f.root, f.ids(), nil, false); err == nil {
+		if _, err := ReadIndex(f.root, f.ids(), SignatureOptions{}); err == nil {
 			t.Errorf("index path %q accepted", bad)
 		}
 	}
@@ -589,7 +589,7 @@ func TestReadIndexRejectsBadIndexes(t *testing.T) {
 			if err := writeIndex(f.root, []byte(body), f.repo.Recipients); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := ReadIndex(f.root, f.ids(), nil, false); err == nil {
+			if _, err := ReadIndex(f.root, f.ids(), SignatureOptions{}); err == nil {
 				t.Fatalf("index %q accepted", body)
 			}
 		})
@@ -635,7 +635,7 @@ func TestReadIndexAcceptsLongEscapedPath(t *testing.T) {
 	if b := f.writeIndex(ix); !bytes.Contains(b, []byte(strings.Repeat(`\u0026`, maxIndexString))) {
 		t.Fatal("json.Marshal no longer escapes &; this test needs another character")
 	}
-	got, err := ReadIndex(f.root, f.ids(), nil, false)
+	got, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
 	if err != nil {
 		t.Fatalf("ReadIndex: %v", err)
 	}
@@ -752,7 +752,7 @@ func TestReadIndexRejectsUnexpectedTokens(t *testing.T) {
 			if err := writeIndex(f.root, []byte(tt.body), f.repo.Recipients); err != nil {
 				t.Fatal(err)
 			}
-			_, err := ReadIndex(f.root, f.ids(), nil, false)
+			_, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("ReadIndex error = %.300v, want %q", err, tt.want)
 			}
@@ -1039,7 +1039,7 @@ func TestSealAndRestoreFileErrors(t *testing.T) {
 func TestRestoreSizeMismatch(t *testing.T) {
 	f := newFixture(t, true)
 	f.seal(false)
-	ix, err := ReadIndex(f.root, f.ids(), nil, false)
+	ix, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1063,7 +1063,7 @@ func TestRestoreSizeMismatch(t *testing.T) {
 func TestRestoreAndVerifyStopAtSignedSize(t *testing.T) {
 	f := newFixture(t, true)
 	f.seal(false)
-	ix, err := ReadIndex(f.root, f.ids(), nil, false)
+	ix, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1256,7 +1256,7 @@ func TestIndexBombs(t *testing.T) {
 			f := newFixture(t, true)
 			writeBombIndex(t, f, tt.gen)
 			var err error
-			used := allocDuring(func() { _, err = ReadIndex(f.root, f.ids(), nil, false) })
+			used := allocDuring(func() { _, err = ReadIndex(f.root, f.ids(), SignatureOptions{}) })
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("ReadIndex error = %.200s, want %q", err, tt.want)
 			}
@@ -1434,7 +1434,7 @@ func TestIndexEntryChecks(t *testing.T) {
 			if err := writeIndex(f.root, []byte(body), f.repo.Recipients); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := ReadIndex(f.root, f.ids(), nil, false); err == nil || !strings.Contains(err.Error(), tt.want) {
+			if _, err := ReadIndex(f.root, f.ids(), SignatureOptions{}); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("ReadIndex error = %v, want %q", err, tt.want)
 			}
 		})
@@ -1447,7 +1447,7 @@ func TestIndexEntryChecks(t *testing.T) {
 		`{"path":"c","object":"objects/aa/d.age","sha256":"` + sha + `","size":1,"mtime":1759233600000000000},` +
 		`{"path":"l","symlink":"a"}]}`
 	writeIndex(f.root, []byte(ok), f.repo.Recipients)
-	if ix, err := ReadIndex(f.root, f.ids(), nil, true); err != nil || !ix.Unsigned {
+	if ix, err := ReadIndex(f.root, f.ids(), SignatureOptions{AllowUnsigned: true}); err != nil || !ix.Unsigned {
 		t.Fatalf("valid unsigned index: %v", err)
 	}
 }
