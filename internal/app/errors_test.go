@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/spicy-lemonade/salt/internal/keys"
+	"github.com/spicy-lemonade/salt/internal/regular"
 	"github.com/spicy-lemonade/salt/internal/repo"
 )
 
@@ -306,5 +308,27 @@ func TestDoctorKeyFileNotAge(t *testing.T) {
 	e.ui.out.Reset()
 	if err := e.app.Doctor(e.root); !errors.Is(err, ErrReported) || !strings.Contains(e.ui.out.String(), "is not an age file") {
 		t.Fatalf("Doctor: %v\n%s", err, e.ui.out.String())
+	}
+}
+
+// A .gitattributes that a process on this machine made a named pipe fails
+// init at once, rather than waiting for a writer.
+func TestEnsureGitattributesRefusesAPipe(t *testing.T) {
+	root := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(root, ".gitattributes"), 0o600); err != nil {
+		t.Skip("mkfifo:", err)
+	}
+	if err := ensureGitattributes(root); !errors.Is(err, regular.ErrNotRegular) {
+		t.Fatalf("ensureGitattributes with a pipe: %v", err)
+	}
+}
+
+// A .gitattributes far larger than salt writes is refused before init reads
+// it all, as salt's own files in .salt are.
+func TestEnsureGitattributesRefusesAHugeFile(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, ".gitattributes"), []byte(strings.Repeat("*.md text\n", 10000)), 0o644)
+	if err := ensureGitattributes(root); err == nil || !strings.HasPrefix(err.Error(), ".gitattributes is larger than 64 KiB") {
+		t.Fatalf("ensureGitattributes with a huge file: %v", err)
 	}
 }

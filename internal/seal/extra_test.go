@@ -11,6 +11,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/spicy-lemonade/salt/internal/regular"
+	"github.com/spicy-lemonade/salt/internal/repo"
 )
 
 // extraCopy writes content to a file outside the source tree, standing in
@@ -269,6 +272,39 @@ func TestSealLiveExtraNotAFile(t *testing.T) {
 	}
 }
 
+// A file made a named pipe after seal checked it, but before it is
+// encrypted, is never waited on. A live extra file is left out as a deleted
+// one is, and a file in the source folder fails the seal with its path.
+func TestSealFileMadeAPipeWhileSealed(t *testing.T) {
+	toPipe := func(name string) {
+		hashedHook = func(p string) {
+			if filepath.Base(p) == name {
+				os.Remove(p)
+				if err := syscall.Mkfifo(p, 0o600); err != nil {
+					t.Error("mkfifo:", err)
+				}
+			}
+		}
+	}
+	t.Cleanup(func() { hashedHook = nil })
+
+	toPipe("late.md")
+	f := newFixture(t, true)
+	late := filepath.Join(t.TempDir(), "late.md")
+	os.WriteFile(late, []byte("made a pipe after it was measured"), 0o600)
+	res, err := f.sealExtra(Extra{Rel: "a/late.md", Path: late, Live: true})
+	if err != nil || !slices.Equal(res.Gone, []string{"a/late.md"}) {
+		t.Fatalf("seal: %+v, %v", res, err)
+	}
+
+	toPipe("NOTES.md")
+	f = newFixture(t, true)
+	_, err = Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer})
+	if !errors.Is(err, regular.ErrNotRegular) || !strings.HasPrefix(err.Error(), "NOTES.md: ") {
+		t.Fatalf("seal of a file made a pipe: %v", err)
+	}
+}
+
 // A path missing in the repo while a live file is sealed is an error, never
 // taken for the file having been deleted, which would leave it out.
 func TestSealLiveExtraRepoPathMissing(t *testing.T) {
@@ -448,5 +484,34 @@ func TestFirstClash(t *testing.T) {
 	tk.add("Agent/x/state.db")
 	if j, other, ok := tk.clash("agent/X"); !ok || j != 0 || other != "Agent/x" {
 		t.Errorf("folder: %d %q %v", j, other, ok)
+	}
+}
+
+// An object or the index that a process on this machine replaced with a
+// named pipe fails verify at once, rather than waiting for a writer. git
+// cannot store a pipe, so only something local can put one there.
+func TestVerifyRefusesAPipeInTheRepo(t *testing.T) {
+	f := newFixture(t, true)
+	f.seal(false)
+	ix, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toPipe := func(rel string) {
+		p := filepath.Join(f.root, filepath.FromSlash(rel))
+		os.Remove(p)
+		if err := syscall.Mkfifo(p, 0o600); err != nil {
+			t.Skip("mkfifo:", err)
+		}
+	}
+	e := ix.Entries[0]
+	toPipe(e.Object)
+	vr, err := Verify(f.root, f.ids(), VerifyOptions{})
+	if err != nil || vr.ProblemCount != 1 || !strings.Contains(vr.Problems[0], e.Path) || !strings.Contains(vr.Problems[0], "not a regular file") {
+		t.Fatalf("verify with an object a pipe: %+v, %v", vr, err)
+	}
+	toPipe(repo.IndexFile)
+	if _, err := Verify(f.root, f.ids(), VerifyOptions{}); !errors.Is(err, regular.ErrNotRegular) {
+		t.Fatalf("verify with the index a pipe: %v", err)
 	}
 }

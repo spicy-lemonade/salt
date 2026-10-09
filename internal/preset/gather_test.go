@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/spicy-lemonade/salt/internal/proc"
@@ -1647,5 +1648,18 @@ func TestDropAndCheckGone(t *testing.T) {
 	f.Drop([]string{"x.db", "one.md"})
 	if err := f.CheckGone(); !errors.Is(err, ErrNothing) || !strings.Contains(err.Error(), "for the a preset") {
 		t.Fatalf("both gone: %v", err)
+	}
+}
+
+// A secrets file made a named pipe after the walk found it is left out
+// rather than waited on, since it cannot be checked.
+func TestSecretInRefusesAPipe(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Skip("mkfifo:", err)
+	}
+	why, secret, _ := secretIn(p, Secret{Keys: defaultSecretKeys})
+	if !strings.HasPrefix(why, "it could not be read to check it for secrets") || !strings.Contains(why, "not a regular file") || secret {
+		t.Fatalf("secretIn(pipe) = %q, %v", why, secret)
 	}
 }

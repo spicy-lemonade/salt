@@ -3,9 +3,13 @@ package hook
 
 import (
 	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/spicy-lemonade/salt/internal/regular"
 )
 
 // Marker identifies a hook salt wrote, so it can be updated but a user's own
@@ -26,15 +30,32 @@ fi
 exec salt check
 `
 
+// maxHook is the most of a hook salt reads, far more than Script. A larger
+// hook is not salt's.
+const maxHook = 64 << 10
+
 // ErrForeign means a pre-commit hook exists that salt did not write.
 var ErrForeign = errors.New("a pre-commit hook already exists")
 
 // Install writes the hook to path. It refuses to replace a hook salt did not
 // write, returning ErrForeign; the caller should say where it is and tell the
-// user to add `salt check` to it.
+// user to add `salt check` to it, as it does for a hook over maxHook bytes.
+// Anything at path that is not a regular file, such as a named pipe, is
+// refused without waiting on it.
 func Install(path string) error {
-	if b, err := os.ReadFile(path); err == nil && !strings.Contains(string(b), Marker) {
-		return ErrForeign
+	var b []byte
+	f, _, err := regular.Open(os.OpenFile, path)
+	if err == nil {
+		b, err = io.ReadAll(io.LimitReader(f, maxHook+1))
+		f.Close()
+	}
+	switch {
+	case err == nil:
+		if len(b) > maxHook || !strings.Contains(string(b), Marker) {
+			return ErrForeign
+		}
+	case !errors.Is(err, fs.ErrNotExist):
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -42,8 +63,15 @@ func Install(path string) error {
 	return os.WriteFile(path, []byte(Script), 0o755)
 }
 
-// Installed reports whether path holds a hook that runs salt check.
+// Installed reports whether path holds a hook that runs salt check. It never
+// waits on something that is not a regular file, such as a named pipe, and
+// reads at most maxHook bytes.
 func Installed(path string) bool {
-	b, err := os.ReadFile(path)
-	return err == nil && strings.Contains(string(b), "salt check")
+	f, _, err := regular.Open(os.OpenFile, path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxHook+1))
+	return err == nil && len(b) <= maxHook && strings.Contains(string(b), "salt check")
 }

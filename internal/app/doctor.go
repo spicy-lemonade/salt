@@ -14,6 +14,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/keys"
+	"github.com/spicy-lemonade/salt/internal/regular"
 	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/trust"
@@ -245,10 +246,20 @@ func (a *App) doctorHook(r *report, root string) {
 	}
 }
 
-// doctorTree scans the working tree, reading only file headers.
+// doctorTree scans the working tree, reading only file headers. Files are
+// read through os.Root, so one swapped for a symlink after the scan found it
+// cannot lead outside the repo.
 func (a *App) doctorTree(r *report, root string) {
-	var plain, big []string
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	rt, err := os.OpenRoot(root)
+	if err != nil {
+		r.add(warn, "could not scan the working tree: %v", err)
+		return
+	}
+	defer rt.Close()
+	// stray holds what is in .salt but not salt's, which seal --prune leaves
+	// alone, and plain the rest.
+	var plain, stray, big []string
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -263,16 +274,20 @@ func (a *App) doctorTree(r *report, root string) {
 		if strings.HasPrefix(d.Name(), ".salt-tmp-") {
 			return nil
 		}
-		if d.Type()&fs.ModeSymlink != 0 {
-			plain = append(plain, rel)
+		list := &plain
+		if rel == repo.Dir || strings.HasPrefix(rel, repo.Dir+"/") {
+			list = &stray
+		}
+		if !d.Type().IsRegular() {
+			*list = append(*list, rel)
 			return nil
 		}
-		head, err := readHead(p)
+		head, err := readHead(rt, rel)
 		if err != nil {
 			return err
 		}
 		if check.Classify(rel, head, true) != nil {
-			plain = append(plain, rel)
+			*list = append(*list, rel)
 		}
 		if fi, err := d.Info(); err == nil && fi.Size() > repo.GitHubFileLimit {
 			big = append(big, fmt.Sprintf("%s (%d MB)", rel, fi.Size()>>20))
@@ -287,7 +302,13 @@ func (a *App) doctorTree(r *report, root string) {
 		slices.Sort(plain)
 		r.add(fail, "%d unencrypted file(s) in the working tree, e.g. %s; `salt seal --prune` removes them",
 			len(plain), strings.Join(plain[:min(3, len(plain))], ", "))
-	} else {
+	}
+	if len(stray) > 0 {
+		slices.Sort(stray)
+		r.add(fail, "%d unexpected file(s) in %s, e.g. %s; `salt seal --prune` leaves %s alone, so check the repo's recent commits and remove them by hand",
+			len(stray), repo.Dir, strings.Join(stray[:min(3, len(stray))], ", "), repo.Dir)
+	}
+	if len(plain)+len(stray) == 0 {
 		r.add(ok, "working tree contains only encrypted files and public salt settings")
 	}
 	if len(big) > 0 {
@@ -295,18 +316,20 @@ func (a *App) doctorTree(r *report, root string) {
 	}
 }
 
-func readHead(p string) ([]byte, error) {
-	f, err := os.Open(p)
+// readHead reads the start of the file rel in rt, refusing anything that is
+// not a regular file without waiting on it.
+func readHead(rt *os.Root, rel string) ([]byte, error) {
+	f, _, err := regular.Open(rt.OpenFile, filepath.FromSlash(rel))
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	head := make([]byte, check.HeadSize)
 	n, err := io.ReadFull(f, head)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return nil, err
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		err = nil
 	}
-	return head[:n], nil
+	return head[:n], err
 }
 
 // Verify decrypts every file in the backup (without writing plaintext) and

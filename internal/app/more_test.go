@@ -545,6 +545,69 @@ func TestDoctorKeyAndTreeBranches(t *testing.T) {
 	}
 }
 
+// A FIFO in the repo folder can only be made on this machine, as git cannot
+// store one. Doctor once opened it to read its head and waited for a writer
+// that never came. It must list it as unencrypted without opening it.
+func TestDoctorDoesNotOpenAPipe(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	if err := syscall.Mkfifo(filepath.Join(e.root, "pipe"), 0o644); err != nil {
+		t.Skip("mkfifo:", err)
+	}
+	e.ui.out.Reset()
+	done := make(chan error, 1)
+	go func() { done <- e.app.Doctor(e.root) }()
+	select {
+	case err := <-done:
+		if out := e.ui.out.String(); !errors.Is(err, ErrReported) || !strings.Contains(out, "1 unencrypted file(s) in the working tree, e.g. pipe") {
+			t.Fatalf("Doctor: %v\n%s", err, out)
+		}
+	case <-time.After(10 * time.Second):
+		// A writer coming and going lets the stuck open return, so doctor
+		// does not outlive the test.
+		if w, err := os.OpenFile(filepath.Join(e.root, "pipe"), os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			w.Close()
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+			}
+		}
+		t.Fatal("doctor is still waiting on the pipe")
+	}
+}
+
+// seal --prune leaves .salt alone, so doctor never tells the person it will
+// remove what is there. A file there that is not salt's is named apart.
+func TestDoctorStrayFilesInSaltDir(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	os.WriteFile(filepath.Join(e.root, repo.Dir, "notes.txt"), []byte("plain"), 0o644)
+	os.Symlink("x", filepath.Join(e.root, repo.Dir, "link"))
+	e.ui.out.Reset()
+	err := e.app.Doctor(e.root)
+	out := e.ui.out.String()
+	want := "2 unexpected file(s) in .salt, e.g. .salt/link, .salt/notes.txt; `salt seal --prune` leaves .salt alone"
+	if !errors.Is(err, ErrReported) || !strings.Contains(out, want) || strings.Contains(out, "unencrypted file(s)") || strings.Contains(out, "working tree contains only") {
+		t.Fatalf("Doctor: %v\n%s", err, out)
+	}
+	os.WriteFile(filepath.Join(e.root, "USER.md"), []byte("plain"), 0o644)
+	e.ui.out.Reset()
+	e.app.Doctor(e.root)
+	if out := e.ui.out.String(); !strings.Contains(out, "1 unencrypted file(s) in the working tree, e.g. USER.md;") || !strings.Contains(out, want) {
+		t.Fatalf("doctor with both:\n%s", out)
+	}
+}
+
+// A working tree that cannot be opened is a warning, not a crash.
+func TestDoctorTreeCannotOpen(t *testing.T) {
+	e := newEnv(t)
+	r := &report{ui: e.ui}
+	e.app.doctorTree(r, filepath.Join(t.TempDir(), "missing"))
+	if r.warns != 1 || !strings.Contains(e.ui.out.String(), "could not scan the working tree") {
+		t.Fatalf("warns %d:\n%s", r.warns, e.ui.out.String())
+	}
+}
+
 func TestInstallHookError(t *testing.T) {
 	e := newEnv(t)
 	e.app.Git = &failingGit{}
