@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -245,7 +246,13 @@ func (p *partReader) next() error {
 	p.names = p.names[1:]
 	f, _, err := regular.Open(p.rt.OpenFile, filepath.FromSlash(name))
 	if err != nil {
-		return err
+		// The error's own path is the whole name from the index, so it is
+		// named through clip instead, keeping the cause for errors.Is.
+		var pathErr *fs.PathError
+		if errors.As(err, &pathErr) {
+			err = pathErr.Err
+		}
+		return fmt.Errorf("%s: %w", clip(path.Base(name)), err)
 	}
 	ar, err := age.Decrypt(f, p.ids...)
 	if err != nil {

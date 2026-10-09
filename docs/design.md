@@ -414,10 +414,14 @@ against someone who can push to it:
   values and the index's paths, and a remote or database server chooses what
   git and `pg_dump` print. A control character among them, such as ESC, could
   change what the terminal shows. Everything salt prints goes through one
-  writer that shows every character that is not printable, other than a
-  newline or a tab, as a Go escape such as `\x1b`, and every byte that is not
-  UTF-8 as `\xNN`. A path from the index that holds one, a newline included,
-  is also quoted, so it can't look like a line of salt's own.
+  writer (`internal/escape`) that shows every character that does not show as
+  itself, other than a newline or a tab, as a Go escape such as `\x1b`, and
+  every byte that is not UTF-8 as `\xNN`. Spaces such as the narrow no-break
+  space in macOS screenshot names are shown as they are. A name from the repo
+  that holds one of those characters, a newline included, is also quoted, so
+  it can't look like a line of salt's own. That covers paths in the index,
+  files `salt check` and `salt doctor` find, and files `salt verify` finds
+  outside the index.
 - **Ignore rules and attributes.** `.gitignore` and `.gitattributes` are
   public files. Someone who can push can add a rule that makes git skip new
   encrypted files, or rewrite them when storing or checking them out (for

@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
+	"github.com/spicy-lemonade/salt/internal/escape"
 	"golang.org/x/term"
 )
 
@@ -31,50 +29,14 @@ var ErrNotInteractive = errors.New("this needs an interactive terminal")
 
 // Terminal is the real UI on stdin/stderr.
 type Terminal struct {
-	in  *bufio.Reader
-	out io.Writer
+	in *bufio.Reader
+	// out escapes control characters, since messages can quote names from
+	// the backup repo; raw is the same stream unescaped, for Clear's codes.
+	out, raw io.Writer
 }
 
 func NewTerminal() *Terminal {
-	return &Terminal{in: bufio.NewReader(os.Stdin), out: EscapeWriter(os.Stderr)}
-}
-
-// EscapeWriter returns a writer that passes text on to w with every character
-// that is not printable, other than a newline or a tab, written as a Go
-// escape such as \x1b, and every byte that is not UTF-8 as \xNN. Messages
-// can hold paths from a backup repo and the output of git or pg_dump, which
-// someone who can push may choose, and a control character among them could
-// change what the terminal shows. Each Write must hold whole characters, as
-// one fmt call does.
-func EscapeWriter(w io.Writer) io.Writer { return escapeWriter{w} }
-
-type escapeWriter struct{ w io.Writer }
-
-func (e escapeWriter) Write(p []byte) (int, error) {
-	var out []byte
-	for i := 0; i < len(p); {
-		r, n := utf8.DecodeRune(p[i:])
-		if (r != utf8.RuneError || n > 1) && (unicode.IsPrint(r) || r == '\n' || r == '\t') {
-			if out != nil {
-				out = append(out, p[i:i+n]...)
-			}
-			i += n
-			continue
-		}
-		if out == nil {
-			out = append(make([]byte, 0, len(p)+16), p[:i]...)
-		}
-		q := strconv.Quote(string(p[i : i+n]))
-		out = append(out, q[1:len(q)-1]...)
-		i += n
-	}
-	if out == nil {
-		out = p
-	}
-	if _, err := e.w.Write(out); err != nil {
-		return 0, err
-	}
-	return len(p), nil
+	return &Terminal{in: bufio.NewReader(os.Stdin), out: escape.Writer(os.Stderr), raw: os.Stderr}
 }
 
 func (t *Terminal) Printf(format string, a ...any) { fmt.Fprintf(t.out, format, a...) }
@@ -105,9 +67,7 @@ func (t *Terminal) Interactive() bool {
 
 func (t *Terminal) Clear() {
 	if term.IsTerminal(int(os.Stderr.Fd())) {
-		// Clear screen and scrollback, cursor home. These codes are salt's
-		// own, so they go straight to stderr rather than through t.out,
-		// which would escape them.
-		fmt.Fprint(os.Stderr, "\033[H\033[2J\033[3J")
+		// Clear screen and scrollback, cursor home.
+		fmt.Fprint(t.raw, "\033[H\033[2J\033[3J")
 	}
 }

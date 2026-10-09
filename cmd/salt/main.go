@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/spicy-lemonade/salt/internal/app"
+	"github.com/spicy-lemonade/salt/internal/escape"
 	"github.com/spicy-lemonade/salt/internal/guard"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/preset"
@@ -36,7 +37,7 @@ var databaseKinds = source.Kinds
 
 // stderr is where main prints errors. An error can quote a path from the
 // backup repo or a program's output, so control characters are escaped.
-var stderr = app.EscapeWriter(os.Stderr)
+var stderr = escape.Writer(os.Stderr)
 
 // usage is usageText with the presets' names filled in.
 var usage = strings.Replace(usageText, "{presets}", strings.Join(preset.Names(), ", "), 1)

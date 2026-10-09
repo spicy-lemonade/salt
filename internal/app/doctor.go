@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/spicy-lemonade/salt/internal/check"
+	"github.com/spicy-lemonade/salt/internal/escape"
 	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/regular"
@@ -108,7 +109,7 @@ func (a *App) Doctor(repoRoot string) error {
 		r.add(warn, "could not inspect the last commit: %v", err)
 	} else if len(vs) > 0 {
 		r.add(fail, "the last commit contains %d unencrypted file(s), e.g. %s; if it was pushed, that plaintext is on the remote",
-			len(vs), vs[0].Path)
+			len(vs), escape.Name(vs[0].Path))
 	} else {
 		r.add(ok, "last commit contains no unencrypted files")
 	}
@@ -279,7 +280,7 @@ func (a *App) doctorTree(r *report, root string) {
 			list = &stray
 		}
 		if !d.Type().IsRegular() {
-			*list = append(*list, rel)
+			*list = append(*list, escape.Name(rel))
 			return nil
 		}
 		head, err := readHead(rt, rel)
@@ -287,10 +288,10 @@ func (a *App) doctorTree(r *report, root string) {
 			return err
 		}
 		if check.Classify(rel, head, true) != nil {
-			*list = append(*list, rel)
+			*list = append(*list, escape.Name(rel))
 		}
 		if fi, err := d.Info(); err == nil && fi.Size() > repo.GitHubFileLimit {
-			big = append(big, fmt.Sprintf("%s (%d MB)", rel, fi.Size()>>20))
+			big = append(big, fmt.Sprintf("%s (%d MB)", escape.Name(rel), fi.Size()>>20))
 		}
 		return nil
 	})
@@ -358,7 +359,7 @@ func (a *App) Verify(repoRoot string, allowUnsigned bool) error {
 		a.UI.Printf("%s", unsignedWarning(res.Unapproved))
 	}
 	for _, u := range res.Unreferenced {
-		a.UI.Printf("  ! %s is not in the index (the next `salt seal` removes it)\n", u)
+		a.UI.Printf("  ! %s is not in the index (the next `salt seal` removes it)\n", escape.Name(u))
 	}
 	if res.ProblemCount > 0 {
 		a.UI.Printf("✗ %d of %d files cannot be restored:\n", res.ProblemCount, res.Files)

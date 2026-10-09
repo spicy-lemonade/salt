@@ -52,6 +52,12 @@ func TestStorageProblemMessages(t *testing.T) {
 			"git would change objects/ab/c.age when storing it (text is set, eol is set to crlf)" + fix},
 		{StorageProblem{Path: "objects/ab/c.age", Attrs: []BadAttr{{"text", "unspecified"}, {"filter", "lfs"}}},
 			"git would change objects/ab/c.age when storing it (text is unspecified, filter is set to lfs)" + fix},
+		{StorageProblem{Path: "objects/ab/x\n✓ ok.age"},
+			`"objects/ab/x\n✓ ok.age" is ignored by git (via .gitignore or your git config), so it would never reach the remote. Remove the matching ignore rule.`},
+		{StorageProblem{Path: "objects/ab/\x1b.age", Attrs: []BadAttr{{"eol", "crlf"}}},
+			`git would change "objects/ab/\x1b.age" when storing it (eol is set to crlf)` + fix},
+		{StorageProblem{Path: "index\r.age", Attrs: []BadAttr{{"text", "unspecified"}}},
+			`git may change "index\r.age" when storing it (*.age is not marked binary); backups could not be restored. Add "*.age binary" to .gitattributes.`},
 		{StorageProblem{Path: "index.age", Attrs: []BadAttr{{"text", "unspecified"}}},
 			`git may change index.age when storing it (*.age is not marked binary); backups could not be restored. Add "*.age binary" to .gitattributes.`},
 	} {

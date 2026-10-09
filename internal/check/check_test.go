@@ -42,3 +42,18 @@ func TestReport(t *testing.T) {
 		t.Fatalf("Report:\n%s", r)
 	}
 }
+
+// A pushed file name holding a newline or ESC is quoted, so it can't fake a
+// line of salt's output.
+func TestViolationQuotesNames(t *testing.T) {
+	for path, want := range map[string]string{
+		"notes/USER.md":       "notes/USER.md: not encrypted",
+		"x\n✓ all is well.md": `"x\n✓ all is well.md": not encrypted`,
+		"a\x1b[2Jb":           `"a\x1b[2Jb": not encrypted`,
+		"Shot\u202fPM.png":    "Shot\u202fPM.png: not encrypted",
+	} {
+		if got := (Violation{path, "not encrypted"}).String(); got != want {
+			t.Errorf("Violation(%q) = %s, want %s", path, got, want)
+		}
+	}
+}

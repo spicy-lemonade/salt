@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/spicy-lemonade/salt/internal/escape"
 	"github.com/spicy-lemonade/salt/internal/gitx"
 	"github.com/spicy-lemonade/salt/internal/repo"
 )
@@ -25,7 +26,7 @@ type Violation struct {
 	Reason string
 }
 
-func (v Violation) String() string { return v.Path + ": " + v.Reason }
+func (v Violation) String() string { return escape.Name(v.Path) + ": " + v.Reason }
 
 // Classify decides whether a staged file may be committed, given its first
 // HeadSize bytes. ok is false when the blob could not be read as a file.

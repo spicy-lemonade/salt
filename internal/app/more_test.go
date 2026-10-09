@@ -16,6 +16,7 @@ import (
 
 	"filippo.io/age"
 	"github.com/spicy-lemonade/salt/internal/check"
+	"github.com/spicy-lemonade/salt/internal/escape"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
 )
@@ -50,7 +51,8 @@ func TestTerminal(t *testing.T) {
 // escaped, through Printf and prompts alike.
 func TestTerminalEscapes(t *testing.T) {
 	var out bytes.Buffer
-	term := &Terminal{in: bufio.NewReader(strings.NewReader("x\n")), out: EscapeWriter(&out)}
+	var raw bytes.Buffer
+	term := &Terminal{in: bufio.NewReader(strings.NewReader("x\n")), out: escape.Writer(&out), raw: &raw}
 	term.Printf("bad %s\n", "a\x1b[2Jb")
 	if _, err := term.ReadLine("open \x1b]0;title\a? "); err != nil {
 		t.Fatal(err)
@@ -58,42 +60,9 @@ func TestTerminalEscapes(t *testing.T) {
 	if want := "bad a\\x1b[2Jb\nopen \\x1b]0;title\\a? "; out.String() != want {
 		t.Fatalf("output = %q, want %q", out.String(), want)
 	}
-}
-
-func TestEscapeWriter(t *testing.T) {
-	for in, want := range map[string]string{
-		"plain text\n":         "plain text\n",
-		"tab\tand é ⚠ …\n":     "tab\tand é ⚠ …\n",
-		"\x1b[31mred\x1b[0m":   `\x1b[31mred\x1b[0m`,
-		"8-bit CSI \x9b2J":     `8-bit CSI \x9b2J`,
-		"C1 CSI \u009b2J":      `C1 CSI \u009b2J`,
-		"done\rsalt: ok":       `done\rsalt: ok`,
-		"del\x7f":              `del\x7f`,
-		"bidi \u202egpj.exe":   `bidi \u202egpj.exe`,
-		"\xff\xfe start bytes": `\xff\xfe start bytes`,
-		"real \ufffd stays":    "real \ufffd stays",
-		"":                     "",
-	} {
-		var out bytes.Buffer
-		n, err := EscapeWriter(&out).Write([]byte(in))
-		if err != nil || n != len(in) {
-			t.Errorf("Write(%q) = %d, %v; want %d, nil", in, n, err, len(in))
-		}
-		if out.String() != want {
-			t.Errorf("Write(%q) wrote %q, want %q", in, out.String(), want)
-		}
-	}
-}
-
-type failWriter struct{}
-
-func (failWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
-
-func TestEscapeWriterError(t *testing.T) {
-	for _, in := range []string{"plain", "\x1b"} {
-		if n, err := EscapeWriter(failWriter{}).Write([]byte(in)); n != 0 || !errors.Is(err, io.ErrClosedPipe) {
-			t.Errorf("Write(%q) = %d, %v; want 0, io.ErrClosedPipe", in, n, err)
-		}
+	term.Clear() // stderr is not a terminal: nothing is printed
+	if raw.Len() != 0 {
+		t.Fatalf("Clear printed %q", raw.String())
 	}
 }
 
