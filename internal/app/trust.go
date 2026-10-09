@@ -39,7 +39,7 @@ func (a *App) checkTrusted(r *repo.Repo) error {
 			ErrNotTrusted, a.short(r.Root), r.Root)
 	}
 	if err != nil {
-		return fmt.Errorf("%w. Delete that file and run `salt trust %q`", err, r.Root)
+		return fmt.Errorf("%w. Run `salt trust %q` to replace it", err, r.Root)
 	}
 	if len(d) > 0 {
 		return fmt.Errorf("%w: the keys or settings in %s changed since you approved them:\n  %s\n"+
@@ -69,7 +69,7 @@ func (a *App) approvedSigners(r *repo.Repo, allowUnsigned bool) ([]string, error
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%w. Delete that file and run `salt trust %q`, or pass --allow-unsigned", err, r.Root)
+		return nil, fmt.Errorf("%w. Run `salt trust %q` to replace it, or pass --allow-unsigned", err, r.Root)
 	}
 	if len(d) > 0 {
 		a.UI.Printf("salt: ! the keys or settings in %s changed since you approved them:\n  %s\n"+
