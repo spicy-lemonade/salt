@@ -563,6 +563,12 @@ func TestDoctorDoesNotOpenAPipe(t *testing.T) {
 			t.Fatalf("Doctor: %v\n%s", err, out)
 		}
 	case <-time.After(10 * time.Second):
+		// A writer coming and going lets the stuck open return, so doctor
+		// does not outlive the test.
+		if w, err := os.OpenFile(filepath.Join(e.root, "pipe"), os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			w.Close()
+			<-done
+		}
 		t.Fatal("doctor is still waiting on the pipe")
 	}
 }
