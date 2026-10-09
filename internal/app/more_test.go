@@ -545,6 +545,28 @@ func TestDoctorKeyAndTreeBranches(t *testing.T) {
 	}
 }
 
+// A FIFO in the repo folder can only be made on this machine, as git cannot
+// store one. Doctor once opened it to read its head and waited for a writer
+// that never came. It must list it as unencrypted without opening it.
+func TestDoctorDoesNotOpenAPipe(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	if err := syscall.Mkfifo(filepath.Join(e.root, "pipe"), 0o644); err != nil {
+		t.Skip("mkfifo:", err)
+	}
+	e.ui.out.Reset()
+	done := make(chan error, 1)
+	go func() { done <- e.app.Doctor(e.root) }()
+	select {
+	case err := <-done:
+		if out := e.ui.out.String(); !errors.Is(err, ErrReported) || !strings.Contains(out, "1 unencrypted file(s) in the working tree, e.g. pipe") {
+			t.Fatalf("Doctor: %v\n%s", err, out)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("doctor is still waiting on the pipe")
+	}
+}
+
 func TestInstallHookError(t *testing.T) {
 	e := newEnv(t)
 	e.app.Git = &failingGit{}

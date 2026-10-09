@@ -263,7 +263,8 @@ func (a *App) doctorTree(r *report, root string) {
 		if strings.HasPrefix(d.Name(), ".salt-tmp-") {
 			return nil
 		}
-		if d.Type()&fs.ModeSymlink != 0 {
+		// Opening a FIFO would wait for a writer, so only a regular file is read.
+		if !d.Type().IsRegular() {
 			plain = append(plain, rel)
 			return nil
 		}
