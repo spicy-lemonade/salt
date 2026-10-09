@@ -64,13 +64,20 @@ type testEnv struct {
 }
 
 type fakeGit struct {
-	hook      string
-	staged    []check.Violation
-	stagedErr error
-	committed []check.Violation
-	last      time.Time
-	hasLast   bool
-	remote    string
+	hook string
+	// pushedFound and pushedErr are what Pushed returns, and the others
+	// what it was last given.
+	pushedFound  []check.Violation
+	pushedErr    error
+	pushedTips   []string
+	pushedHave   []string
+	pushedRemote string
+	staged       []check.Violation
+	stagedErr    error
+	committed    []check.Violation
+	last         time.Time
+	hasLast      bool
+	remote       string
 	// storage is what Storage reports; storageCalls counts the calls.
 	storage      []check.StorageProblem
 	storageTotal int
@@ -113,7 +120,15 @@ type fakeGit struct {
 	onPushSize  func()
 }
 
-func (f *fakeGit) HookPath(string) (string, error) { return f.hook, nil }
+// HookPath puts every hook beside the pre-commit hook, at hook.
+func (f *fakeGit) HookPath(_, name string) (string, error) {
+	return filepath.Join(filepath.Dir(f.hook), name), nil
+}
+
+func (f *fakeGit) Pushed(_ string, tips, have []string, remote string) ([]check.Violation, error) {
+	f.pushedTips, f.pushedHave, f.pushedRemote = tips, have, remote
+	return f.pushedFound, f.pushedErr
+}
 func (f *fakeGit) Staged(string) ([]check.Violation, error) {
 	return f.staged, f.stagedErr
 }

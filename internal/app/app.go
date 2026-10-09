@@ -4,6 +4,7 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"errors"
@@ -55,8 +56,12 @@ type App struct {
 
 // GitOps is what salt asks of git. RealGit implements it; tests use a fake.
 type GitOps interface {
-	HookPath(repoRoot string) (string, error)
+	// HookPath returns where git looks for the hook called name.
+	HookPath(repoRoot, name string) (string, error)
 	Staged(repoRoot string) ([]check.Violation, error)
+	// Pushed checks the files the commits a push sends add or change (see
+	// check.Pushed).
+	Pushed(repoRoot string, tips, have []string, remote string) ([]check.Violation, error)
 	Committed(repoRoot string) ([]check.Violation, error)
 	LastCommit(repoRoot string) (t time.Time, ok bool, err error)
 	Remote(repoRoot string) string
@@ -92,9 +97,12 @@ type GitOps interface {
 // RealGit runs git through gitx (hooks disabled).
 type RealGit struct{}
 
-func (RealGit) HookPath(root string) (string, error) { return gitx.HookPath(root, "pre-commit") }
+func (RealGit) HookPath(root, name string) (string, error) { return gitx.HookPath(root, name) }
 func (RealGit) Staged(root string) ([]check.Violation, error) {
 	return check.Staged(root)
+}
+func (RealGit) Pushed(root string, tips, have []string, remote string) ([]check.Violation, error) {
+	return check.Pushed(root, tips, have, remote)
 }
 func (RealGit) Committed(root string) ([]check.Violation, error) {
 	return check.Committed(root)
@@ -415,6 +423,59 @@ func (a *App) checkStorage(root, lead string) error {
 // ErrReported means the command failed and has already told the person why.
 var ErrReported = errors.New("problems reported")
 
+// CheckPush refuses a push from the repository at repoRoot to remote (git's
+// name for it, or its URL) that sends a file that is not encrypted. refs is
+// what git gives the pre-push hook on its input: for each ref pushed, a
+// line "LOCAL-REF LOCAL-ID REMOTE-REF REMOTE-ID". A deletion sends nothing.
+// Anything else stops the push.
+func (a *App) CheckPush(repoRoot, remote string, refs io.Reader) error {
+	var tips, have []string
+	sc := bufio.NewScanner(refs)
+	for sc.Scan() {
+		f := strings.Fields(sc.Text())
+		if len(f) == 0 {
+			continue
+		}
+		if len(f) != 4 || !isObjectID(f[1]) || !isObjectID(f[3]) {
+			return fmt.Errorf("salt check could not read what git is pushing, refusing the push: %.80q", sc.Text())
+		}
+		if !isZeroID(f[1]) {
+			tips = append(tips, f[1])
+		}
+		if !isZeroID(f[3]) {
+			have = append(have, f[3])
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return fmt.Errorf("salt check could not read what git is pushing, refusing the push: %w", err)
+	}
+	if len(tips) == 0 {
+		return nil
+	}
+	vs, err := a.Git.Pushed(repoRoot, tips, have, remote)
+	if err != nil {
+		return fmt.Errorf("salt check could not inspect the push, refusing it: %w", err)
+	}
+	if len(vs) > 0 {
+		a.UI.Printf("%s", check.PushReport(vs))
+		return ErrReported
+	}
+	return nil
+}
+
+// isObjectID reports whether s is a git object ID: 40 hex digits, or 64 in a
+// SHA-256 repository.
+func isObjectID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	return strings.Trim(s, "0123456789abcdef") == ""
+}
+
+// isZeroID reports whether the object ID s is all zeros, which git uses for
+// a ref that does not exist.
+func isZeroID(s string) bool { return strings.Trim(s, "0") == "" }
+
 // Check refuses plaintext staged in the repository at repoRoot.
 func (a *App) Check(repoRoot string) error {
 	vs, err := a.Git.Staged(repoRoot)
@@ -430,17 +491,29 @@ func (a *App) Check(repoRoot string) error {
 	return a.checkStorage(repoRoot, "salt check: refusing commit:")
 }
 
-// InstallHook installs the pre-commit hook in the repository at repoRoot.
-func (a *App) InstallHook(repoRoot string) (string, error) {
-	p, err := a.Git.HookPath(repoRoot)
-	if err != nil {
-		return "", err
+// InstallHook installs the pre-commit and pre-push hooks in the repository
+// at repoRoot, and returns where it wrote them. A hook of the person's own
+// is left as it is, and the next one is still installed. Each such hook is
+// named in the error, which is hook.ErrForeign.
+func (a *App) InstallHook(repoRoot string) (installed []string, err error) {
+	var foreign []error
+	for _, h := range hook.All {
+		p, err := a.Git.HookPath(repoRoot, h.Name)
+		if err != nil {
+			return installed, err
+		}
+		err = hook.Install(p, h)
+		switch {
+		case errors.Is(err, hook.ErrForeign):
+			foreign = append(foreign, fmt.Errorf("a %s %w at %s; add `%s` to it so plaintext %s are refused",
+				h.Name, err, a.short(p), h.Runs, h.Refuses))
+		case err != nil:
+			return installed, err
+		default:
+			installed = append(installed, p)
+		}
 	}
-	err = hook.Install(p)
-	if errors.Is(err, hook.ErrForeign) {
-		err = fmt.Errorf("%w at %s; add `salt check` to it so plaintext commits are refused", err, a.short(p))
-	}
-	return p, err
+	return installed, errors.Join(foreign...)
 }
 
 func (a *App) requireGitRepo(root string) error {

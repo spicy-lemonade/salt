@@ -76,7 +76,7 @@ func StagedPaths(dir string) ([]string, error) {
 // the files are. Paths containing a newline cannot be passed to cat-file and
 // are reported with ok=false.
 func BlobHeads(dir, rev string, paths []string, n int, fn func(path string, head []byte, ok bool) error) error {
-	var batch []string
+	var names, specs []string
 	for _, p := range paths {
 		if strings.ContainsAny(p, "\n\r") {
 			if err := fn(p, nil, false); err != nil {
@@ -84,9 +84,31 @@ func BlobHeads(dir, rev string, paths []string, n int, fn func(path string, head
 			}
 			continue
 		}
-		batch = append(batch, p)
+		names = append(names, p)
+		specs = append(specs, BlobSpec(rev, p))
 	}
-	if len(batch) == 0 {
+	return objectHeads(dir, names, specs, n, fn)
+}
+
+// Blob is a file's contents in a commit: its object ID and its path there.
+type Blob struct{ ID, Path string }
+
+// BlobIDHeads is BlobHeads for blobs named by their IDs. fn is given each
+// blob's path.
+func BlobIDHeads(dir string, blobs []Blob, n int, fn func(path string, head []byte, ok bool) error) error {
+	names, specs := make([]string, len(blobs)), make([]string, len(blobs))
+	for i, b := range blobs {
+		names[i], specs[i] = b.Path, b.ID
+	}
+	return objectHeads(dir, names, specs, n, fn)
+}
+
+// objectHeads calls fn with names[i] and the first n bytes of the object
+// specs[i] names, for each i, through one `git cat-file --batch`. An object
+// that is missing or not a blob, such as a submodule, is reported with
+// ok=false. No spec may hold a newline.
+func objectHeads(dir string, names, specs []string, n int, fn func(name string, head []byte, ok bool) error) error {
+	if len(specs) == 0 {
 		return nil
 	}
 	cmd := exec.Command("git", Args(dir, "cat-file", "--batch")...)
@@ -105,8 +127,8 @@ func BlobHeads(dir, rev string, paths []string, n int, fn func(path string, head
 	}
 	go func() {
 		w := bufio.NewWriter(stdin)
-		for _, p := range batch {
-			fmt.Fprintln(w, BlobSpec(rev, p))
+		for _, spec := range specs {
+			fmt.Fprintln(w, spec)
 		}
 		w.Flush()
 		stdin.Close()
@@ -114,7 +136,7 @@ func BlobHeads(dir, rev string, paths []string, n int, fn func(path string, head
 	r := bufio.NewReader(stdout)
 	head := make([]byte, n)
 	var cbErr error
-	for _, p := range batch {
+	for _, name := range names {
 		line, err := r.ReadString('\n')
 		if err != nil {
 			cbErr = fmt.Errorf("git cat-file: %w", err)
@@ -123,7 +145,7 @@ func BlobHeads(dir, rev string, paths []string, n int, fn func(path string, head
 		fields := strings.Fields(line)
 		if len(fields) != 3 || fields[1] != "blob" {
 			// "missing" or a non-blob (e.g. a submodule): never ciphertext.
-			if cbErr = fn(p, nil, false); cbErr != nil {
+			if cbErr = fn(name, nil, false); cbErr != nil {
 				break
 			}
 			continue
@@ -142,7 +164,7 @@ func BlobHeads(dir, rev string, paths []string, n int, fn func(path string, head
 			cbErr = err
 			break
 		}
-		if cbErr = fn(p, head[:k], true); cbErr != nil {
+		if cbErr = fn(name, head[:k], true); cbErr != nil {
 			break
 		}
 	}

@@ -145,12 +145,16 @@ func (a *App) Init(o InitOptions) error {
 	if err := ensureGitattributes(root); err != nil {
 		return err
 	}
-	hookPath, err := a.InstallHook(root)
+	_, err = a.InstallHook(root)
 	switch {
 	case errors.Is(err, hook.ErrForeign):
 		a.UI.Printf("\nNote: %v\n", err)
 	case err != nil:
-		return fmt.Errorf("installing the pre-commit hook: %w", err)
+		return fmt.Errorf("installing the git hooks: %w", err)
+	}
+	hookPath, err := a.Git.HookPath(root, hook.PreCommit.Name)
+	if err != nil {
+		return err
 	}
 
 	a.UI.Printf(`

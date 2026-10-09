@@ -229,18 +229,25 @@ func (a *App) doctorStorage(r *report, root string) {
 }
 
 func (a *App) doctorHook(r *report, root string) {
-	p, err := a.Git.HookPath(root)
-	if err != nil {
-		r.add(fail, "could not locate the pre-commit hook: %v", err)
-		return
-	}
-	switch _, statErr := os.Stat(p); {
-	case hook.Installed(p):
-		r.add(ok, "pre-commit hook runs `salt check` (%s)", a.short(p))
-	case statErr == nil:
-		r.add(fail, "pre-commit hook at %s does not run `salt check`; add it so plaintext commits are refused", a.short(p))
-	default:
-		r.add(fail, "no pre-commit hook; run `salt hook install %q`", root)
+	for _, h := range hook.All {
+		// The pre-push hook is newer, so a repo set up before it is warned.
+		missing := fail
+		if h != hook.PreCommit {
+			missing = warn
+		}
+		p, err := a.Git.HookPath(root, h.Name)
+		if err != nil {
+			r.add(fail, "could not locate the %s hook: %v", h.Name, err)
+			continue
+		}
+		switch _, statErr := os.Stat(p); {
+		case hook.Installed(p, h):
+			r.add(ok, "%s hook runs `%s` (%s)", h.Name, h.Runs, a.short(p))
+		case statErr == nil:
+			r.add(missing, "%s hook at %s does not run `%s`; add it so plaintext %s are refused", h.Name, a.short(p), h.Runs, h.Refuses)
+		default:
+			r.add(missing, "no %s hook; run `salt hook install %q`", h.Name, root)
+		}
 	}
 	if sp, found := a.LookPath("salt"); found {
 		r.add(ok, "the hook can find salt (%s)", sp)

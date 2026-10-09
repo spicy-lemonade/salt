@@ -41,6 +41,11 @@ func TestReport(t *testing.T) {
 	if !strings.Contains(r, "25 staged file(s)") || !strings.Contains(r, "and 5 more") {
 		t.Fatalf("Report:\n%s", r)
 	}
+	r = PushReport(vs)
+	if !strings.HasPrefix(r, "salt check: refusing push: 25 file(s) in the commits being pushed are not encrypted:\n") ||
+		!strings.Contains(r, "and 5 more") || !strings.HasSuffix(r, "for example with git rebase, and encrypt with `salt seal` instead.\n") {
+		t.Fatalf("PushReport:\n%s", r)
+	}
 }
 
 // A pushed file name holding a newline or ESC is quoted, so it can't fake a

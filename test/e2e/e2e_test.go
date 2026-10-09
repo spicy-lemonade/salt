@@ -632,6 +632,52 @@ func TestPushedAttributeStopsTheBackup(t *testing.T) {
 	}
 }
 
+// The pre-push hook salt init installs refuses a push of commits holding
+// plaintext that the pre-commit hook never saw: one made with --no-verify,
+// and one a merge brings in. The remote is left as it was, and a clean push
+// still works.
+func TestPrePushRefusesPlaintext(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	b.files["USER.md"] = "secret\n"
+	b.backup(t, "2026-09-01")
+	e.must(b.dir, "git", "push", "-q", "origin", "main")
+	pushed := strings.TrimSpace(e.must(b.remote, "git", "rev-parse", "main"))
+	refused := func(what string) {
+		t.Helper()
+		out, code := e.run(b.dir, "git", "push", "-q", "origin", "main")
+		if code == 0 || !strings.Contains(out, "salt check: refusing push: 1 file(s) in the commits being pushed are not encrypted:\n  notes.md: not encrypted") {
+			t.Fatalf("%s: exit %d\n%s", what, code, out)
+		}
+		if got := strings.TrimSpace(e.must(b.remote, "git", "rev-parse", "main")); got != pushed {
+			t.Fatalf("%s reached the remote", what)
+		}
+	}
+
+	write(t, filepath.Join(b.dir, "notes.md"), "plaintext\n")
+	e.must(b.dir, "git", "add", "notes.md")
+	e.must(b.dir, "git", "commit", "-q", "--no-verify", "-m", "skip the hook")
+	refused("a --no-verify commit")
+
+	e.must(b.dir, "git", "reset", "-q", "--hard", "HEAD~1")
+	e.must(b.dir, "git", "checkout", "-q", "-b", "side")
+	write(t, filepath.Join(b.dir, "notes.md"), "plaintext\n")
+	e.must(b.dir, "git", "add", "notes.md")
+	e.must(b.dir, "git", "commit", "-q", "--no-verify", "-m", "on a side branch")
+	e.must(b.dir, "git", "checkout", "-q", "main")
+	write(t, filepath.Join(b.dir, "README.md"), "my backups\n")
+	e.must(b.dir, "git", "add", "README.md")
+	e.must(b.dir, "git", "commit", "-q", "-m", "readme")
+	e.must(b.dir, "git", "merge", "-q", "--no-edit", "side")
+	refused("a merge")
+
+	e.must(b.dir, "git", "reset", "-q", "--hard", "HEAD~1")
+	e.must(b.dir, "git", "push", "-q", "origin", "main")
+	if out := e.must(b.base, "salt", "doctor", b.dir); !strings.Contains(out, "pre-push hook runs `salt check --pre-push`") {
+		t.Fatalf("doctor:\n%s", out)
+	}
+}
+
 // A pushed attribute that would change salt's settings files, as a fresh
 // clone checks them out, stops the backup too.
 func TestPushedSettingsAttributeStopsTheBackup(t *testing.T) {

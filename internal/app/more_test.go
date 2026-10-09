@@ -523,7 +523,7 @@ func TestSealRefusesEmptySource(t *testing.T) {
 
 type failingGit struct{ fakeGit }
 
-func (failingGit) HookPath(string) (string, error)             { return "", errors.New("no git") }
+func (failingGit) HookPath(string, string) (string, error)     { return "", errors.New("no git") }
 func (failingGit) Committed(string) ([]check.Violation, error) { return nil, errors.New("no git") }
 func (failingGit) LastCommit(string) (time.Time, bool, error) {
 	return time.Time{}, false, errors.New("no git")
@@ -693,7 +693,7 @@ func TestInstallHookError(t *testing.T) {
 	os.MkdirAll(filepath.Join(e.root, repo.Dir), 0o755)
 	e.ui.answer = phraseAnswers(0)
 	e.app.Git = &failingGit{}
-	if err := e.app.Init(InitOptions{Repo: e.root}); err == nil || !strings.Contains(err.Error(), "pre-commit hook") {
+	if err := e.app.Init(InitOptions{Repo: e.root}); err == nil || !strings.Contains(err.Error(), "installing the git hooks") {
 		t.Fatalf("Init with hook failure: %v", err)
 	}
 }

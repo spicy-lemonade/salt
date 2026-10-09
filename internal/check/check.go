@@ -1,5 +1,6 @@
-// Package check is the pre-commit guard: it refuses a commit that stages any
-// file which is not age ciphertext, apart from the repo's public files.
+// Package check is the pre-commit and pre-push guard: it refuses a commit
+// that stages, or a push that sends, any file which is not age ciphertext,
+// apart from the repo's public files.
 package check
 
 import (
@@ -61,21 +62,54 @@ func Committed(dir string) ([]Violation, error) {
 	return classifyBlobs(dir, "HEAD", paths)
 }
 
-func classifyBlobs(dir, rev string, paths []string) ([]Violation, error) {
+// Pushed checks every file that the commits a push sends add or change: those
+// reachable from tips and not from have or remote's remote-tracking branches
+// (see gitx.NewBlobs). A file merging or rebasing brought in, or that was
+// committed with --no-verify, is checked too.
+func Pushed(dir string, tips, have []string, remote string) ([]Violation, error) {
+	blobs, err := gitx.NewBlobs(dir, tips, have, remote)
+	if err != nil {
+		return nil, err
+	}
 	var out []Violation
-	err := gitx.BlobHeads(dir, rev, paths, HeadSize, func(p string, head []byte, ok bool) error {
-		if v := Classify(p, head, ok); v != nil {
-			out = append(out, *v)
-		}
-		return nil
-	})
+	err = gitx.BlobIDHeads(dir, blobs, HeadSize, collect(&out))
 	return out, err
 }
 
-// Report formats violations for the terminal.
+func classifyBlobs(dir, rev string, paths []string) ([]Violation, error) {
+	var out []Violation
+	err := gitx.BlobHeads(dir, rev, paths, HeadSize, collect(&out))
+	return out, err
+}
+
+// collect returns a function that classifies each blob it is given and adds
+// those that must not be committed to out.
+func collect(out *[]Violation) func(p string, head []byte, ok bool) error {
+	return func(p string, head []byte, ok bool) error {
+		if v := Classify(p, head, ok); v != nil {
+			*out = append(*out, *v)
+		}
+		return nil
+	}
+}
+
+// Report formats violations in a commit for the terminal.
 func Report(vs []Violation) string {
+	return report(vs, "salt check: refusing commit: %d staged file(s) are not encrypted:\n",
+		"Unstage them (git restore --staged <path>) and encrypt with `salt seal` instead.\n")
+}
+
+// PushReport formats violations in a push for the terminal.
+func PushReport(vs []Violation) string {
+	return report(vs, "salt check: refusing push: %d file(s) in the commits being pushed are not encrypted:\n",
+		"Remove them from those commits, for example with git rebase, and encrypt with `salt seal` instead.\n")
+}
+
+// report lists the first 20 violations between lead, given how many there
+// are, and advice.
+func report(vs []Violation, lead, advice string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "salt check: refusing commit: %d staged file(s) are not encrypted:\n", len(vs))
+	fmt.Fprintf(&b, lead, len(vs))
 	for i, v := range vs {
 		if i == 20 {
 			fmt.Fprintf(&b, "  … and %d more\n", len(vs)-20)
@@ -83,6 +117,6 @@ func Report(vs []Violation) string {
 		}
 		fmt.Fprintf(&b, "  %s\n", v)
 	}
-	b.WriteString("Unstage them (git restore --staged <path>) and encrypt with `salt seal` instead.\n")
+	b.WriteString(advice)
 	return b.String()
 }

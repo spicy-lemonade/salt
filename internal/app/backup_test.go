@@ -14,6 +14,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/gitx"
 	"github.com/spicy-lemonade/salt/internal/guard"
+	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/preset"
 	"github.com/spicy-lemonade/salt/internal/prune"
 	"github.com/spicy-lemonade/salt/internal/seal"
@@ -798,5 +799,81 @@ func TestBackupInterruptedWhileMeasuringThePush(t *testing.T) {
 				t.Fatalf("calls = %v", e.git.calls)
 			}
 		})
+	}
+}
+
+// CheckPush reads the refs git is pushing, checks the commits that would
+// send, and refuses a push that sends a file that is not encrypted, or
+// whose refs it cannot read.
+func TestCheckPush(t *testing.T) {
+	e := newEnv(t)
+	zero := strings.Repeat("0", 40)
+	a, b, c := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 64)
+	refs := "refs/heads/main " + a + " refs/heads/main " + b + "\n" +
+		"refs/heads/new " + c + " refs/heads/new " + zero + "\n" +
+		"(delete) " + zero + " refs/heads/old " + b + "\n\n"
+	if err := e.app.CheckPush(e.root, "origin", strings.NewReader(refs)); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(e.git.pushedTips, []string{a, c}) || !slices.Equal(e.git.pushedHave, []string{b, b}) || e.git.pushedRemote != "origin" {
+		t.Fatalf("Pushed was given %v, %v, %q", e.git.pushedTips, e.git.pushedHave, e.git.pushedRemote)
+	}
+
+	// A push that only deletes sends nothing to check.
+	e.git.pushedTips = nil
+	if err := e.app.CheckPush(e.root, "origin", strings.NewReader("(delete) "+zero+" refs/heads/old "+b+"\n")); err != nil || e.git.pushedTips != nil {
+		t.Fatalf("deletion: %v, checked %v", err, e.git.pushedTips)
+	}
+
+	e.git.pushedFound = []check.Violation{{Path: "USER.md", Reason: "not encrypted"}}
+	if err := e.app.CheckPush(e.root, "origin", strings.NewReader(refs)); !errors.Is(err, ErrReported) ||
+		!strings.Contains(e.ui.out.String(), "salt check: refusing push: 1 file(s) in the commits being pushed are not encrypted:\n  USER.md: not encrypted\n") {
+		t.Fatalf("plaintext: %v\n%s", err, e.ui.out.String())
+	}
+	e.git.pushedFound, e.git.pushedErr = nil, errors.New("git broke")
+	if err := e.app.CheckPush(e.root, "origin", strings.NewReader(refs)); err == nil || !strings.Contains(err.Error(), "could not inspect the push, refusing it: git broke") {
+		t.Fatalf("git failing: %v", err)
+	}
+	for _, bad := range []string{
+		"refs/heads/main " + a + " refs/heads/main\n",
+		"refs/heads/main --all refs/heads/main " + b + "\n",
+		"refs/heads/main " + strings.ToUpper(a) + " refs/heads/main " + b + "\n",
+		strings.Repeat("x", 70<<10) + "\n",
+	} {
+		if err := e.app.CheckPush(e.root, "origin", strings.NewReader(bad)); err == nil || !strings.Contains(err.Error(), "could not read what git is pushing, refusing the push") {
+			t.Errorf("CheckPush(%.40q) = %v", bad, err)
+		}
+	}
+}
+
+// Both hooks are installed. A hook of the person's own is kept and named,
+// and the other is still installed. Doctor reports each.
+func TestInstallHooks(t *testing.T) {
+	e := newEnv(t)
+	hooks := filepath.Dir(e.hook)
+	installed, err := e.app.InstallHook(e.root)
+	want := []string{filepath.Join(hooks, "pre-commit"), filepath.Join(hooks, "pre-push")}
+	if err != nil || !slices.Equal(installed, want) {
+		t.Fatalf("InstallHook = %v, %v", installed, err)
+	}
+	os.Remove(want[0])
+	os.WriteFile(want[1], []byte("#!/bin/sh\nexit 0\n"), 0o755)
+	installed, err = e.app.InstallHook(e.root)
+	if !errors.Is(err, hook.ErrForeign) || !slices.Equal(installed, want[:1]) ||
+		!strings.Contains(err.Error(), "a pre-push hook already exists at "+want[1]+"; add `salt check --pre-push` to it so plaintext pushes are refused") {
+		t.Fatalf("InstallHook over a pre-push hook of the person's own = %v, %v", installed, err)
+	}
+
+	healthyRepo(t, e)
+	e.ui.out.Reset()
+	e.app.Doctor(e.root)
+	if out := e.ui.out.String(); !strings.Contains(out, "pre-push hook at "+want[1]+" does not run `salt check --pre-push`; add it so plaintext pushes are refused") {
+		t.Fatalf("doctor:\n%s", out)
+	}
+	// A repo set up before the pre-push hook is warned, not failed.
+	os.Remove(want[1])
+	e.ui.out.Reset()
+	if err := e.app.Doctor(e.root); err != nil || !strings.Contains(e.ui.out.String(), "no pre-push hook; run `salt hook install") {
+		t.Fatalf("doctor without a pre-push hook: %v\n%s", err, e.ui.out.String())
 	}
 }
