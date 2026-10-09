@@ -1283,6 +1283,33 @@ func TestSecretIn(t *testing.T) {
 		"{\n  // the keys\n  \"token\": \"\"\n}\n":    "it could not be read as YAML or JSON to check it for secrets",
 		"/* note */ {\"token\": \"\"}\n":              "it could not be read as YAML or JSON to check it for secrets",
 		"{token: \"abc\",}\n":                         "its setting token holds a secret",
+		// A comment before the object, with no ": " after it, makes the
+		// whole document one piece of text, holding settings YAML cannot
+		// see, in any document of the file. With ": " after it, the file
+		// cannot be read.
+		"// a note\n{token:\"sk-1\"}\n":              "a comment in it stops it being checked for secrets",
+		"/* a note */\n{\n  token:\"sk-1\"}\n":       "a comment in it stops it being checked for secrets",
+		"{a: 1}\n---\n// a note\n{token:\"sk-1\"}\n": "a comment in it stops it being checked for secrets",
+		"// a note\n{token: \"sk-1\"}\n":             "it could not be read as YAML or JSON to check it for secrets",
+		"\"// a note\"\n":                            "",
+		// JSON5 with no space after a name's colon is read as one name, at
+		// any depth, so a name not quoted inside {} that holds : stops the
+		// check, even where YAML means it as a name. One whose value is an
+		// object or list cannot be read at all.
+		"{token:\"sk-1\"}\n":                            "a name with no space after its colon stops it being checked for secrets",
+		"{token:'sk-1'}\n":                              "a name with no space after its colon stops it being checked for secrets",
+		"{a: 1, b:2}\n":                                 "a name with no space after its colon stops it being checked for secrets",
+		"{openai: {api_key:\"sk-1\"}}\n":                "a name with no space after its colon stops it being checked for secrets",
+		"{gateway: {auth: {token:\"sk-1\"}}}\n":         "a name with no space after its colon stops it being checked for secrets",
+		"[{token:\"sk-1\"}]\n":                          "a name with no space after its colon stops it being checked for secrets",
+		"{token:\"a: b\"}\n":                            "a name with no space after its colon stops it being checked for secrets",
+		"{\"a\": 1, // a note\n token:\"sk-1\"}\n":      "a comment in it stops it being checked for secrets",
+		"models: {llama3:8b: {ctx: 1}}\n":               "a name with no space after its colon stops it being checked for secrets",
+		"endpoints: {http://localhost:8080: 1}\n":       "a name with no space after its colon stops it being checked for secrets",
+		"{a:{token:'sk-1'}}\n":                          "it could not be read as YAML or JSON to check it for secrets",
+		"{\"a:b\": 1, 'c:d': 2, e: \"f:g\"}\n":          "",
+		"llama3:8b: {ctx: 1}\nhttps://example.com: 1\n": "",
+		"llama3:8b:\n  api_key: sk-1\n":                 "its setting api_key holds a secret",
 		// An object holding exactly the settings a ref lists names where the
 		// secret is kept, compared in lower case. One with more, less, or
 		// more than a value in a setting may hold a secret.

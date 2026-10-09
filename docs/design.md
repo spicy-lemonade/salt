@@ -855,10 +855,19 @@ code reads them all, so adding a tool means adding one file:
   holds `/*`, so a YAML name such as `src/*` keeps the file out unless it is
   quoted. A quoted name, such as the `"//"` some JSON files use for a
   note, `"src/*"` or a URL, is a name, not a comment, and is checked like any
-  other. A comment after a value
-  becomes part of the value, so the setting holds text. Remove comments from
-  such a file to be sure it is checked as written and backed up. Salt never
-  changes the file to remove the secret.
+  other. A comment before the opening brace keeps the file out too, either
+  because YAML cannot read what follows or, when no `: ` follows it, because
+  YAML reads the whole file as one piece of text. A comment after a value
+  becomes part of the value, so the setting holds text. JSON5 also allows a
+  name and its value with no space between them, as in `{apiKey:"x"}`, which
+  YAML reads as one name with no value. So a name that is not quoted and
+  holds `:`, inside braces, keeps the file out, and salt says a name has no
+  space after its colon. This includes YAML that means such a name, as in
+  `{llama3:8b: 1}`, which salt cannot tell apart. A quoted name such as
+  `"a:b"`, and a YAML name outside braces such as `llama3:8b`, are names.
+  Remove comments from such a file, and put a space after each colon, to be
+  sure it is checked as written and backed up. Salt never changes the file
+  to remove the secret.
 - `refs` in a secrets rule lists the ways the tool names where a secret is
   kept in an object, each as the exact names of that object's settings in
   lower case, never patterns, such as
@@ -1197,8 +1206,9 @@ OpenClaw SecretRef, such as
 `{"source": "env", "provider": "default", "id": "NAME"}`, names where the
 key is. Neither counts as a secret, so a file holding only such keys is
 backed up. OpenClaw reads its settings as JSON5, but writes them as plain
-JSON, dropping any comment. Most comments keep the file out of the backup,
-as `secrets` above explains, so remove comments to be sure it is backed up.
+JSON, dropping any comment. Most comments, and a name with no space after
+its colon, keep the file out of the backup, as `secrets` above explains, so
+remove comments and keep the space to be sure it is backed up.
 After restoring, set up OpenClaw's logins and keys again, as on a new
 machine.
 
