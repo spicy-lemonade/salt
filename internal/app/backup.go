@@ -95,6 +95,11 @@ func (a *App) Backup(o BackupOptions) error {
 	if err != nil {
 		return err
 	}
+	// Such a file is no less there than before, so it is not dropped from
+	// what was found, and is not named as missing.
+	for _, rel := range sealed.Changed {
+		a.UI.Printf("salt: left %s out of the backup because it changed after salt checked it for secrets. The next backup checks it again\n", rel)
+	}
 	found.Drop(sealed.Gone)
 	a.warnMissing(last, o.Presets, found)
 	if err := found.CheckGone(); err != nil {

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -160,6 +162,7 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 		for _, s := range p.Secrets {
 			w.secrets = append(w.secrets, Secret{Files: s.Files, Keys: slices.Concat(defaultSecretKeys, s.Keys), Refs: s.Refs})
 		}
+		w.never = append(w.never, p.Never...)
 		var looked []string
 		for _, x := range p.Paths {
 			if where, ok := e.expand(x.From); ok {
@@ -349,7 +352,9 @@ type walker struct {
 	// secrets holds every preset's secrets rules, each with
 	// defaultSecretKeys added to its keys.
 	secrets []Secret
-	show    func(string) string
+	// never holds every preset's Never patterns.
+	never []string
+	show  func(string) string
 }
 
 // addDatabase adds db, which the preset p names, to what is backed up. A
@@ -395,7 +400,9 @@ func (w *walker) walk(s *spot, by []*Preset) (gone bool, err error) {
 		if listedHook != nil {
 			listedHook(walked)
 		}
-		if _, ok := w.spots[walked]; ok && walked != real {
+		// What any preset never backs up, such as a file of secrets, is left
+		// out wherever it is, the place itself included.
+		if _, ok := w.spots[walked]; (ok && walked != real) || matchAny(w.never, d.Name()) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -449,12 +456,27 @@ func (w *walker) walk(s *spot, by []*Preset) (gone bool, err error) {
 			}
 			return false
 		}
-		var number string
+		// A file a secrets rule names is read once, every rule checks what
+		// was read, and seal backs it up only if it reads the same.
+		var number, checked string
+		var content []byte
 		for _, sec := range w.secrets {
 			if !slices.ContainsFunc(sec.Files, matches) {
 				continue
 			}
-			why, secret, num := secretIn(walked, sec)
+			if checked == "" {
+				var why string
+				if content, why, err = readToCheck(walked); err != nil {
+					return skipGone(walked, err)
+				}
+				if why != "" {
+					w.f.LeftOut = append(w.f.LeftOut, LeftOut{Path: at, Why: why})
+					return nil
+				}
+				sum := sha256.Sum256(content)
+				checked = hex.EncodeToString(sum[:])
+			}
+			why, secret, num := secretsIn(content, sec)
 			if why != "" {
 				w.f.LeftOut = append(w.f.LeftOut, LeftOut{Path: at, Why: why, Secret: secret})
 				return nil
@@ -488,7 +510,7 @@ func (w *walker) walk(s *spot, by []*Preset) (gone bool, err error) {
 			return nil
 		}
 		// Seal reads its permissions and date as it reads it.
-		w.f.Files = append(w.f.Files, seal.Extra{Rel: to, Path: walked, Live: true})
+		w.f.Files = append(w.f.Files, seal.Extra{Rel: to, Path: walked, Live: true, SHA256: checked})
 		added()
 		return nil
 	})
@@ -510,28 +532,35 @@ func isSidecar(p string) (bool, error) {
 	return false, nil
 }
 
-// secretIn says why the file at p must be left out: one of the settings
-// sec's keys name holds a value, and secret is true, or the file could not
-// be read as YAML or JSON to check. It returns "" when the file can be
-// backed up, or when it no longer exists, which the caller then finds and
-// skips. number is the first setting sec's keys name that holds a number
-// and no text, which is not taken for a secret.
-func secretIn(p string, sec Secret) (why string, secret bool, number string) {
+// readToCheck reads the file at p to check it for secrets. why says why it
+// must be left out instead: it could not be read, or is too large to check.
+// A file that no longer exists is an fs.ErrNotExist error, for the caller
+// to skip.
+func readToCheck(p string) (b []byte, why string, err error) {
 	file, _, err := regular.Open(os.OpenFile, p)
 	if errors.Is(err, fs.ErrNotExist) {
-		return "", false, ""
+		return nil, "", err
 	}
 	if err != nil {
-		return fmt.Sprintf("it could not be read to check it for secrets (%v)", err), false, ""
+		return nil, fmt.Sprintf("it could not be read to check it for secrets (%v)", err), nil
 	}
 	defer file.Close()
-	b, err := io.ReadAll(io.LimitReader(file, maxSecretsFile+1))
+	b, err = io.ReadAll(io.LimitReader(file, maxSecretsFile+1))
 	if err != nil {
-		return fmt.Sprintf("it could not be read to check it for secrets (%v)", err), false, ""
+		return nil, fmt.Sprintf("it could not be read to check it for secrets (%v)", err), nil
 	}
 	if len(b) > maxSecretsFile {
-		return "it is too large to check for secrets", false, ""
+		return nil, "it is too large to check for secrets", nil
 	}
+	return b, "", nil
+}
+
+// secretsIn says why a file holding b must be left out: one of the settings
+// sec's keys name holds a value, and secret is true, or b could not be read
+// as YAML or JSON to check. It returns "" when the file can be backed up.
+// number is the first setting sec's keys name that holds a number and no
+// text, which is not taken for a secret.
+func secretsIn(b []byte, sec Secret) (why string, secret bool, number string) {
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	for {
 		var doc yaml.Node

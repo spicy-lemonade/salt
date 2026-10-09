@@ -74,6 +74,11 @@ type Extra struct {
 	// deleted, or that is no longer a file, before it is read is left out of
 	// the backup and listed in Result.Gone, instead of failing the seal.
 	Live bool
+	// SHA256, if set, is the hex SHA-256 the contents must have, such as
+	// that of the contents checked for secrets. A file read with other
+	// contents, changed since, is left out of the backup and listed in
+	// Result.Changed, and whatever was written for it is removed.
+	SHA256 string
 }
 
 // ErrDuplicatePath means two files would be backed up at the same path, or a
@@ -100,6 +105,7 @@ type Result struct {
 	Removed   []string  // repo paths deleted as stale or unmanaged
 	Skipped   []string  // source paths that are not files or symlinks
 	Gone      []string  // backup paths of live extra files deleted, or no longer files, before they were read
+	Changed   []string  // backup paths of extra files whose contents were not Extra.SHA256
 	Written   []Written // files that wrote new ciphertext, in path order
 	IndexNew  bool      // whether index.age was rewritten
 }
@@ -117,7 +123,8 @@ type item struct {
 	modTime time.Time
 	symlink string
 	isLink  bool
-	live    bool // see Extra.Live
+	live    bool   // see Extra.Live
+	sha256  string // see Extra.SHA256
 }
 
 // entriesHook lets tests change the entries before Seal checks them,
@@ -186,7 +193,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 
 	entries := make([]Entry, len(items))
 	newCache := make([]cacheEntry, len(items))
-	gone := make([]bool, len(items))
+	left := make([]leftOut, len(items))
 	var encrypted, reused atomic.Int64
 	written := make([]int64, len(items))
 	done := make([]bool, len(items)) // regular files fully sealed
@@ -210,12 +217,13 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			}
 			switch {
 			case errors.Is(err, regular.ErrNotRegular):
-				gone[i] = true
+				left[i] = gone
 			case errors.Is(err, fs.ErrNotExist):
-				_, statErr := os.Lstat(it.abs)
-				gone[i] = errors.Is(statErr, fs.ErrNotExist)
+				if _, statErr := os.Lstat(it.abs); errors.Is(statErr, fs.ErrNotExist) {
+					left[i] = gone
+				}
 			}
-			return gone[i]
+			return left[i] == gone
 		}
 		// A live file's permissions and date are read now, just before its
 		// contents, as the tool may have changed it since it was found. One
@@ -229,7 +237,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 				return err
 			}
 			if !fi.Mode().IsRegular() {
-				gone[i] = true
+				left[i] = gone
 				return nil
 			}
 			it.mode, it.modTime = fi.Mode(), fi.ModTime()
@@ -282,6 +290,11 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		if err != nil {
 			return fmt.Errorf("%s: %w", it.rel, err)
 		}
+		// What it wrote is not in the index, so removeStale removes it.
+		if it.sha256 != "" && ce.SHA256 != it.sha256 {
+			left[i] = changed
+			return nil
+		}
 		// A changed file whose chunks were all sealed before, such as one put
 		// back as it was, wrote nothing new but is not unchanged.
 		if newBytes == 0 && cached && ce.SHA256 == prev.SHA256 {
@@ -324,7 +337,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			res.Written = append(res.Written, Written{Path: items[i].rel, Bytes: n})
 		}
 	}
-	items, entries, newCache, res.Gone = dropGone(items, entries, newCache, gone)
+	items, entries, newCache, res.Gone, res.Changed = dropLeftOut(items, entries, newCache, left)
 
 	next := &cache{Key: c.Key, Files: map[string]cacheEntry{}}
 	keep := map[string]bool{}
@@ -381,20 +394,30 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	return res, next.save(cPath)
 }
 
-// dropGone removes the items marked gone, with their entries and cache
-// entries, keeping the rest in order, and returns the paths it removed.
-func dropGone(items []item, entries []Entry, newCache []cacheEntry, gone []bool) ([]item, []Entry, []cacheEntry, []string) {
-	var paths []string
+// leftOut is why a file was left out of the backup, if it was.
+type leftOut uint8
+
+const (
+	kept    leftOut = iota
+	gone            // see Result.Gone
+	changed         // see Result.Changed
+)
+
+// dropLeftOut removes the items left out, with their entries and cache
+// entries, keeping the rest in order, and returns the paths of those gone
+// and of those changed.
+func dropLeftOut(items []item, entries []Entry, newCache []cacheEntry, left []leftOut) ([]item, []Entry, []cacheEntry, []string, []string) {
+	var paths [3][]string
 	n := 0
 	for i := range items {
-		if gone[i] {
-			paths = append(paths, items[i].rel)
+		if left[i] != kept {
+			paths[left[i]] = append(paths[left[i]], items[i].rel)
 			continue
 		}
 		items[n], entries[n], newCache[n] = items[i], entries[i], newCache[i]
 		n++
 	}
-	return items[:n], entries[:n], newCache[:n], paths
+	return items[:n], entries[:n], newCache[:n], paths[gone], paths[changed]
 }
 
 // encryptFile seals the file at abs into obj, in parts of limit compressed
@@ -641,7 +664,7 @@ func addExtra(items []item, extra []Extra, foldCase bool) ([]item, error) {
 			return nil, fmt.Errorf("%w: %s", ErrDuplicatePath, rel)
 		}
 		t.add(rel)
-		items = append(items, item{rel: rel, abs: x.Path, mode: x.Mode, modTime: x.ModTime, live: x.Live})
+		items = append(items, item{rel: rel, abs: x.Path, mode: x.Mode, modTime: x.ModTime, live: x.Live, sha256: x.SHA256})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].rel < items[j].rel })
 	return items, nil

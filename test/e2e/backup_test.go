@@ -123,6 +123,31 @@ func TestBackupMnemosyne(t *testing.T) {
 	assertDB(t, e, sqlite, filepath.Join(dest, "mnemosyne-data/mnemosyne.db"), 4)
 }
 
+// A secret written to a settings file after salt checked it, here while the
+// database is copied, is not backed up: the file is left out this time, and
+// the next backup finds the secret and leaves it out as usual.
+func TestBackupLeavesOutAFileChangedAfterItsCheck(t *testing.T) {
+	sqlite := realSQLite(t)
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	hermes := filepath.Join(e.home, ".hermes")
+	makeDB(t, e, sqlite, filepath.Join(hermes, "mnemosyne", "data", "mnemosyne.db"), 1)
+	conf := filepath.Join(hermes, "mnemosyne", "config.yaml")
+	write(t, conf, "vec_weight: 0.5\n")
+	stub := e.stubPath(t, "sqlite3", fmt.Sprintf("printf 'llm_api_key: sk-late\\n' >> %q\nexec %q \"$@\"", conf, sqlite))
+	out := e.with(stub).must(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	if out != "salt: left hermes/mnemosyne/config.yaml out of the backup because it changed after salt checked it for secrets. The next backup checks it again\n" {
+		t.Fatalf("backup printed:\n%s", out)
+	}
+	if _, files := restoredFiles(t, e, b); !slices.Equal(files, []string{"hermes/mnemosyne/data/mnemosyne.db"}) {
+		t.Fatalf("restored %v", files)
+	}
+	out = e.must(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	if !strings.Contains(out, "config.yaml out of the backup because its setting llm_api_key holds a secret") {
+		t.Fatalf("next backup printed:\n%s", out)
+	}
+}
+
 // salt backup --preset hermes backs up Hermes's memory, persona, settings,
 // skills and databases, in Hermes and each profile, while state.db is in use
 // with its newest rows only in the -wal file. It leaves out credentials,
