@@ -39,7 +39,7 @@ func TestOpenErrors(t *testing.T) {
 		{"missing", "", nil, "not a salt repository"},
 		{"bad json", "{", ptr(good), "format.json"},
 		{"future version", `{"version": 99}`, ptr(good), "upgrade salt"},
-		{"no recipients file", `{"version": 1}`, nil, "recipients.txt"},
+		{"no recipients file", `{"version": 1}`, nil, RecipientsFile + " is missing"},
 		{"bad recipient", `{"version": 1}`, ptr("# keys\n\n age1notakey\n"), "recipients.txt line 3 is not an age public key"},
 		{"only comments", `{"version": 1}`, ptr("# nothing\n\n"), "no recipients"},
 	}

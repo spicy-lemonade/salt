@@ -14,10 +14,6 @@ import (
 // the encrypted index instead), so a symlink there was added by someone else.
 var managed = []string{repo.Dir, repo.IndexFile, repo.ObjectsDir, repo.FilesDir}
 
-// ErrForeignSymlink means the backup repo contains a symlink salt did not
-// create.
-var ErrForeignSymlink = repo.ErrForeignSymlink
-
 // CheckNoSymlinks refuses a repo with any symlink where salt keeps its data,
 // or at any of the extra repo paths given. os.Root already stops links that
 // lead outside the repo; this also stops links that point back inside it, for

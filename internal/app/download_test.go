@@ -286,8 +286,8 @@ func TestRestoreFromURLErrorsNameTheURL(t *testing.T) {
 		return os.Remove(filepath.Join(dir, repo.RecipientsFile))
 	}
 	err = e.app.Restore(RestoreOptions{Repo: backupURL, To: filepath.Join(t.TempDir(), "r")})
-	if err == nil || !strings.Contains(err.Error(), " "+repo.RecipientsFile+": ") || strings.Contains(err.Error(), "salt-download-") || !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("Restore: %v, want %s missing", err, repo.RecipientsFile)
+	if want := repo.RecipientsFile + " is missing"; err == nil || err.Error() != want || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Restore: %v, want %q", err, want)
 	}
 	noDownloadsLeft(t, e)
 
@@ -306,8 +306,8 @@ func TestRestoreFromURLErrorsNameTheURL(t *testing.T) {
 	}
 	e.app.Store = &keys.MemStore{}
 	err = e.app.Restore(RestoreOptions{Repo: backupURL, To: filepath.Join(t.TempDir(), "r")})
-	if err == nil || !strings.HasPrefix(err.Error(), "reading "+repo.KeyFile+": ") || strings.Contains(err.Error(), "salt-download-") || !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("Restore: %v, want %s missing", err, repo.KeyFile)
+	if want := repo.KeyFile + " is missing"; err == nil || err.Error() != want || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Restore: %v, want %q", err, want)
 	}
 	noDownloadsLeft(t, e)
 }

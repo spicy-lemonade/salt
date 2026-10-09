@@ -18,7 +18,6 @@ import (
 	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
-	"github.com/spicy-lemonade/salt/internal/seal"
 )
 
 func TestTerminal(t *testing.T) {
@@ -223,7 +222,7 @@ func TestInitRefusesForeignSymlinks(t *testing.T) {
 					return "", io.EOF
 				}
 				err := e.app.Init(opts(e))
-				if !errors.Is(err, seal.ErrForeignSymlink) || !strings.Contains(err.Error(), "at "+tt.link) {
+				if !errors.Is(err, repo.ErrForeignSymlink) || !strings.Contains(err.Error(), "at "+tt.link) {
 					t.Fatalf("Init error = %v, want a foreign symlink at %s", err, tt.link)
 				}
 

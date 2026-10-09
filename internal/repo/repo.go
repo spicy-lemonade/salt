@@ -76,6 +76,13 @@ type Repo struct {
 	RecipientStrings []string
 }
 
+// missingError says salt's own file at a repo path is not there. It is
+// fs.ErrNotExist.
+type missingError string
+
+func (e missingError) Error() string        { return string(e) + " is missing" }
+func (e missingError) Is(target error) bool { return target == fs.ErrNotExist }
+
 // ErrForeignSymlink means the backup repo contains a symlink salt did not
 // create.
 var ErrForeignSymlink = errors.New("backup repo contains a symlink salt did not create")
@@ -134,32 +141,45 @@ func Open(root string) (*Repo, error) {
 // refuses a link that leads outside the repo but follows one that stays
 // inside it, so ReadSaltFile refuses a symlink anywhere on the way, and
 // anything at name that is not a regular file. It reads at most maxSaltFile
-// bytes.
+// bytes. A missing file is fs.ErrNotExist.
 func ReadSaltFile(root, name string) ([]byte, error) {
 	rt, err := os.OpenRoot(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, missingError(name)
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer rt.Close()
+	var fi fs.FileInfo
 	parts := strings.Split(name, "/")
 	for i := range parts {
 		p := strings.Join(parts[:i+1], "/")
-		fi, err := rt.Lstat(filepath.FromSlash(p))
+		fi, err = rt.Lstat(filepath.FromSlash(p))
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, missingError(name)
+		}
 		if err != nil {
 			return nil, err
 		}
 		if fi.Mode()&fs.ModeSymlink != 0 {
 			return nil, ForeignSymlink(p)
 		}
-		if p == name && !fi.Mode().IsRegular() {
-			return nil, fmt.Errorf("%s is not a regular file. Check the repo's recent commits before backing up or restoring", name)
-		}
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file. Check the repo's recent commits before backing up or restoring", name)
 	}
 	f, err := rt.Open(filepath.FromSlash(name))
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	// The file checked above could have been swapped before it was opened.
+	if opened, err := f.Stat(); err != nil {
+		return nil, err
+	} else if !os.SameFile(fi, opened) {
+		return nil, fmt.Errorf("%s was replaced while salt opened it. Check the repo's recent commits before backing up or restoring", name)
+	}
 	b, err := io.ReadAll(io.LimitReader(f, maxSaltFile+1))
 	if err != nil {
 		return nil, err
