@@ -21,14 +21,23 @@ import (
 	"github.com/spicy-lemonade/salt/internal/repo"
 )
 
+// fakeTerminal makes isTerminal report on for every file until the test
+// ends, so a test behaves the same whether or not it runs in a terminal.
+func fakeTerminal(t *testing.T, on bool) {
+	orig := isTerminal
+	isTerminal = func(int) bool { return on }
+	t.Cleanup(func() { isTerminal = orig })
+}
+
 func TestTerminal(t *testing.T) {
-	var out bytes.Buffer
-	term := &Terminal{in: bufio.NewReader(strings.NewReader("first\r\nlast")), out: &out}
+	fakeTerminal(t, false)
+	var out, raw bytes.Buffer
+	term := &Terminal{in: bufio.NewReader(strings.NewReader("first\r\nlast")), out: &out, raw: &raw}
 	term.Printf("hi %d\n", 1)
 	if s, err := term.ReadLine("? "); err != nil || s != "first" {
 		t.Fatalf("ReadLine = %q, %v", s, err)
 	}
-	// stdin is not a terminal in tests, so ReadSecret reads a plain line.
+	// stdin is not a terminal, so ReadSecret reads a plain line.
 	if s, err := term.ReadSecret("pw: "); err != nil || s != "last" {
 		t.Fatalf("ReadSecret = %q, %v", s, err)
 	}
@@ -36,6 +45,9 @@ func TestTerminal(t *testing.T) {
 		t.Fatalf("ReadLine at EOF: %v", err)
 	}
 	term.Clear() // stderr is not a terminal: nothing is printed
+	if raw.Len() != 0 {
+		t.Fatalf("Clear printed %q", raw.String())
+	}
 	if term.Interactive() {
 		t.Error("tests should not look interactive")
 	}
@@ -50,8 +62,8 @@ func TestTerminal(t *testing.T) {
 // A path or program output holding control characters reaches the terminal
 // escaped, through Printf and prompts alike.
 func TestTerminalEscapes(t *testing.T) {
-	var out bytes.Buffer
-	var raw bytes.Buffer
+	fakeTerminal(t, false)
+	var out, raw bytes.Buffer
 	term := &Terminal{in: bufio.NewReader(strings.NewReader("x\n")), out: escape.Writer(&out), raw: &raw}
 	term.Printf("bad %s\n", "a\x1b[2Jb")
 	if _, err := term.ReadLine("open \x1b]0;title\a? "); err != nil {
@@ -66,9 +78,7 @@ func TestTerminalEscapes(t *testing.T) {
 	}
 
 	// On a terminal, Clear's own codes reach it unescaped, and only through raw.
-	orig := isTerminal
-	isTerminal = func(int) bool { return true }
-	t.Cleanup(func() { isTerminal = orig })
+	fakeTerminal(t, true)
 	before := out.String()
 	term.Clear()
 	if raw.String() != "\033[H\033[2J\033[3J" || out.String() != before {
