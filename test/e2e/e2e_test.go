@@ -648,19 +648,21 @@ func TestPushedControlCodesAreEscaped(t *testing.T) {
 	dest := filepath.Join(e.home, "out"+code)
 	write(t, filepath.Join(dest, "keep.md"), "keep\n")
 
+	// verify only lists a file outside the index, so it passes.
 	for _, tt := range []struct {
-		args []string
-		want string
+		args  []string
+		want  string
+		fails bool
 	}{
-		{[]string{"doctor", mine}, "eol is set to " + shown},
-		{[]string{"doctor", mine}, `"leak` + shown + `.md"`},
-		{[]string{"doctor", mine}, fakeShown},
-		{[]string{"verify", mine}, "  ! " + fakeShown + " is not in the index"},
-		{[]string{"restore", mine, "--to", dest}, "out" + shown + " already exists"},
+		{[]string{"doctor", mine}, "eol is set to " + shown, true},
+		{[]string{"doctor", mine}, `"leak` + shown + `.md"`, true},
+		{[]string{"doctor", mine}, fakeShown, true},
+		{[]string{"verify", mine}, "  ! " + fakeShown + " is not in the index", false},
+		{[]string{"restore", mine, "--to", dest}, "out" + shown + " already exists", true},
 	} {
-		out, _ := e.run(mine, "salt", tt.args...)
-		if !strings.Contains(out, tt.want) || strings.Contains(out, "\x1b") || strings.Contains(out, fake) {
-			t.Errorf("salt %v: want %q, no raw ESC and no faked line:\n%q", tt.args, tt.want, out)
+		out, exit := e.run(mine, "salt", tt.args...)
+		if (exit != 0) != tt.fails || !strings.Contains(out, tt.want) || strings.Contains(out, "\x1b") || strings.Contains(out, fake) {
+			t.Errorf("salt %v: exit %d, want %q, no raw ESC and no faked line:\n%q", tt.args, exit, tt.want, out)
 		}
 	}
 }

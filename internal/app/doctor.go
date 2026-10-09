@@ -280,7 +280,7 @@ func (a *App) doctorTree(r *report, root string) {
 			list = &stray
 		}
 		if !d.Type().IsRegular() {
-			*list = append(*list, escape.Name(rel))
+			*list = append(*list, rel)
 			return nil
 		}
 		head, err := readHead(rt, rel)
@@ -288,7 +288,7 @@ func (a *App) doctorTree(r *report, root string) {
 			return err
 		}
 		if check.Classify(rel, head, true) != nil {
-			*list = append(*list, escape.Name(rel))
+			*list = append(*list, rel)
 		}
 		if fi, err := d.Info(); err == nil && fi.Size() > repo.GitHubFileLimit {
 			big = append(big, fmt.Sprintf("%s (%d MB)", escape.Name(rel), fi.Size()>>20))
@@ -296,25 +296,40 @@ func (a *App) doctorTree(r *report, root string) {
 		return nil
 	})
 	if err != nil {
+		// The path in the error can be a name someone pushed.
+		var pathErr *fs.PathError
+		if errors.As(err, &pathErr) {
+			err = fmt.Errorf("%s %s: %w", pathErr.Op, escape.Name(pathErr.Path), pathErr.Err)
+		}
 		r.add(warn, "could not scan the working tree: %v", err)
 		return
 	}
 	if len(plain) > 0 {
 		slices.Sort(plain)
 		r.add(fail, "%d unencrypted file(s) in the working tree, e.g. %s; `salt seal --prune` removes them",
-			len(plain), strings.Join(plain[:min(3, len(plain))], ", "))
+			len(plain), examples(plain))
 	}
 	if len(stray) > 0 {
 		slices.Sort(stray)
 		r.add(fail, "%d unexpected file(s) in %s, e.g. %s; `salt seal --prune` leaves %s alone, so check the repo's recent commits and remove them by hand",
-			len(stray), repo.Dir, strings.Join(stray[:min(3, len(stray))], ", "), repo.Dir)
+			len(stray), repo.Dir, examples(stray), repo.Dir)
 	}
 	if len(plain)+len(stray) == 0 {
 		r.add(ok, "working tree contains only encrypted files and public salt settings")
 	}
 	if len(big) > 0 {
-		r.add(warn, "file(s) over GitHub's 100 MB limit, so the push will fail: %s", strings.Join(big, ", "))
+		r.add(warn, "%d file(s) over GitHub's 100 MB limit, so the push will fail, e.g. %s", len(big), examples(big))
 	}
+}
+
+// examples names the first three of names, which can come from the repo, so
+// each goes through escape.Name. Text escape.Name returned is unchanged by it.
+func examples(names []string) string {
+	shown := make([]string, min(3, len(names)))
+	for i := range shown {
+		shown[i] = escape.Name(names[i])
+	}
+	return strings.Join(shown, ", ")
 }
 
 // readHead reads the start of the file rel in rt, refusing anything that is

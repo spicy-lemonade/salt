@@ -628,6 +628,41 @@ func TestDoctorTreeCannotOpen(t *testing.T) {
 	}
 }
 
+// A name someone pushed is shown quoted in doctor's examples, which are
+// sorted by the names themselves, and in an error from scanning the tree.
+func TestDoctorTreeQuotesNames(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads unreadable files")
+	}
+	e := newEnv(t)
+	for _, name := range []string{"b.md", "x\n✓ fine.md", "a.md", "c.md"} {
+		os.WriteFile(filepath.Join(e.root, name), []byte("plaintext"), 0o644)
+	}
+	r := &report{ui: e.ui}
+	e.app.doctorTree(r, e.root)
+	if want := "4 unencrypted file(s) in the working tree, e.g. a.md, b.md, c.md;"; !strings.Contains(e.ui.out.String(), want) {
+		t.Fatalf("want %q:\n%s", want, e.ui.out.String())
+	}
+
+	locked := filepath.Join(e.root, "a\n✓ fine.age")
+	os.WriteFile(locked, []byte("age-encryption.org/v1\n"), 0o000)
+	defer os.Chmod(locked, 0o644)
+	e.ui.out.Reset()
+	e.app.doctorTree(&report{ui: e.ui}, e.root)
+	if out := e.ui.out.String(); !strings.Contains(out, `"a\n✓ fine.age": permission denied`) || strings.Contains(out, "\n✓ fine") {
+		t.Fatalf("scan error:\n%s", out)
+	}
+}
+
+func TestExamplesNamesThree(t *testing.T) {
+	if got := examples([]string{"a", "b\x1b", "c", "d"}); got != `a, "b\x1b", c` {
+		t.Errorf("examples = %s", got)
+	}
+	if got := examples(nil); got != "" {
+		t.Errorf("examples(nil) = %q", got)
+	}
+}
+
 func TestInstallHookError(t *testing.T) {
 	e := newEnv(t)
 	e.app.Git = &failingGit{}
