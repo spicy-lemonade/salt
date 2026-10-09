@@ -28,6 +28,9 @@ func TestParseURL(t *testing.T) {
 		"postgresql://agent:pa?ss@host/memory": {"postgresql://agent@host/memory", "pa?ss", "memory"},
 		"postgresql://agent:pa?ss@host":        {"postgresql://agent@host", "pa?ss", ""},
 		"postgresql://u?x@host/memory":         {"postgresql://u?x@host/memory", "", "memory"},
+		// As in libpq, a "+" is not a space.
+		"postgresql://h/a+b?password=p+w%2Bx&sslmode=require": {"postgresql://h/a+b?sslmode=require", "p+w+x", "a+b"},
+		"postgresql://h?dbname=a+b%20c":                       {"postgresql://h?dbname=a+b%20c", "", "a+b c"},
 		// A setting after the host may hold "@".
 		"postgresql://u:p@h?dbname=m&user=a@b": {"postgresql://u@h?dbname=m&user=a@b", "p", "m"},
 		"postgresql://u:p@h/m?user=a@b":        {"postgresql://u@h/m?user=a@b", "p", "m"},
@@ -160,6 +163,56 @@ func TestNewPostgresConn(t *testing.T) {
 	_, err = NewPostgresConn("mysql://agent:s3cret@localhost/memory", "the preset's connection")
 	if !errors.Is(err, errNotPostgres) || !strings.HasPrefix(err.Error(), "the preset's connection is not a Postgres connection") || strings.Contains(err.Error(), "s3cret") {
 		t.Fatalf("not Postgres: %v", err)
+	}
+}
+
+// A connection that gives a secret other than its password is refused before
+// anything runs, naming the setting but never its value, however the
+// connection is given.
+func TestNewPostgresRefusesSecrets(t *testing.T) {
+	t.Setenv("PGDATABASE", "")
+	for in, key := range map[string]string{
+		"postgresql://agent@localhost/memory?sslmode=require&sslpassword=s3cret": "sslpassword",
+		"postgresql://agent:pw@localhost/memory?ssl%70assword=s3cret":            "sslpassword",
+		"postgresql://localhost/memory?oauth_client_secret=s3cret":               "oauth_client_secret",
+		"host=localhost dbname=memory sslpassword=s3cret":                        "sslpassword",
+		`host=localhost sslpassword='it\'s s3cret' dbname=memory`:                "sslpassword",
+		"dbname=memory oauth_client_secret = s3cret":                             "oauth_client_secret",
+		"postgresql://localhost/memory?scram_client_key=s3cret":                  "scram_client_key",
+		"dbname=memory scram_server_key=s3cret":                                  "scram_server_key",
+		// Refused even when the connection is wrong in another way.
+		"host=localhost sslpassword=s3cret": "sslpassword",
+	} {
+		t.Setenv("SALT_TEST_DB", in)
+		for where, newDB := range map[string]func() (Database, error){
+			"the connection given to --postgres":                       func() (Database, error) { return NewPostgres(in) },
+			"the connection in SALT_TEST_DB, given to --postgres-env,": func() (Database, error) { return NewPostgresEnv("SALT_TEST_DB") },
+			"the connection in DB_URL,":                                func() (Database, error) { return NewPostgresConn(in, "the connection in DB_URL,") },
+		} {
+			db, err := newDB()
+			var got secretKeyError
+			if db != nil || !errors.As(err, &got) || string(got) != key || err.Error() != where+" "+secretKeyError(key).Error() {
+				t.Errorf("%q: %v, %v; want %s refused", in, db, err, key)
+			}
+			if err != nil && (strings.Contains(err.Error(), "s3cret") || strings.Contains(err.Error(), "pw")) {
+				t.Errorf("%q: the error shows the secret: %v", in, err)
+			}
+		}
+	}
+	// A connection that is also written wrongly gets that error, which is
+	// just as safe.
+	if _, err := NewPostgres("sslpassword=s3cret dbname"); !errors.Is(err, errNotPostgres) || strings.Contains(err.Error(), "s3cret") {
+		t.Errorf("written wrongly: %v", err)
+	}
+	// A value that only holds the setting's name, and a service, are kept.
+	for in, want := range map[string]string{
+		"dbname=memory application_name='sslpassword=x'":     "dbname='memory' application_name='sslpassword=x'",
+		"postgresql://h/memory?application_name=sslpassword": "postgresql://h/memory?application_name=sslpassword",
+		"service=agent dbname=memory":                        "service='agent' dbname='memory'",
+	} {
+		if db, err := NewPostgres(in); err != nil || db.String() != want {
+			t.Errorf("%q: %v, %v; want %q", in, db, err, want)
+		}
 	}
 }
 

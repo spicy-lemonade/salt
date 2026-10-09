@@ -31,6 +31,22 @@ var (
 	errBadName     = errors.New("names a database whose name cannot be used as a file name")
 )
 
+// secretKeys are the libpq settings, other than password, that hold a
+// secret. libpq reads them only from the connection or a service file, never
+// from the environment, so salt cannot keep them out of pg_dump's command
+// line and refuses a connection that gives one. When libpq adds settings,
+// check PQconninfoOptions in libpq's fe-connect.c for new ones marked "*"
+// (a password) or "D" (hidden), and add those that hold a secret.
+var secretKeys = []string{"sslpassword", "oauth_client_secret", "scram_client_key", "scram_server_key"}
+
+// secretKeyError is a connection that gives one of secretKeys. It holds only
+// the key, so its message never repeats the secret.
+type secretKeyError string
+
+func (k secretKeyError) Error() string {
+	return "gives " + string(k) + ", which would show in the process list. Put it in a libpq service file, such as ~/.pg_service.conf, and name the service with service=NAME"
+}
+
 // keepalives are the libpq settings that make pg_dump notice a connection
 // that dies part way through a dump, such as when the server's container
 // restarts or the machine sleeps, after about a minute without a reply.
@@ -86,6 +102,7 @@ func newPgDump(help, version string) pgDump {
 // ("host=localhost dbname=memory"). A driver in the URL's scheme, such as
 // postgresql+psycopg://, is dropped, since pg_dump has its own. Without a
 // password in conn, pg_dump looks in ~/.pgpass, PGPASSFILE and PGPASSWORD.
+// A conn that gives another secret (see secretKeys) is refused.
 func NewPostgres(conn string) (Database, error) {
 	return NewPostgresConn(conn, "the connection given to --postgres")
 }
@@ -118,9 +135,12 @@ func newPostgres(flag, where, s string) (Database, error) {
 		// As in libpq, which pg_dump uses.
 		p.dbname = os.Getenv("PGDATABASE")
 	}
+	secret := slices.IndexFunc(p.keys, func(k string) bool { return slices.Contains(secretKeys, k) })
 	switch {
 	case err != nil:
 		// parse's error says what is wrong.
+	case secret >= 0:
+		err = secretKeyError(p.keys[secret])
 	case p.dbname == "":
 		err = errNoDatabase
 	case p.dbname == "." || p.dbname == ".." || strings.ContainsAny(p.dbname, "/\\") || strings.ContainsFunc(p.dbname, unicode.IsControl):
@@ -227,7 +247,8 @@ func (p *Postgres) dumpConn(libpq int) string {
 }
 
 // parseURL reads a URL in libpq's form. Everything but the password is kept
-// as written, so pg_dump reads the same connection.
+// as written, so pg_dump reads the same connection. As in libpq, only %XX is
+// decoded, and a "+" stays a "+".
 //
 // As in libpq, the user and password end at the first "@" before any "/",
 // so a password may hold "?". A later "@" before the "/", with no "?" in
@@ -269,8 +290,8 @@ func parseURL(s string) (p Postgres, err error) {
 	var kept []string
 	for _, kv := range strings.Split(query, "&") {
 		k, v, _ := strings.Cut(kv, "=")
-		key, err1 := url.QueryUnescape(k)
-		value, err2 := url.QueryUnescape(v)
+		key, err1 := url.PathUnescape(k)
+		value, err2 := url.PathUnescape(v)
 		switch {
 		case kv == "":
 			continue
