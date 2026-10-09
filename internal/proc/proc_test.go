@@ -21,13 +21,20 @@ func TestLimitedBufferThroughCopy(t *testing.T) {
 
 func TestLimitedBuffer(t *testing.T) {
 	b := &LimitedBuffer{Max: 5}
+	for _, s := range []string{"abc", "de"} {
+		b.Write([]byte(s))
+	}
+	if b.Cut() {
+		t.Fatal("Cut with nothing dropped")
+	}
+	b = &LimitedBuffer{Max: 5}
 	for _, s := range []string{"abc", "defg", "hij"} {
 		if n, err := b.Write([]byte(s)); n != len(s) || err != nil {
 			t.Fatalf("Write(%q) = %d, %v", s, n, err)
 		}
 	}
-	if b.String() != "abcde" {
-		t.Fatalf("kept %q", b.String())
+	if b.String() != "abcde" || !b.Cut() {
+		t.Fatalf("kept %q, cut %v", b.String(), b.Cut())
 	}
 }
 

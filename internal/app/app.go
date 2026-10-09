@@ -8,11 +8,13 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spicy-lemonade/salt/internal/check"
@@ -21,6 +23,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/prune"
+	"github.com/spicy-lemonade/salt/internal/regular"
 	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/source"
@@ -196,11 +199,20 @@ func (a *App) Seal(o SealOptions) error {
 
 // lockRepo stops two salts changing the repo at root at once, such as a
 // backup still running, on a slow push, when the next one starts: each
-// would delete the objects the other had just written. The lock is the
-// state file lock (see stateFile).
+// would delete the objects the other had just written. The lock is in the
+// git folder every worktree of the repo shares (see sharedGitDir), as
+// prune deletes what git no longer needs from it, which a commit in
+// another worktree may have just written. A repo with no .git is locked
+// through the state file lock instead (see stateFile).
 func (a *App) lockRepo(root string) (unlock func(), err error) {
-	p, err := a.stateFile(root, "lock", "")
+	real, err := filepath.EvalSymlinks(root)
 	if err != nil {
+		return nil, err
+	}
+	var p string
+	if shared := sharedGitDir(real); shared != "" {
+		p = filepath.Join(shared, "salt", "lock")
+	} else if p, err = a.stateFile(root, "lock", ""); err != nil {
 		return nil, err
 	}
 	unlock, err = guard.Lock(p)
@@ -226,6 +238,52 @@ func (a *App) stateFile(root, name, ext string) (string, error) {
 		return filepath.Join(real, ".git", "salt", name+ext), nil
 	}
 	return seal.RepoFile(a.CacheDir, real, name+"-", ext)
+}
+
+// maxGitFile is the most sharedGitDir reads of the small files git keeps a
+// folder's path in.
+const maxGitFile = 4 << 10
+
+// sharedGitDir returns the git folder that the repository whose real path is
+// root shares with all its worktrees, or "" when root has no .git. That is
+// its .git folder, unless .git is a file, as in a linked worktree, which
+// names the worktree's own git folder ("gitdir: PATH"). That folder's
+// commondir file, if it has one, then names the shared folder. Each path
+// may be relative to the folder it is named in. These are the files git
+// itself reads.
+func sharedGitDir(root string) string {
+	dotGit := filepath.Join(root, ".git")
+	fi, err := os.Lstat(dotGit)
+	switch {
+	case err != nil:
+		return ""
+	case fi.IsDir():
+		return dotGit
+	}
+	named := func(dir, file, prefix string) string {
+		f, _, err := regular.Open(os.OpenFile, file)
+		if err != nil {
+			return ""
+		}
+		defer f.Close()
+		b, err := io.ReadAll(io.LimitReader(f, maxGitFile))
+		p, ok := strings.CutPrefix(strings.TrimSpace(string(b)), prefix)
+		if err != nil || !ok || p == "" {
+			return ""
+		}
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(dir, p)
+		}
+		return filepath.Clean(p)
+	}
+	gitDir := named(root, dotGit, "gitdir: ")
+	if gitDir == "" {
+		return ""
+	}
+	if common := named(gitDir, filepath.Join(gitDir, "commondir"), ""); common != "" {
+		return common
+	}
+	return gitDir
 }
 
 // openToSeal opens the salt repository at path for sealing. It refuses one

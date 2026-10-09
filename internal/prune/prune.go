@@ -38,7 +38,9 @@ type Git interface {
 	CatCommit(dir, sha string) ([]byte, error)
 	HashCommit(dir string, raw []byte) (string, error)
 	UpdateRef(dir, ref, newSHA, oldSHA, reason string) error
-	ReclaimSpace(dir string) error
+	// ReclaimSpace deletes what prune dropped from branch (see
+	// gitx.ReclaimSpace).
+	ReclaimSpace(dir, branch string) error
 }
 
 // RealGit runs git through gitx (hooks disabled).
@@ -57,7 +59,7 @@ func (RealGit) HashCommit(dir string, raw []byte) (string, error) {
 func (RealGit) UpdateRef(dir, ref, newSHA, oldSHA, reason string) error {
 	return gitx.UpdateRef(dir, ref, newSHA, oldSHA, reason)
 }
-func (RealGit) ReclaimSpace(dir string) error { return gitx.ReclaimSpace(dir) }
+func (RealGit) ReclaimSpace(dir, branch string) error { return gitx.ReclaimSpace(dir, branch) }
 
 // Result summarises a prune.
 type Result struct {
@@ -155,7 +157,7 @@ func Run(g Git, root string, keepDays int) (*Result, error) {
 	if err := g.UpdateRef(root, branch, parent, commits[0].SHA, reason); err != nil {
 		return nil, err
 	}
-	if err := g.ReclaimSpace(root); err != nil {
+	if err := g.ReclaimSpace(root, branch); err != nil {
 		return res, fmt.Errorf("%w: %v", ErrCleanup, err)
 	}
 	return res, nil

@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -716,6 +717,30 @@ func TestBackupFailures(t *testing.T) {
 	}
 	if subject := strings.TrimSpace(e.must(b.remote, "git", "log", "-1", "--format=%s")); subject != "elsewhere" {
 		t.Fatalf("after a fetch, the remote's latest commit is %q", subject)
+	}
+}
+
+// ls-remote lists every ref whose name ends in the branch's. Enough of them
+// on origin to make its output longer than salt reads stop the backup
+// before old backups are dropped, rather than reading as no branch there.
+func TestBackupRefusesAFloodOfRefs(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	tip := strings.TrimSpace(e.must(b.remote, "git", "rev-parse", "main"))
+	var refs strings.Builder
+	for i := range 1200 {
+		fmt.Fprintf(&refs, "create refs/heads/a%04d/refs/heads/main %s\n", i, tip)
+	}
+	if out, code := e.runInput(b.remote, refs.String(), "git", "update-ref", "--stdin"); code != 0 {
+		t.Fatalf("update-ref: exit %d:\n%s", code, out)
+	}
+	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "x"), "a file")
+	out, code := e.run(b.base, "salt", "backup", "--preset", "mnemosyne", "--keep-days", "1", b.dir)
+	if code != 1 || !strings.Contains(out, "salt could not check origin, so old backups were not dropped and it was not pushed: git ls-remote printed more than 64 KiB") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if log := e.must(b.dir, "git", "log", "--format=%s"); !strings.Contains(log, "Set up salt") {
+		t.Fatalf("old backups were dropped:\n%s", log)
 	}
 }
 

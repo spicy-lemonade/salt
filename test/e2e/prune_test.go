@@ -405,9 +405,14 @@ func TestPruneKeepDaysOne(t *testing.T) {
 	}
 	b.files["MEMORY.md"] = "later the same day\n"
 	b.backup(t, "2026-09-03")
+	// Another branch, which prune does not touch, keeps its reflog.
+	e.must(b.dir, "git", "branch", "other", "HEAD~2")
 	e.must(b.base, "salt", "prune", "--keep-days", "1", b.dir)
 	if got := b.subjects(); !slices.Equal(got, []string{"Backup 2026-09-03", "Backup 2026-09-03"}) {
 		t.Fatalf("kept %q", got)
+	}
+	if reflog := strings.TrimSpace(e.must(b.dir, "git", "reflog", "show", "refs/heads/other")); reflog == "" {
+		t.Fatal("prune emptied another branch's reflog")
 	}
 	if out := e.must(b.base, "salt", "verify", b.dir); !strings.Contains(out, "All 1 files") {
 		t.Fatalf("verify:\n%s", out)

@@ -97,6 +97,9 @@ func (b *LimitedBuffer) Write(p []byte) (int, error) {
 
 func (b *LimitedBuffer) String() string { return b.buf.String() }
 
+// Cut reports whether anything written was dropped.
+func (b *LimitedBuffer) Cut() bool { return b.cut }
+
 // Lines returns what was kept, trimmed of surrounding space. When the rest
 // was dropped, the last line, which was cut part way, is left out, so a
 // secret the caller hides by searching for it whole cannot show in part.

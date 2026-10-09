@@ -362,16 +362,22 @@ func TestBackupPushRecordProblems(t *testing.T) {
 	}
 }
 
-// The record holds at most maxKnownPushes commits.
+// The record holds at most maxKnownPushes commits, and always the one the
+// last push that worked left on origin.
 func TestBackupCapsThePushRecord(t *testing.T) {
 	e, _, presets := backupEnv(t)
+	e.git.head = "pushed"
+	if err := e.backup(presets); err != nil {
+		t.Fatal(err)
+	}
 	e.git.push = func(context.Context) error { return errors.New("offline") }
 	for i := range maxKnownPushes + 5 {
 		e.git.head = fmt.Sprint("h", i)
 		e.backup(presets)
 	}
-	if last := e.git.known[len(e.git.known)-1]; len(last) != maxKnownPushes || last[len(last)-1] != fmt.Sprint("h", maxKnownPushes+3) {
-		t.Fatalf("last push was told %d commits, ending %v", len(last), last[len(last)-1])
+	last := e.git.known[len(e.git.known)-1]
+	if len(last) != maxKnownPushes || last[0] != "pushed" || last[len(last)-1] != fmt.Sprint("h", maxKnownPushes+3) {
+		t.Fatalf("last push was told %d commits: %v … %v", len(last), last[0], last[len(last)-1])
 	}
 }
 
@@ -436,6 +442,67 @@ func TestRepoLockWithoutGit(t *testing.T) {
 	unlock()
 	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A linked worktree is locked in the git folder it shares with the main
+// one, so salt in two worktrees of a repo never works on it at once.
+func TestRepoLockInALinkedWorktree(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	main := filepath.Join(t.TempDir(), "main", ".git")
+	own := filepath.Join(main, "worktrees", "backup")
+	os.MkdirAll(own, 0o700)
+	os.WriteFile(filepath.Join(own, "commondir"), []byte("../..\n"), 0o600)
+	if err := os.RemoveAll(filepath.Join(e.root, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(e.root, ".git"), []byte("gitdir: "+own+"\n"), 0o600)
+	unlock, err := guard.Lock(filepath.Join(main, "salt", "lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); !errors.Is(err, guard.ErrLocked) {
+		t.Fatalf("seal: %v", err)
+	}
+	unlock()
+}
+
+func TestSharedGitDir(t *testing.T) {
+	base := t.TempDir()
+	dir := func(parts ...string) string {
+		p := filepath.Join(append([]string{base}, parts...)...)
+		os.MkdirAll(p, 0o700)
+		return p
+	}
+	file := func(p, text string) { os.WriteFile(p, []byte(text), 0o600) }
+
+	plain := dir("plain")
+	withGit := dir("repo")
+	dir("repo", ".git")
+	// A submodule's .git names its own folder, relative, with no commondir.
+	sub := dir("sub")
+	modules := dir("repo", ".git", "modules", "sub")
+	file(filepath.Join(sub, ".git"), "gitdir: ../repo/.git/modules/sub\n")
+	linked := dir("linked")
+	own := dir("repo", ".git", "worktrees", "linked")
+	file(filepath.Join(linked, ".git"), "gitdir: "+own)
+	file(filepath.Join(own, "commondir"), "../..")
+	broken := dir("broken")
+	file(filepath.Join(broken, ".git"), "not a git file")
+	empty := dir("empty")
+	file(filepath.Join(empty, ".git"), "gitdir: ")
+	for root, want := range map[string]string{
+		plain:   "",
+		withGit: filepath.Join(withGit, ".git"),
+		sub:     modules,
+		linked:  filepath.Join(withGit, ".git"),
+		broken:  "",
+		empty:   "",
+	} {
+		if got := sharedGitDir(root); got != want {
+			t.Errorf("sharedGitDir(%s) = %q, want %q", root, got, want)
+		}
 	}
 }
 

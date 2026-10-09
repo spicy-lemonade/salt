@@ -267,7 +267,12 @@ func (a *App) push(ctx context.Context, root, path string, known []string, lease
 	if !slices.Contains(tried, head) {
 		tried = append(tried, head)
 	}
-	if err := writeKnown(path, tried[max(0, len(tried)-maxKnownPushes):]); err != nil {
+	// The first is what origin held after the last push that worked, so it
+	// is kept however many pushes have failed since.
+	if len(tried) > maxKnownPushes {
+		tried = append(tried[:1:1], tried[len(tried)-maxKnownPushes+1:]...)
+	}
+	if err := writeKnown(path, tried); err != nil {
 		return err
 	}
 	if err := a.Git.Push(ctx, root, lease); err != nil {
