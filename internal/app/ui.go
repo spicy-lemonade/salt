@@ -35,8 +35,8 @@ type Terminal struct {
 	out, raw io.Writer
 }
 
-// isTerminal reports whether fd is a terminal. Tests replace it, since they
-// never run in one.
+// isTerminal reports whether fd is a terminal. Tests replace it, so they
+// behave the same whether or not they run in a terminal.
 var isTerminal = term.IsTerminal
 
 func NewTerminal() *Terminal {
