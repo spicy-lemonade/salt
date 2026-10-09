@@ -634,45 +634,65 @@ func TestPushedAttributeStopsTheBackup(t *testing.T) {
 
 // The pre-push hook salt init installs refuses a push of commits holding
 // plaintext that the pre-commit hook never saw: one made with --no-verify,
-// and one a merge brings in. The remote is left as it was, and a clean push
-// still works.
+// one a merge brings in, and a merge commit that adds a file itself. The
+// remote is left as it was. Plaintext already on the remote, such as history
+// from before salt, is not checked again, so a clean push still works.
+// log.diffMerges is set to a format salt cannot read, which salt overrides.
 func TestPrePushRefusesPlaintext(t *testing.T) {
 	e := newEnv(t)
 	b := newBackupRepo(t, e)
+	e.must(b.dir, "git", "config", "log.diffMerges", "combined")
 	b.files["USER.md"] = "secret\n"
 	b.backup(t, "2026-09-01")
 	e.must(b.dir, "git", "push", "-q", "origin", "main")
-	pushed := strings.TrimSpace(e.must(b.remote, "git", "rev-parse", "main"))
-	refused := func(what string) {
+	commit := func(file, msg string) {
 		t.Helper()
-		out, code := e.run(b.dir, "git", "push", "-q", "origin", "main")
-		if code == 0 || !strings.Contains(out, "salt check: refusing push: 1 file(s) in the commits being pushed are not encrypted:\n  notes.md: not encrypted") {
+		write(t, filepath.Join(b.dir, file), msg+"\n")
+		e.must(b.dir, "git", "add", file)
+		e.must(b.dir, "git", "commit", "-q", "--no-verify", "-m", msg)
+	}
+	refused := func(what, branch, file string) {
+		t.Helper()
+		before, _ := e.run(b.remote, "git", "rev-parse", "--verify", "-q", branch)
+		out, code := e.run(b.dir, "git", "push", "-q", "origin", branch)
+		if code == 0 || !strings.Contains(out, "salt check: refusing push: 1 file(s) in the commits being pushed are not encrypted:\n  "+file+": not encrypted") {
 			t.Fatalf("%s: exit %d\n%s", what, code, out)
 		}
-		if got := strings.TrimSpace(e.must(b.remote, "git", "rev-parse", "main")); got != pushed {
+		if after, _ := e.run(b.remote, "git", "rev-parse", "--verify", "-q", branch); after != before {
 			t.Fatalf("%s reached the remote", what)
 		}
 	}
 
-	write(t, filepath.Join(b.dir, "notes.md"), "plaintext\n")
-	e.must(b.dir, "git", "add", "notes.md")
-	e.must(b.dir, "git", "commit", "-q", "--no-verify", "-m", "skip the hook")
-	refused("a --no-verify commit")
+	commit("notes.md", "skip the hook")
+	refused("a --no-verify commit", "main", "notes.md")
 
 	e.must(b.dir, "git", "reset", "-q", "--hard", "HEAD~1")
 	e.must(b.dir, "git", "checkout", "-q", "-b", "side")
-	write(t, filepath.Join(b.dir, "notes.md"), "plaintext\n")
-	e.must(b.dir, "git", "add", "notes.md")
-	e.must(b.dir, "git", "commit", "-q", "--no-verify", "-m", "on a side branch")
+	commit("notes.md", "on a side branch")
 	e.must(b.dir, "git", "checkout", "-q", "main")
-	write(t, filepath.Join(b.dir, "README.md"), "my backups\n")
-	e.must(b.dir, "git", "add", "README.md")
-	e.must(b.dir, "git", "commit", "-q", "-m", "readme")
+	commit("README.md", "readme")
 	e.must(b.dir, "git", "merge", "-q", "--no-edit", "side")
-	refused("a merge")
-
+	refused("a merge", "main", "notes.md")
 	e.must(b.dir, "git", "reset", "-q", "--hard", "HEAD~1")
 	e.must(b.dir, "git", "push", "-q", "origin", "main")
+
+	// Plaintext on another branch of the remote, as from before salt, is
+	// already there: a new branch is pushed without checking it.
+	e.must(b.dir, "git", "push", "-q", "--no-verify", "origin", "side:old")
+	e.must(b.dir, "git", "fetch", "-q", "origin")
+	e.must(b.dir, "git", "checkout", "-q", "-b", "feature", "main")
+	commit("LICENSE", "license")
+	e.must(b.dir, "git", "push", "-q", "origin", "feature")
+
+	// A merge commit that adds a file of its own.
+	e.must(b.dir, "git", "checkout", "-q", "-b", "other", "main")
+	commit(".gitignore", "ignore")
+	e.must(b.dir, "git", "checkout", "-q", "feature")
+	e.must(b.dir, "git", "merge", "-q", "--no-ff", "--no-commit", "other")
+	commit("merged.md", "added by the merge")
+	refused("a merge commit's own file", "feature", "merged.md")
+	e.must(b.dir, "git", "reset", "-q", "--hard", "HEAD~1")
+
 	if out := e.must(b.base, "salt", "doctor", b.dir); !strings.Contains(out, "pre-push hook runs `salt check --pre-push`") {
 		t.Fatalf("doctor:\n%s", out)
 	}

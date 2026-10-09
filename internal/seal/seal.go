@@ -322,10 +322,17 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		// it is never kept for the content it held before. Nothing is
 		// removed; the next seal removes what no index needs. Losing this
 		// save only costs that reuse, so the seal's own error is returned.
-		partial := &cache{Key: c.Key, IndexSHA: c.IndexSHA, IndexSize: c.IndexSize, Files: maps.Clone(c.Files)}
+		// The cache is copied whole, so the index's entry keeps every field.
+		// A file left out because it changed may have had its plain-paths
+		// object replaced in place, so its entry is dropped.
+		partial := *c
+		partial.Files = maps.Clone(c.Files)
 		for i, d := range done {
-			if d {
+			switch {
+			case d:
 				partial.Files[items[i].rel] = newCache[i]
+			case left[i] == changed:
+				delete(partial.Files, items[i].rel)
 			}
 		}
 		partial.save(cPath)

@@ -13,16 +13,21 @@ import (
 // NewBlobs lists every file that the commits reachable from tips, and not
 // from have or from remote's remote-tracking branches, add or change, as a
 // push of tips would send them. Each blob is listed once for each path it
-// is at. A merge is compared with each of its parents, and a first commit
-// with nothing. have may name commits this repository does not hold, such
+// is at. A merge is compared with each of its parents, whatever
+// log.diffMerges says, and a first commit with nothing. have may name commits this repository does not hold, such
 // as a branch tip on the remote that prune has dropped here, which are left
 // out. remote may be "" for none. tips and have must be object IDs. They
 // are given to git on its input, so their number is not limited.
 func NewBlobs(dir string, tips, have []string, remote string) ([]Blob, error) {
-	args := []string{"log", "--stdin", "--ignore-missing", "-z", "--raw", "--no-abbrev", "--no-renames",
-		"--format=", "-m", "--root", "--diff-filter=ACMRT"}
+	// -m follows log.diffMerges, which the person may have set to a format
+	// that lists merges differently or not at all. An older git, which does
+	// not know the setting, always compares with each parent.
+	args := []string{"-c", "log.diffMerges=separate", "log", "--stdin", "--ignore-missing", "-z", "--raw",
+		"--no-abbrev", "--no-renames", "--format=", "-m", "--root", "--diff-filter=ACMRT"}
+	// --not applies to what follows it here, not to what git reads on its
+	// input, so tips stay included.
 	if remote != "" {
-		args = append(args, "--remotes="+remote)
+		args = append(args, "--not", "--remotes="+remote)
 	}
 	cmd := exec.Command("git", Args(dir, append(args, "--")...)...)
 	stdin, err := cmd.StdinPipe()

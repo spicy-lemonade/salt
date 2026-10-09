@@ -554,3 +554,38 @@ func TestSealExtraChangedSinceChecked(t *testing.T) {
 		}
 	}
 }
+
+// A seal that fails keeps the index's last-modified time in the cache, so a
+// swapped index.age is still caught by the next seal, and drops the entry of
+// a file it left out as changed, whose plain-paths object it replaced.
+func TestFailedSealKeepsTheIndexTime(t *testing.T) {
+	hexSHA := func(s string) string { return hex.EncodeToString(sha256Of([]byte(s))) }
+	f := newFixture(t, false)
+	p := filepath.Join(t.TempDir(), "conf.yaml")
+	os.WriteFile(p, []byte("checked"), 0o600)
+	conf := Extra{Rel: "a/conf.yaml", Path: p, Live: true, SHA256: hexSHA("checked")}
+	if _, err := f.sealExtra(conf); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := f.loadCache()
+	if before.IndexModTime == 0 {
+		t.Fatal("no index time recorded")
+	}
+
+	os.WriteFile(p, []byte("api_key: sk-1"), 0o600)
+	missing := Extra{Rel: "z/missing.db", Path: filepath.Join(t.TempDir(), "missing.db")}
+	_, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer, Workers: 1, Extra: []Extra{conf, missing}})
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("seal with a missing file: %v", err)
+	}
+	after, _ := f.loadCache()
+	if after.IndexModTime != before.IndexModTime || after.IndexSize != before.IndexSize || after.IndexSHA != before.IndexSHA {
+		t.Fatalf("index entry after a failed seal: %+v, was %+v", after, before)
+	}
+	if _, ok := after.Files["a/conf.yaml"]; ok {
+		t.Fatal("the changed file's entry was kept")
+	}
+	if len(after.Files) != 5 {
+		t.Fatalf("the cache holds %d files", len(after.Files))
+	}
+}
