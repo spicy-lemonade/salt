@@ -117,11 +117,11 @@ func TestPlantedIndexRefused(t *testing.T) {
 			// the result says the index was not signed.
 			allow := SignatureOptions{AllowUnsigned: true}
 			vr, err := Verify(f.root, f.ids(), VerifyOptions{SignatureOptions: allow})
-			if err != nil || !vr.Unsigned || vr.ProblemCount != 0 {
+			if err != nil || !vr.Unsigned || vr.Unapproved != "" || vr.ProblemCount != 0 {
 				t.Fatalf("Verify allowing unsigned: %+v, %v", vr, err)
 			}
 			rr, err := Restore(f.root, f.ids(), dest, RestoreOptions{SignatureOptions: allow})
-			if err != nil || !rr.Unsigned {
+			if err != nil || !rr.Unsigned || rr.Unapproved != "" {
 				t.Fatalf("Restore allowing unsigned: %+v, %v", rr, err)
 			}
 		})
@@ -187,10 +187,10 @@ func TestSignatureOnlyFromSignedBy(t *testing.T) {
 		t.Fatalf("Verify: %v", err)
 	}
 	notMine.AllowUnsigned = true
-	if vr, err := Verify(f.root, ids, VerifyOptions{SignatureOptions: notMine}); err != nil || !vr.Unsigned || vr.ProblemCount != 0 {
+	if vr, err := Verify(f.root, ids, VerifyOptions{SignatureOptions: notMine}); err != nil || !vr.Unsigned || vr.Unapproved != mine || vr.ProblemCount != 0 {
 		t.Fatalf("Verify allowing unsigned: %+v, %v", vr, err)
 	}
-	if rr, err := Restore(f.root, ids, dest, RestoreOptions{SignatureOptions: notMine}); err != nil || !rr.Unsigned {
+	if rr, err := Restore(f.root, ids, dest, RestoreOptions{SignatureOptions: notMine}); err != nil || !rr.Unsigned || rr.Unapproved != mine {
 		t.Fatalf("Restore allowing unsigned: %+v, %v", rr, err)
 	}
 

@@ -318,11 +318,16 @@ func TestApprovedKeysRefuseABackupFromAnotherRepo(t *testing.T) {
 
 	// It can still be looked at on purpose, with both warnings.
 	e.ui.out.Reset()
+	if err := e.app.Verify(e.root, true); err != nil || !strings.Contains(e.ui.out.String(), "signed by "+added+", a key not approved for this repo") {
+		t.Fatalf("verify --allow-unsigned: %v\n%s", err, e.ui.out.String())
+	}
+	e.ui.out.Reset()
 	if err := e.app.Restore(RestoreOptions{Repo: e.root, To: dest, AllowUnsigned: true}); err != nil {
 		t.Fatal(err)
 	}
 	out := e.ui.out.String()
-	if !strings.Contains(out, "key added: "+added) || !strings.Contains(out, "not signed by your key") {
+	if !strings.Contains(out, "key added: "+added) || strings.Contains(out, "not signed by your key") ||
+		!strings.Contains(out, "signed by "+added+", a key not approved for this repo") {
 		t.Fatalf("restore --allow-unsigned output:\n%s", out)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dest, "USER.md")); string(b) != "from the other repo" {

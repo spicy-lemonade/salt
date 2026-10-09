@@ -332,7 +332,7 @@ func (a *App) Verify(repoRoot string, allowUnsigned bool) error {
 		return explainUnsigned(err, rp.Root)
 	}
 	if res.Unsigned {
-		a.UI.Printf("%s", unsignedWarning)
+		a.UI.Printf("%s", unsignedWarning(res.Unapproved))
 	}
 	for _, u := range res.Unreferenced {
 		a.UI.Printf("  ! %s is not in the index (the next `salt seal` removes it)\n", u)

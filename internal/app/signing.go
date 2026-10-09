@@ -80,5 +80,13 @@ func explainUnsigned(err error, root string) error {
 		"If it was sealed by a salt that did not sign backups yet, or from a machine with a different key, check the repo's history, then pass --allow-unsigned", err)
 }
 
-// unsignedWarning is printed when --allow-unsigned let an unsigned index through.
-const unsignedWarning = "salt: ! the backup's index is not signed by your key, so salt cannot tell whether someone who can push to the repo planted files in it\n"
+// unsignedWarning is printed when --allow-unsigned let an unsigned index
+// through. unapproved is the key that signed it, if it is one of the
+// person's keys but not one approved for the repo.
+func unsignedWarning(unapproved string) string {
+	if unapproved != "" {
+		return fmt.Sprintf("salt: ! the backup's index is signed by %s, a key not approved for this repo on this machine, "+
+			"so salt cannot tell whether someone who can push copied it in from another repo\n", unapproved)
+	}
+	return "salt: ! the backup's index is not signed by your key, so salt cannot tell whether someone who can push to the repo planted files in it\n"
+}

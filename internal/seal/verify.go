@@ -32,6 +32,9 @@ type VerifyResult struct {
 	// Unsigned means the index was not signed by one of the keys, and was
 	// accepted only because of AllowUnsigned.
 	Unsigned bool
+	// Unapproved is the key that signed it, if one of the keys signed it
+	// but SignedBy does not list it (see Index.Unapproved).
+	Unapproved string
 	// Problems describe files that cannot be restored correctly: the
 	// MaxProblems of them first by path, in path order, so the list is the
 	// same on every run. ProblemCount counts them all.
@@ -65,7 +68,7 @@ func Verify(root string, ids []age.Identity, opt VerifyOptions) (*VerifyResult, 
 		return nil, err
 	}
 	defer rt.Close()
-	res := &VerifyResult{Unsigned: ix.Unsigned}
+	res := &VerifyResult{Unsigned: ix.Unsigned, Unapproved: ix.Unapproved}
 	var files []Entry
 	referenced := map[string]bool{}
 	for _, e := range ix.Entries {

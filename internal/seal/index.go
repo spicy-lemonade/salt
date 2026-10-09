@@ -36,6 +36,10 @@ type Index struct {
 	// Unsigned is set by ReadIndex when it was allowed to accept an index
 	// whose signature is missing or does not match. It is never written.
 	Unsigned bool `json:"-"`
+	// Unapproved is the key that signed an index accepted as Unsigned, when
+	// it opened the index but SignatureOptions.SignedBy does not list it
+	// (see UnapprovedError). It is never written.
+	Unapproved string `json:"-"`
 }
 
 // Entry is one file or symlink in a snapshot.
@@ -245,6 +249,9 @@ func ReadIndex(root string, ids []age.Identity, opt SignatureOptions) (*Index, e
 			return nil, err
 		}
 		ix.Unsigned = true
+		if u := (*UnapprovedError)(nil); errors.As(err, &u) {
+			ix.Unapproved = u.Key
+		}
 	}
 	return ix, nil
 }

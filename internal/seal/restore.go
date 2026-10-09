@@ -46,6 +46,9 @@ type RestoreResult struct {
 	// Unsigned means the index was not signed by one of the keys, and was
 	// accepted only because of AllowUnsigned.
 	Unsigned bool
+	// Unapproved is the key that signed it, if one of the keys signed it
+	// but SignedBy does not list it (see Index.Unapproved).
+	Unapproved string
 	// MovedAside is where an existing destination was moved, if any.
 	MovedAside string
 }
@@ -106,7 +109,7 @@ func Restore(root string, ids []age.Identity, dest string, opt RestoreOptions) (
 		ctx = context.Background()
 	}
 
-	res := &RestoreResult{Unsigned: ix.Unsigned}
+	res := &RestoreResult{Unsigned: ix.Unsigned, Unapproved: ix.Unapproved}
 	var files, links []Entry
 	for _, e := range entries {
 		if e.Symlink != "" {

@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"filippo.io/age"
-	"github.com/spicy-lemonade/salt/internal/gitx"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/spicy-lemonade/salt/internal/seal"
@@ -92,7 +91,7 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	r, done, err := a.openRepo(ctx, o.Repo)
+	r, downloaded, done, err := a.openRepo(ctx, o.Repo)
 	if errors.Is(err, errDownloadStopped) {
 		return fmt.Errorf("restore %w: %s was not changed", ErrInterrupted, a.short(o.To))
 	}
@@ -102,7 +101,7 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 	defer func() { err = done(err) }()
 	// A download is new to this machine, so it has no approval to check.
 	var signedBy []string
-	if remote, _ := gitx.IsRemote(o.Repo); !remote {
+	if !downloaded {
 		if signedBy, err = a.approvedSigners(r, o.AllowUnsigned); err != nil {
 			return err
 		}
@@ -123,7 +122,7 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 		return explainUnsigned(err, r.Root)
 	}
 	if res.Unsigned {
-		a.UI.Printf("%s", unsignedWarning)
+		a.UI.Printf("%s", unsignedWarning(res.Unapproved))
 	}
 	a.UI.Printf("✓ Restored %d files and %d symlinks to %s\n", res.Files, res.Symlinks, a.short(o.To))
 	if res.MovedAside != "" {
