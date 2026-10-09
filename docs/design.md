@@ -7,7 +7,10 @@ and OpenViking, before it is backed up to Git.
 
 - **Nothing unencrypted enters the backup repo.** `salt seal SRC REPO` writes
   only encrypted files. The pre-commit hook `salt check` blocks any staged file
-  that is not encrypted, except a short list of public files.
+  that is not encrypted, except a short list of public files. The pre-push
+  hook `salt check --pre-push` blocks a push of commits holding one, such as
+  a merge, a rebase or a commit made with `--no-verify`, which the
+  pre-commit hook never sees.
 - **Encrypting never needs the decryption key.** Sealing uses the public key
   and a signing key that can sign but not decrypt. Only restoring needs the
   private key.
@@ -74,6 +77,10 @@ only that file, never the keychain. `salt init` saves it. On another machine,
 `salt trust` saves it, deriving it from the private key in the keychain or,
 if there is none, from the recovery phrase or passphrase it asks for. Without
 it, `salt seal` refuses and says to run `salt trust`, and `salt doctor` warns.
+When the private key is in the keychain too, `salt trust` replaces a saved
+signing key that is not the one it derives, whose backups restore would
+refuse, and `salt doctor` reports one. Seal never reads the private key, so
+it cannot check this itself.
 
 Because it is derived from the private key, a new machine needs only the
 recovery phrase or passphrase to check a backup. The key that decrypts a
@@ -119,8 +126,10 @@ If you lose them and this laptop, your backups cannot be recovered.
   form (`git@github.com:you/backup.git`). Other URLs are refused. `http://`
   would send a password or token in the clear, and a folder is given by its
   path. Salt downloads only the latest backup on the repo's default branch
-  (`git clone --depth 1`, hooks off) into a private `salt-download-*` folder
-  in the home folder. It restores from that as from a local repo, then
+  (`git init`, then `git fetch --depth 1` of the URL's `HEAD`, hooks off)
+  into a private `salt-download-*` folder in the home folder. The URL is
+  fetched from directly and never saved as a remote, so a download a killed
+  salt leaves behind holds no password or token from it. It restores from that as from a local repo, then
   removes it, whether the restore worked or not. The download holds only
   encrypted files, and nothing is decrypted until it is complete. Messages
   never show a user name or password given in the URL. They name the URL,
@@ -136,8 +145,12 @@ If you lose them and this laptop, your backups cannot be recovered.
   index.
 - Restore and verify read each file only one byte past its size in the
   signed index, so an object swapped for one that expands hugely is refused
-  as soon as it runs past that size. With `--allow-unsigned` the sizes come
-  from whoever wrote the index, so they limit nothing.
+  as soon as it runs past that size. They also refuse a file's encrypted
+  files before decrypting them when together they are larger than its size
+  could make them. That limit is the size plus a 64th of it, which zstd and
+  age never reach, and 256 KiB for each file's age header and zstd frame. The same
+  check applies to `index.age`. With `--allow-unsigned` the sizes come from
+  whoever wrote the index, so they limit nothing.
 - `salt verify` decrypts everything without writing it to disk, and reports
   any file that cannot be restored. It needs the key.
 - `salt doctor` checks the hook, the key, the repo and the last backup. It
@@ -201,6 +214,15 @@ The change-detection cache lists every object of a file in parts or chunks
 and leaves its single-object fields empty. An older salt using the same
 cache then finds nothing to reuse and encrypts the file again, rather than
 keeping only its first object.
+
+The cache also records each object's size and last-modified time, and those
+of `index.age`. An object is reused only while it is still the file seal
+wrote, with the same size and time. git writes a new file whenever it
+changes one, as a pull or a reset does, so an object someone replaced with
+another of the same size is encrypted again by the next seal, which repairs
+the backup. A cache from an older salt, which recorded no times, is checked
+by size alone until the next seal records them, so upgrading encrypts
+nothing again.
 
 A file's own chunks from its last seal are looked up before those of other
 files, so an unchanged file always keeps its own objects, even when another
@@ -325,10 +347,12 @@ signatures are removed from the copies, because they no longer match. A merge
 commit among the kept backups is copied onto the line kept, so the history it
 merged in is dropped but its files are kept.
 
-Salt then deletes the dropped backups from the local repo. It empties git's
-reflogs (except the stash's), which would otherwise keep them for 30 to 90
-days, and runs `git gc --prune=now`. This also removes git's local undo for
-them. Git can't delete what `origin/<branch>` still points at until the force
+Salt then deletes the dropped backups from the local repo. It empties the
+reflogs that hold them, which would otherwise keep them for 30 to 90 days:
+`HEAD`'s, the pruned branch's and that of origin's copy of it
+(`refs/remotes/origin/<branch>`). Every other ref's reflog, such as another
+branch's or the stash's, is left as it is. It then runs
+`git gc --prune=now`. This also removes git's local undo for them. Git can't delete what `origin/<branch>` still points at until the force
 push updates it, so those go on the next prune.
 
 A prune is all or nothing. Every copied commit is written first. The branch
@@ -395,9 +419,27 @@ against someone who can push to it:
   `salt verify` accept a backup only if an approved key signed it (see
   "Planted files"). An approved copy that can't be read stops seal, restore
   and verify, unless restore or verify is given `--allow-unsigned`. `salt
-  trust` replaces it.
+  trust` replaces it. The approved copy holds the keys, whether file names
+  are hidden, and how the key is recovered, so a pushed switch to a
+  passphrase, with a planted `key.age`, is refused too. A copy saved by an
+  older salt, without the recovery method, gains it on the next seal. It is
+  named by the repo's real path, so a repo reached through a symlink has the
+  same one. One an older salt named by the path it was given is still read.
+  `salt trust` calls a key "your key on this machine" only if the key saved
+  for it really is its key.
 - **Hiding plaintext from the hook.** `salt check` reads staged files as
-  `:0:<path>`, so a file named like `0:x` can't hide behind `x`.
+  `:0:<path>`, so a file named like `0:x` can't hide behind `x`. A commit can
+  skip the pre-commit hook. git runs it for neither a merge, a cherry-pick
+  nor a rebase, and `--no-verify` turns it off. So the pre-push hook, `salt
+  check --pre-push`, checks every file that the commits being pushed add or
+  change. It leaves out commits the remote already has, which are those
+  reachable from where git says the remote's refs are, or from its
+  remote-tracking branches. A merge is checked against each of its parents. A branch pushed
+  to a remote with no remote-tracking branches has its whole history
+  checked, so one holding plaintext from before salt is refused. The same
+  file at a public path, such as `README.md`, and at another is checked at
+  both. `salt backup` pushes with hooks off, having checked its commit
+  itself.
 - **Symlinks.** Salt never creates symlinks where it keeps data (`.salt/`,
   `index.age`, `objects/`, `files/`). Seal, restore and verify refuse to run
   if one is there, whether it points outside the repo or back inside it. As a
@@ -431,7 +473,11 @@ against someone who can push to it:
   `.git/info/exclude` and `core.attributesFile` count too. They refuse if git
   ignores any file salt wrote, or if any `.age` file does not have `text`
   unset or has an `eol`, `filter`, `working-tree-encoding` or `ident`
-  attribute.
+  attribute. `.salt/format.json` and `.salt/recipients.txt` are text, so
+  `text` and `eol`, which change only line ends that salt reads either way,
+  are allowed on them, but `filter`, `working-tree-encoding` and `ident` are
+  refused, since they would stop salt reading them from another copy of the
+  repo.
 - **Interrupted restores.** A restore decrypts into a temporary folder next to
   the destination. Ctrl-C or SIGTERM removes it. A restore killed outright
   can't clean up, so the folder is recorded while the restore runs, and
@@ -458,9 +504,8 @@ could add the other's key to the first and copy its backup in. It would be
 genuinely signed with your key. Restore and verify therefore accept only a
 signature from a key this machine approved for the repo. They name the added
 key, and if it signed the backup they say so, rather than calling it unsigned.
-A local repo this machine never approved, for example one opened by another
-path such as a symlink, has no approved keys to check against, so any key that
-opens the backup may have signed it, and they warn. A restore from a URL is
+A local repo this machine never approved has no approved keys to check
+against, so any key that opens the backup may have signed it, and they warn. A restore from a URL is
 the same, without the warning. A repo ID inside the signed data would close
 that, but needs a new index version.
 
@@ -520,8 +565,9 @@ start another until the machine runs out of memory. These rules prevent that:
    Compression and the delta search are off too (see "Large files").
 4. Only `internal/gitx`, `internal/source` and `internal/proc` may start other
    programs. `internal/proc` runs the ones salt may stop part way (`git
-   clone`, `git ls-remote`, `git rev-list`, `git push`, `git commit`,
-   `sqlite3` and `pg_dump`). It keeps at most 4 KiB of their error output, and waits at
+   init`, `git fetch`, `git checkout` and `git ls-remote` for a download,
+   `git ls-remote`, `git rev-list`, `git push` and `git commit` for a
+   backup, `sqlite3` and `pg_dump`). It keeps at most 4 KiB of their error output, and waits at
    most 5 seconds for the output of one that was stopped, since a program it
    started can hold that output open. Unit tests never start any.
    `internal/rules` enforces rules 1 and 4.
@@ -531,10 +577,15 @@ start another until the machine runs out of memory. These rules prevent that:
    A file sealed in chunks holds one chunk, at most 16 MiB, in memory at a
    time.
 7. Only one salt seals, backs up or prunes a repo at a time. Each takes a
-   lock (`flock`) on `.git/salt/lock` in the repo, and a second one stops at
-   once instead of waiting. The lock is never committed. It is the same file
-   whatever the environment, so a cron job and a shell, which can have
-   different cache folders, still share it. A repo with no `.git` folder,
+   lock (`flock`) on `salt/lock` in the git folder the repo shares with all
+   its worktrees (`.git/salt/lock` in the main one), and a second one stops
+   at once instead of waiting. Salt in another worktree of the repo is
+   stopped too, since prune deletes what git no longer needs from that
+   shared folder, which a commit in the other worktree may have just
+   written. Salt finds the shared folder from the files git itself reads
+   (`.git`, and then `commondir`), without starting git. The lock is never
+   committed. It is the same file whatever the environment, so a cron job
+   and a shell, which can have different cache folders, still share it. A repo with no `.git` folder,
    which `salt seal` accepts, is locked through a file in salt's cache folder
    named after the repo instead. The system drops the lock when salt ends,
    however it ends. Without it, a backup still pushing when the next one
@@ -639,9 +690,13 @@ owner-only (0600). Recent `pg_dump` releases (18, and 17.6, 16.10, 15.14,
 14.19 and 13.22) write a new random key into every plain dump (`\restrict`),
 which would make every dump differ. So salt gives `pg_dump --restrict-key`
 when `pg_dump --help` lists it. The key is random, made once per backup repo
-and kept in salt's cache folder (`copykey-<hash>`, 0600, never committed). It
-stays secret, so the protection it gives on restore still holds. If the cache
-is lost, a new key only means one more commit. An unchanged database then
+and kept in salt's cache folder (`copykey-<hash>`, 0600, never committed).
+It is never in the repo, so the protection it gives on restore still holds
+for anyone who reads the backup. `pg_dump` takes the key only as an
+argument, so while a dump runs another user on the machine can see it in
+the list of processes. Salt cannot avoid that, and a key made anew for each
+dump would show the same way and make every dump differ. If the cache is
+lost, a new key only means one more commit. An unchanged database then
 gives an identical dump and makes no commit.
 
 Every kind of database is a `source.Database`, which says what the copy is
@@ -765,7 +820,13 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
    committed). This is checked before prune rewrites the branch, while the
    branch still holds the commit this machine last pushed and any commit
    pushed by hand. The remote-tracking branch never counts, since a fetch
-   moves it to whatever another machine pushed;
+   moves it to whatever another machine pushed. `git ls-remote` also lists
+   every ref whose name ends in the branch's, and salt picks the branch
+   itself. Output longer than 64 KiB stops the backup, since someone who can
+   push could add enough such refs to push the branch's own line out of
+   what salt reads. The record keeps at most 100 commits, always including
+   the one the last push that worked left on origin, however many pushes
+   have failed since;
 6. warns when the push would send more than 1 GiB, or when a file added
    more than 500 MiB of new encrypted data, naming the file (see "Large
    files"). The push still goes ahead. Ctrl-C or SIGTERM while the push is
@@ -804,6 +865,7 @@ code reads them all, so adding a tool means adding one file:
   "databases": [
     {"kind": "postgres", "from": "${TOOL_DB_URL:-postgresql://localhost/tool}", "to": "tool/tool.sql"}
   ],
+  "never": [".env", "*.key"],
   "skip": ["*.log", "cache"],
   "secrets": [{"files": ["config.yaml"], "keys": ["*sync_key"]}]
 }
@@ -843,9 +905,15 @@ code reads them all, so adding a tool means adding one file:
   to be set in the cron line too. A connection
   two presets name, compared without its password, is backed up once under
   the first preset's path, taking presets in name order.
-- `skip` lists name patterns of files and folders never backed up, such as
-  caches, logs and downloaded models. `.DS_Store` and `.git` are always
-  skipped, as in `salt seal`.
+- `never` lists name patterns of files and folders that hold secrets, such
+  as `.env`, a key file or a folder of credentials. No preset given with
+  this one backs them up either, wherever it finds them, a place it names
+  included. So another tool's preset, pointed by a variable at this tool's
+  folder, never backs up its secrets.
+- `skip` lists name patterns of files and folders this preset never backs
+  up, such as caches, logs and downloaded models. Another preset that
+  reaches the same folder may still back them up (see below). `.DS_Store`
+  and `.git` are always skipped, as in `salt seal`.
 - `secrets` lists files that may hold secrets, and the settings in them that
   do. A file is named by a name pattern, such as `config.yaml`, or by the
   folders it is in and its name, joined by `/`, such as
@@ -892,7 +960,11 @@ code reads them all, so adding a tool means adding one file:
   `"a:b"`, and a YAML name outside braces such as `llama3:8b`, are names.
   Remove comments from such a file, and put a space after each colon, to be
   sure it is checked as written and backed up. Salt never changes the file
-  to remove the secret.
+  to remove the secret. Salt reads such a file once, every rule checks what
+  was read, and seal backs it up only if it reads the same contents. One a
+  tool changed after the check, as it could by writing a secret into it, is
+  left out of that backup, with one line saying so, and is checked again by
+  the next.
 - `refs` in a secrets rule lists the ways the tool names where a secret is
   kept in an object, each as the exact names of that object's settings in
   lower case, never patterns, such as
@@ -935,8 +1007,8 @@ folder inside another preset's folder, is backed up under its own path, and
 the folder around it leaves it out. Where presets overlap, a file is backed
 up if any preset that reaches it would back it up, so adding a preset never
 drops a file another one backs up. A preset reaches a place inside its own
-unless it skips a folder on the way. Every preset's secrets rules apply to
-every file, so a rule that names only a file's name reaches the same name
+unless it skips a folder on the way. Every preset's `never` patterns and
+secrets rules apply to every file, so a rule that names only a file's name reaches the same name
 in every preset's places. A rule that also names its folders reaches only
 files in such folders. So nothing is backed up twice, and the backup is the same
 whatever order the presets are given in.

@@ -202,8 +202,8 @@ secret-tool clear service salt
 rm -rf ~/Library/Application\ Support/salt ~/Library/Caches/salt   # macOS
 rm -rf ~/.config/salt ~/.cache/salt                                # Linux
 
-# In each backup repo, remove the check. Otherwise every commit will be refused
-rm ~/my-backup-repo/.git/hooks/pre-commit
+# In each backup repo, remove the checks. Otherwise every commit and push will be refused
+rm ~/my-backup-repo/.git/hooks/pre-commit ~/my-backup-repo/.git/hooks/pre-push
 ```
 
 ## 🔧 Notes
