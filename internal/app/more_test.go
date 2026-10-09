@@ -598,6 +598,16 @@ func TestDoctorStrayFilesInSaltDir(t *testing.T) {
 	}
 }
 
+// A working tree that cannot be opened is a warning, not a crash.
+func TestDoctorTreeCannotOpen(t *testing.T) {
+	e := newEnv(t)
+	r := &report{ui: e.ui}
+	e.app.doctorTree(r, filepath.Join(t.TempDir(), "missing"))
+	if r.warns != 1 || !strings.Contains(e.ui.out.String(), "could not scan the working tree") {
+		t.Fatalf("warns %d:\n%s", r.warns, e.ui.out.String())
+	}
+}
+
 func TestInstallHookError(t *testing.T) {
 	e := newEnv(t)
 	e.app.Git = &failingGit{}

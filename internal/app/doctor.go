@@ -326,10 +326,10 @@ func readHead(rt *os.Root, rel string) ([]byte, error) {
 	defer f.Close()
 	head := make([]byte, check.HeadSize)
 	n, err := io.ReadFull(f, head)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return nil, err
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		err = nil
 	}
-	return head[:n], nil
+	return head[:n], err
 }
 
 // Verify decrypts every file in the backup (without writing plaintext) and

@@ -138,12 +138,12 @@ func Open(root string) (*Repo, error) {
 }
 
 // ReadSaltFile reads name, one of salt's own files, such as those in .salt
-// or .gitattributes, from the repo at root. Someone who can push could commit it, or .salt, as a symlink. os.Root
-// refuses a link that leads outside the repo but follows one that stays
-// inside it, so ReadSaltFile refuses a symlink anywhere on the way, and
-// anything at name that is not a regular file, both before it opens it and
-// once it is open. It reads at most maxSaltFile
-// bytes. A missing file is fs.ErrNotExist.
+// or .gitattributes, from the repo at root. Someone who can push could commit
+// it, or .salt, as a symlink. os.Root refuses a link that leads outside the
+// repo but follows one that stays inside it, so ReadSaltFile refuses a
+// symlink anywhere on the way, and anything at name that is not a regular
+// file, both before it opens it and once it is open. It reads at most
+// maxSaltFile bytes. A missing file is fs.ErrNotExist.
 func ReadSaltFile(root, name string) ([]byte, error) {
 	rt, err := os.OpenRoot(root)
 	if errors.Is(err, fs.ErrNotExist) {

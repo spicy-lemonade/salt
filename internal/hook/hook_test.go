@@ -65,3 +65,20 @@ func TestHookRefusesAPipe(t *testing.T) {
 		t.Fatal("a pipe counts as salt's hook")
 	}
 }
+
+// A hook over maxHook bytes is not salt's, even if it has salt's marker in
+// it, so install keeps it and doctor's check does not count it.
+func TestHookOverTheCapIsForeign(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "pre-commit")
+	big := Script + strings.Repeat("#\n", maxHook)
+	os.WriteFile(p, []byte(big), 0o755)
+	if err := Install(p); !errors.Is(err, ErrForeign) {
+		t.Fatalf("Install over a huge hook: %v", err)
+	}
+	if Installed(p) {
+		t.Fatal("a huge hook counts as salt's")
+	}
+	if b, _ := os.ReadFile(p); string(b) != big {
+		t.Fatal("a huge hook was changed")
+	}
+}
