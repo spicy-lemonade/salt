@@ -129,7 +129,10 @@ If you lose them and this laptop, your backups cannot be recovered.
   (`git init`, then `git fetch --depth 1` of the URL's `HEAD`, hooks off)
   into a private `salt-download-*` folder in the home folder. The URL is
   fetched from directly and never saved as a remote, so a download a killed
-  salt leaves behind holds no password or token from it. It restores from that as from a local repo, then
+  salt leaves behind holds no password or token from it. Salt talks to the
+  remote once, so a password or passphrase is asked for at most once. A
+  remote with no default branch, such as a new, empty one, is told apart by
+  the fetch's own error, read in English. It restores from that as from a local repo, then
   removes it, whether the restore worked or not. The download holds only
   encrypted files, and nothing is decrypted until it is complete. Messages
   never show a user name or password given in the URL. They name the URL,
@@ -565,7 +568,7 @@ start another until the machine runs out of memory. These rules prevent that:
    Compression and the delta search are off too (see "Large files").
 4. Only `internal/gitx`, `internal/source` and `internal/proc` may start other
    programs. `internal/proc` runs the ones salt may stop part way (`git
-   init`, `git fetch`, `git checkout` and `git ls-remote` for a download,
+   init`, `git fetch` and `git checkout` for a download,
    `git ls-remote`, `git rev-list`, `git push` and `git commit` for a
    backup, `sqlite3` and `pg_dump`). It keeps at most 4 KiB of their error output, and waits at
    most 5 seconds for the output of one that was stopped, since a program it

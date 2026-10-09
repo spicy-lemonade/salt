@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io/fs"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -127,6 +129,31 @@ func TestRestoreFromURLFailures(t *testing.T) {
 		}
 		noDownloadsLeft(t, e)
 	}
+
+	// A wrong password fails the download after it is asked for once. Salt
+	// talks to the remote only once, so nothing asks again, not even a
+	// GIT_ASKPASS helper such as an editor's terminal sets.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="backup"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(srv.Close)
+	asked := filepath.Join(t.TempDir(), "asked")
+	askpass := filepath.Join(t.TempDir(), "askpass")
+	write(t, askpass, "#!/bin/sh\necho \"$1\" >> "+asked+"\necho wrong\n")
+	if err := os.Chmod(askpass, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	url := "https://you@" + strings.TrimPrefix(srv.URL, "https://") + "/backup.git"
+	out, code := e.with("GIT_ASKPASS="+askpass, "GIT_SSL_NO_VERIFY=1").run(e.home, "salt", "restore", url, "--to", filepath.Join(t.TempDir(), "restored"))
+	if code != 1 || !strings.Contains(out, "salt: downloading the backup: git fetch https://127.0.0.1:") {
+		t.Fatalf("restore with a wrong password: exit %d\n%s", code, out)
+	}
+	b, _ := os.ReadFile(asked)
+	if n := strings.Count(string(b), "\n"); n != 1 || !strings.Contains(string(b), "Password") {
+		t.Fatalf("asked %d times:\n%s", n, b)
+	}
+	noDownloadsLeft(t, e)
 }
 
 // startStuckDownload starts salt restore from an https URL, with the user
