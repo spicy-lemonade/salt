@@ -179,7 +179,9 @@ func restoreFile(ctx context.Context, rt *os.Root, ids []age.Identity, tmp strin
 		return err
 	}
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), ctxReader{ctx, r})
+	// One byte past the signed size is enough to tell the object is too
+	// long, so a small object that expands hugely is never written out whole.
+	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(ctxReader{ctx, r}, e.Size+1))
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

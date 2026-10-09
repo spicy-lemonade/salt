@@ -136,7 +136,8 @@ func verifyEntry(rt *os.Root, ids []age.Identity, e Entry) (int64, error) {
 	}
 	defer closeFn()
 	h := sha256.New()
-	n, err := io.Copy(h, r)
+	// One byte past the signed size is enough to tell the object is too long.
+	n, err := io.Copy(h, io.LimitReader(r, e.Size+1))
 	if err != nil {
 		return n, fmt.Errorf("%s: cannot be decrypted (%v)", clip(e.Path), err)
 	}

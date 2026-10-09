@@ -1056,6 +1056,69 @@ func TestRestoreSizeMismatch(t *testing.T) {
 	}
 }
 
+// Anyone can encrypt to the repo's key, so someone who can push can put a
+// small object that expands hugely in place of a small file's object. The
+// signed index still checks out, so restore and verify must stop one byte
+// past the signed size rather than expanding it all.
+func TestRestoreAndVerifyStopAtSignedSize(t *testing.T) {
+	f := newFixture(t, true)
+	f.seal(false)
+	ix, err := ReadIndex(f.root, f.ids(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var e Entry
+	for _, x := range ix.Entries {
+		if x.Path == "SOUL.md" {
+			e = x
+		}
+	}
+	const bomb = 32 << 20
+	rt := openRoot(t, f.root)
+	if _, _, err := encryptTo(rt, e.Object, io.LimitReader(zeros{}, bomb), f.repo.Recipients, 0); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(filepath.Join(f.root, e.Object)); err != nil || fi.Size() > 64<<10 {
+		t.Fatalf("bomb object: %v, %v; expected it to compress well", fi, err)
+	}
+
+	tmp := t.TempDir()
+	err = restoreFile(context.Background(), rt, f.ids(), tmp, e)
+	if err == nil || !strings.Contains(err.Error(), "does not match the index") {
+		t.Fatalf("restoreFile of a bomb: %v", err)
+	}
+	if fi, err := os.Stat(filepath.Join(tmp, "SOUL.md")); err != nil || fi.Size() != e.Size+1 {
+		t.Fatalf("restoreFile wrote %v, %v; want %d bytes", fi, err, e.Size+1)
+	}
+	n, err := verifyEntry(rt, f.ids(), e)
+	if err == nil || !strings.Contains(err.Error(), "does not match the index") || n != e.Size+1 {
+		t.Fatalf("verifyEntry of a bomb read %d bytes: %v; want %d", n, err, e.Size+1)
+	}
+
+	dest := filepath.Join(t.TempDir(), "r")
+	if _, err := Restore(f.root, f.ids(), dest, RestoreOptions{}); err == nil {
+		t.Fatal("restore of a bomb succeeded")
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("failed restore left a destination")
+	}
+	res, err := Verify(f.root, f.ids(), VerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ProblemCount != 1 || res.Bytes > 1<<20 {
+		t.Fatalf("verify of a bomb: %d problems, %d bytes read", res.ProblemCount, res.Bytes)
+	}
+}
+
+// zeros reads as an endless run of zero bytes.
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
 // writeBombIndex streams a crafted index into the repo: small once
 // compressed, huge once decompressed.
 func writeBombIndex(t *testing.T, f *fixture, gen func(w io.Writer)) {
