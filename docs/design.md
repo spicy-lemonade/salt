@@ -393,8 +393,9 @@ against someone who can push to it:
   repo cloned onto a new machine. It warns before asking about any key not
   stored on the machine, and about visible file names. `salt restore` and
   `salt verify` accept a backup only if an approved key signed it (see
-  "Planted files"). An approved copy that can't be read stops them, unless
-  `--allow-unsigned` is passed.
+  "Planted files"). An approved copy that can't be read stops seal, restore
+  and verify, unless restore or verify is given `--allow-unsigned`. `salt
+  trust` replaces it.
 - **Hiding plaintext from the hook.** `salt check` reads staged files as
   `:0:<path>`, so a file named like `0:x` can't hide behind `x`.
 - **Symlinks.** Salt never creates symlinks where it keeps data (`.salt/`,
@@ -443,10 +444,12 @@ Nor does the signature say which repo a backup belongs to. If one machine
 holds the keys for two repos, someone who can push to one and read the other
 could add the other's key to the first and copy its backup in. It would be
 genuinely signed with your key. Restore and verify therefore accept only a
-signature from a key this machine approved for the repo, and name the added
-key. A restore from a URL, or on a machine that never approved the repo, has
-no approved keys to check against, so any key that opens the backup may have
-signed it. A repo ID inside the signed data would close that, but needs a new
+signature from a key this machine approved for the repo. They name the added
+key, and if it signed the backup they say so, rather than calling it
+unsigned. A local repo this machine never approved, for example one opened
+by another path such as a symlink, has no approved keys to check against, so
+any key that opens the backup may have signed it, and they warn. A restore
+from a URL is the same, without the warning. A repo ID inside the signed data would close that, but needs a new
 index version.
 
 Each key in the repo signs with its own signing key, and a backup is accepted
