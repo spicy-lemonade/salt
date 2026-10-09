@@ -846,9 +846,10 @@ code reads them all, so adding a tool means adding one file:
   holds `:`, inside braces, keeps the file out, and salt says a name has no
   space after its colon. This includes YAML that means such a name, as in
   `{llama3:8b: 1}`, which salt cannot tell apart. A quoted name such as
-  `"a:b"`, and a YAML name outside braces such as `llama3:8b`, are names. Remove comments from such a file, and put a space after each colon,
-  to be sure it is checked as written and backed up. Salt never changes the
-  file to remove the secret.
+  `"a:b"`, and a YAML name outside braces such as `llama3:8b`, are names.
+  Remove comments from such a file, and put a space after each colon, to be
+  sure it is checked as written and backed up. Salt never changes the file
+  to remove the secret.
 - `refs` in a secrets rule lists the ways the tool names where a secret is
   kept in an object, each as the exact names of that object's settings in
   lower case, never patterns, such as
