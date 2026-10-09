@@ -46,6 +46,57 @@ func TestTerminal(t *testing.T) {
 	}
 }
 
+// A path or program output holding control characters reaches the terminal
+// escaped, through Printf and prompts alike.
+func TestTerminalEscapes(t *testing.T) {
+	var out bytes.Buffer
+	term := &Terminal{in: bufio.NewReader(strings.NewReader("x\n")), out: EscapeWriter(&out)}
+	term.Printf("bad %s\n", "a\x1b[2Jb")
+	if _, err := term.ReadLine("open \x1b]0;title\a? "); err != nil {
+		t.Fatal(err)
+	}
+	if want := "bad a\\x1b[2Jb\nopen \\x1b]0;title\\a? "; out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestEscapeWriter(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain text\n":         "plain text\n",
+		"tab\tand é ⚠ …\n":     "tab\tand é ⚠ …\n",
+		"\x1b[31mred\x1b[0m":   `\x1b[31mred\x1b[0m`,
+		"8-bit CSI \x9b2J":     `8-bit CSI \x9b2J`,
+		"C1 CSI \u009b2J":      `C1 CSI \u009b2J`,
+		"done\rsalt: ok":       `done\rsalt: ok`,
+		"del\x7f":              `del\x7f`,
+		"bidi \u202egpj.exe":   `bidi \u202egpj.exe`,
+		"\xff\xfe start bytes": `\xff\xfe start bytes`,
+		"real \ufffd stays":    "real \ufffd stays",
+		"":                     "",
+	} {
+		var out bytes.Buffer
+		n, err := EscapeWriter(&out).Write([]byte(in))
+		if err != nil || n != len(in) {
+			t.Errorf("Write(%q) = %d, %v; want %d, nil", in, n, err, len(in))
+		}
+		if out.String() != want {
+			t.Errorf("Write(%q) wrote %q, want %q", in, out.String(), want)
+		}
+	}
+}
+
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func TestEscapeWriterError(t *testing.T) {
+	for _, in := range []string{"plain", "\x1b"} {
+		if n, err := EscapeWriter(failWriter{}).Write([]byte(in)); n != 0 || !errors.Is(err, io.ErrClosedPipe) {
+			t.Errorf("Write(%q) = %d, %v; want 0, io.ErrClosedPipe", in, n, err)
+		}
+	}
+}
+
 func TestFormatHelpers(t *testing.T) {
 	for n, want := range map[int64]string{5: "5 bytes", 2048: "2.0 KB", 3 << 20: "3.0 MB", 2 << 30: "2.0 GB"} {
 		if got := humanBytes(n); got != want {

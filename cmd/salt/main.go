@@ -34,6 +34,10 @@ var gitOps app.GitOps = app.RealGit{}
 // replace them so they never start a database program.
 var databaseKinds = source.Kinds
 
+// stderr is where main prints errors. An error can quote a path from the
+// backup repo or a program's output, so control characters are escaped.
+var stderr = app.EscapeWriter(os.Stderr)
+
 // usage is usageText with the presets' names filled in.
 var usage = strings.Replace(usageText, "{presets}", strings.Join(preset.Names(), ", "), 1)
 
@@ -123,11 +127,11 @@ Environment:
 
 func main() {
 	if err := guard.Enter(); err != nil {
-		fmt.Fprintln(os.Stderr, "salt:", err)
+		fmt.Fprintln(stderr, "salt:", err)
 		os.Exit(3)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usage)
+		fmt.Fprint(stderr, usage)
 		os.Exit(2)
 	}
 	err := run(os.Args[1], os.Args[2:])
@@ -137,13 +141,13 @@ func main() {
 	case errors.Is(err, app.ErrReported):
 		os.Exit(1) // already reported
 	case errors.Is(err, app.ErrInterrupted):
-		fmt.Fprintln(os.Stderr, "salt:", err)
+		fmt.Fprintln(stderr, "salt:", err)
 		os.Exit(130)
 	case errors.As(err, &ue):
-		fmt.Fprintf(os.Stderr, "salt: %v\n\n%s", err, usage)
+		fmt.Fprintf(stderr, "salt: %v\n\n%s", err, usage)
 		os.Exit(2)
 	default:
-		fmt.Fprintln(os.Stderr, "salt:", err)
+		fmt.Fprintln(stderr, "salt:", err)
 		os.Exit(1)
 	}
 }

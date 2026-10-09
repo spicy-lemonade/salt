@@ -632,6 +632,33 @@ func TestPushedAttributeStopsTheBackup(t *testing.T) {
 	}
 }
 
+// Someone who can push chooses file names and attribute values. Salt's
+// messages show the control codes in them escaped, never raw, whether the UI
+// prints them or main prints the error.
+func TestPushedControlCodesAreEscaped(t *testing.T) {
+	const code = "\x1b[2J"
+	const shown = `\x1b[2J`
+	e := newEnv(t)
+	mine, _ := pushedChange(t, e, ".gitattributes", "*.age eol="+code)
+	write(t, filepath.Join(mine, "leak"+code+".md"), "plaintext\n")
+	dest := filepath.Join(e.home, "out"+code)
+	write(t, filepath.Join(dest, "keep.md"), "keep\n")
+
+	for _, tt := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"doctor", mine}, "eol is set to " + shown},
+		{[]string{"doctor", mine}, "leak" + shown + ".md"},
+		{[]string{"restore", mine, "--to", dest}, "out" + shown + " already exists"},
+	} {
+		out, exit := e.run(mine, "salt", tt.args...)
+		if exit == 0 || !strings.Contains(out, tt.want) || strings.Contains(out, "\x1b") {
+			t.Errorf("salt %v: exit %d, want %q and no raw ESC:\n%q", tt.args, exit, tt.want, out)
+		}
+	}
+}
+
 // hook install shows a hook inside the home folder as ~/….
 func TestHookInstallShowsHomePath(t *testing.T) {
 	e := newEnv(t)

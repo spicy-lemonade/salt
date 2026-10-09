@@ -410,6 +410,14 @@ against someone who can push to it:
 - **Tampered index.** The index is read one entry at a time, capped at 100,000
   entries and 32 MB, so a crafted index can't use much memory. `salt verify`
   lists at most 50 problems, with long paths shortened.
+- **Terminal codes.** Someone who can push chooses file names, attribute
+  values and the index's paths, and a remote or database server chooses what
+  git and `pg_dump` print. A control character among them, such as ESC, could
+  change what the terminal shows. Everything salt prints goes through one
+  writer that shows every character that is not printable, other than a
+  newline or a tab, as a Go escape such as `\x1b`, and every byte that is not
+  UTF-8 as `\xNN`. A path from the index that holds one, a newline included,
+  is also quoted, so it can't look like a line of salt's own.
 - **Ignore rules and attributes.** `.gitignore` and `.gitattributes` are
   public files. Someone who can push can add a rule that makes git skip new
   encrypted files, or rewrite them when storing or checking them out (for

@@ -613,6 +613,7 @@ func TestValidEntryClipsPaths(t *testing.T) {
 		"short unsafe":   {Entry{Path: "../x"}, `unsafe path "../x"`},
 		"empty path":     {Entry{Path: ""}, `unsafe path ""`},
 		"short readable": {Entry{Path: "a", Object: "objects/aa/b.age"}, `hash for a is not 64 hex characters`},
+		"control codes":  {Entry{Path: "a\x1b[2Jb", Object: "objects/aa/b.age"}, `hash for "a\x1b[2Jb" is not 64 hex characters`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := validEntry(&tt.e)
@@ -1455,6 +1456,18 @@ func TestIndexEntryChecks(t *testing.T) {
 func TestClip(t *testing.T) {
 	if clip("short") != "short" {
 		t.Error("short value changed")
+	}
+	for in, want := range map[string]string{
+		"a\x1b[2Jb":     `"a\x1b[2Jb"`,
+		"a\nsalt: ok":   `"a\nsalt: ok"`,
+		"tab\there":     `"tab\there"`,
+		"bad \xff":      `"bad \xff"`,
+		"bidi \u202e":   `"bidi \u202e"`,
+		"café/notes.md": "café/notes.md",
+	} {
+		if got := clip(in); got != want {
+			t.Errorf("clip(%q) = %s, want %s", in, got, want)
+		}
 	}
 	long := clip(strings.Repeat("é", 100))
 	if len(long) > 80 || !strings.Contains(long, "(200 bytes)") {

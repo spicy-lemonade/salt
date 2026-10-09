@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"filippo.io/age"
@@ -373,11 +374,16 @@ func isSHA256(s string) bool {
 }
 
 // clip shortens a value from the index before it goes into an error message,
-// so a crafted index can't print megabytes into logs or cron mail.
+// so a crafted index can't print megabytes into logs or cron mail. A value
+// with a character that is not printable, such as a newline, is quoted, so it
+// can't make the message look like more than one line.
 func clip(s string) string {
 	const max = 40
 	if len(s) <= max {
-		return s
+		if utf8.ValidString(s) && strings.IndexFunc(s, func(r rune) bool { return !unicode.IsPrint(r) }) < 0 {
+			return s
+		}
+		return strconv.Quote(s)
 	}
 	return fmt.Sprintf("%q… (%d bytes)", strings.ToValidUTF8(s[:max], ""), len(s))
 }

@@ -252,9 +252,9 @@ func (p *partReader) next() error {
 		f.Close()
 		var noMatch *age.NoIdentityMatchError
 		if errors.As(err, &noMatch) {
-			return fmt.Errorf("%s: none of your keys can decrypt this backup", path.Base(name))
+			return fmt.Errorf("%s: none of your keys can decrypt this backup", clip(path.Base(name)))
 		}
-		return fmt.Errorf("%s: %w", path.Base(name), err)
+		return fmt.Errorf("%s: %w", clip(path.Base(name)), err)
 	}
 	p.f, p.r = f, ar
 	return nil
