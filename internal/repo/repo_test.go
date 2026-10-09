@@ -78,8 +78,8 @@ func TestOpenRefusesSymlinks(t *testing.T) {
 		{RecipientsFile, "../../outside/secret.txt"},
 		{FormatFile, "../README.md"},
 		{FormatFile, "missing.json"},
-		{Dir, "../outside"},
-		{Dir, "elsewhere"},
+		{Dir, "../outside/" + Dir},
+		{Dir, "elsewhere/" + Dir},
 	} {
 		t.Run(tt.link+" -> "+tt.target, func(t *testing.T) {
 			base := t.TempDir()
@@ -99,6 +99,11 @@ func TestOpenRefusesSymlinks(t *testing.T) {
 			}
 			if err := os.Symlink(tt.target, link); err != nil {
 				t.Fatal(err)
+			}
+			// A plain-path read would find a working setup through a .salt
+			// link, so the test shows the symlink check refusing it.
+			if _, err := os.Stat(filepath.Join(root, FormatFile)); tt.link == Dir && err != nil {
+				t.Fatalf("the .salt link leads to no %s: %v", FormatFile, err)
 			}
 			_, err := Open(root)
 			if !errors.Is(err, ErrForeignSymlink) || !strings.HasPrefix(err.Error(), ForeignSymlink(tt.link).Error()) {
