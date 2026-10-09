@@ -9,10 +9,12 @@
 package repo
 
 import (
-	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -38,6 +40,10 @@ const (
 
 	RecoveryPhrase     = "phrase"
 	RecoveryPassphrase = "passphrase"
+
+	// maxSaltFile is the most ReadSaltFile reads. Salt writes its own files
+	// far smaller, so a larger one was put there by someone else.
+	maxSaltFile = 64 << 10
 )
 
 // Format is .salt/format.json.
@@ -70,10 +76,28 @@ type Repo struct {
 	RecipientStrings []string
 }
 
+// missingError says salt's own file at a repo path is not there. It is
+// fs.ErrNotExist.
+type missingError string
+
+func (e missingError) Error() string        { return string(e) + " is missing" }
+func (e missingError) Is(target error) bool { return target == fs.ErrNotExist }
+
+// ErrForeignSymlink means the backup repo contains a symlink salt did not
+// create.
+var ErrForeignSymlink = errors.New("backup repo contains a symlink salt did not create")
+
+// ForeignSymlink is ErrForeignSymlink for the symlink at rel, a slash path in
+// the repo.
+func ForeignSymlink(rel string) error {
+	return fmt.Errorf("%w at %s. Someone else added it. Remove it and check the repo's recent commits before backing up or restoring",
+		ErrForeignSymlink, rel)
+}
+
 // Open loads a salt repository.
 func Open(root string) (*Repo, error) {
-	b, err := os.ReadFile(filepath.Join(root, FormatFile))
-	if errors.Is(err, os.ErrNotExist) {
+	b, err := ReadSaltFile(root, FormatFile)
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil, ErrNotInitialised
 	}
 	if err != nil {
@@ -86,31 +110,79 @@ func Open(root string) (*Repo, error) {
 	if r.Format.Version != FormatVersion {
 		return nil, fmt.Errorf("%s: format version %d is not supported by this salt; upgrade salt", FormatFile, r.Format.Version)
 	}
-	f, err := os.Open(filepath.Join(root, RecipientsFile))
-	if err != nil {
+	if b, err = ReadSaltFile(root, RecipientsFile); err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+	// A bad key is named by its line number, not quoted, so the file's
+	// contents never reach the terminal.
+	n := 0
+	for line := range bytes.Lines(b) {
+		n++
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 || line[0] == '#' {
 			continue
 		}
-		rcpt, err := age.ParseX25519Recipient(line)
+		s := string(line)
+		rcpt, err := age.ParseX25519Recipient(s)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", RecipientsFile, err)
+			return nil, fmt.Errorf("%s line %d is not an age public key", RecipientsFile, n)
 		}
 		r.Recipients = append(r.Recipients, rcpt)
-		r.RecipientStrings = append(r.RecipientStrings, line)
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
+		r.RecipientStrings = append(r.RecipientStrings, s)
 	}
 	if len(r.Recipients) == 0 {
 		return nil, fmt.Errorf("%s has no recipients", RecipientsFile)
 	}
 	return r, nil
+}
+
+// ReadSaltFile reads name, one of salt's own files in .salt, from the repo at
+// root. Someone who can push could commit it, or .salt, as a symlink. os.Root
+// refuses a link that leads outside the repo but follows one that stays
+// inside it, so ReadSaltFile refuses a symlink anywhere on the way, and
+// anything at name that is not a regular file. It reads at most maxSaltFile
+// bytes. A missing file is fs.ErrNotExist.
+func ReadSaltFile(root, name string) ([]byte, error) {
+	rt, err := os.OpenRoot(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, missingError(name)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rt.Close()
+	var fi fs.FileInfo
+	parts := strings.Split(name, "/")
+	for i := range parts {
+		p := strings.Join(parts[:i+1], "/")
+		fi, err = rt.Lstat(filepath.FromSlash(p))
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, missingError(name)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if fi.Mode()&fs.ModeSymlink != 0 {
+			return nil, ForeignSymlink(p)
+		}
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file. Check the repo's recent commits before backing up or restoring", name)
+	}
+	f, err := rt.Open(filepath.FromSlash(name))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxSaltFile+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxSaltFile {
+		return nil, fmt.Errorf("%s is larger than %d KiB, far larger than salt writes it. Check the repo's recent commits before backing up or restoring",
+			name, maxSaltFile>>10)
+	}
+	return b, nil
 }
 
 // Write creates .salt/format.json and .salt/recipients.txt. It writes through

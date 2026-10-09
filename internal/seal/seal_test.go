@@ -793,7 +793,7 @@ func TestDecodeErrors(t *testing.T) {
 	// decodeErr only runs where the decoder's errors come out, and salt's
 	// own messages never go there. Show that one would not be clipped
 	// anyway if it were long.
-	own := fmt.Errorf("%w at %s", ErrForeignSymlink, strings.Repeat("b", 300))
+	own := fmt.Errorf("%w at %s", repo.ErrForeignSymlink, strings.Repeat("b", 300))
 	if got := decodeErr(own); got != own || len(got.Error()) <= maxDecodeErr {
 		t.Fatalf("decodeErr changed a salt error: %v", got)
 	}
@@ -824,7 +824,7 @@ func TestRemoveStaleRefusesSymlinkedFolder(t *testing.T) {
 			before := snapshot(t, git)
 
 			removed, err := removeStale(openRoot(t, f.root), map[string]bool{}, prune)
-			if !errors.Is(err, ErrForeignSymlink) || !strings.Contains(err.Error(), "at objects") {
+			if !errors.Is(err, repo.ErrForeignSymlink) || !strings.Contains(err.Error(), "at objects") {
 				t.Fatalf("removeStale error = %v, want a foreign symlink at objects", err)
 			}
 			if len(removed) != 0 {
@@ -862,12 +862,12 @@ func TestWalkRepoDir(t *testing.T) {
 	if seen, err := walk("missing"); err != nil || len(seen) != 0 {
 		t.Fatalf("missing folder: %v, %v", seen, err)
 	}
-	if seen, err := walk("files"); !errors.Is(err, ErrForeignSymlink) || len(seen) != 0 {
+	if seen, err := walk("files"); !errors.Is(err, repo.ErrForeignSymlink) || len(seen) != 0 {
 		t.Fatalf("symlinked folder: %v, %v", seen, err)
 	}
 	os.Chmod(root, 0o000)
 	defer os.Chmod(root, 0o755)
-	if _, err := walk("objects"); err == nil || errors.Is(err, ErrForeignSymlink) {
+	if _, err := walk("objects"); err == nil || errors.Is(err, repo.ErrForeignSymlink) {
 		t.Fatalf("unreadable repo: %v", err)
 	}
 }
@@ -1291,7 +1291,7 @@ func TestRestoreRefusesSymlinkedObjects(t *testing.T) {
 	if _, err := Restore(f.root, f.ids(), filepath.Join(t.TempDir(), "r"), RestoreOptions{}); err == nil {
 		t.Fatal("restore read objects from outside the repo")
 	}
-	if _, err := Verify(f.root, f.ids(), VerifyOptions{Workers: 0}); !errors.Is(err, ErrForeignSymlink) {
+	if _, err := Verify(f.root, f.ids(), VerifyOptions{Workers: 0}); !errors.Is(err, repo.ErrForeignSymlink) {
 		t.Fatalf("verify with a symlinked files/: %v", err)
 	}
 }
@@ -1307,7 +1307,7 @@ func TestSymlinkPointingInsideTheRepo(t *testing.T) {
 	os.Symlink(".", filepath.Join(f.root, repo.ObjectsDir))
 
 	_, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer})
-	if !errors.Is(err, ErrForeignSymlink) || !strings.Contains(err.Error(), "at objects") {
+	if !errors.Is(err, repo.ErrForeignSymlink) || !strings.Contains(err.Error(), "at objects") {
 		t.Fatalf("seal: %v", err)
 	}
 	for _, p := range []string{".git/HEAD", repo.FormatFile, repo.RecipientsFile, repo.IndexFile} {
@@ -1315,10 +1315,10 @@ func TestSymlinkPointingInsideTheRepo(t *testing.T) {
 			t.Errorf("%s was deleted", p)
 		}
 	}
-	if _, err := Restore(f.root, f.ids(), filepath.Join(t.TempDir(), "r"), RestoreOptions{}); !errors.Is(err, ErrForeignSymlink) {
+	if _, err := Restore(f.root, f.ids(), filepath.Join(t.TempDir(), "r"), RestoreOptions{}); !errors.Is(err, repo.ErrForeignSymlink) {
 		t.Errorf("restore: %v", err)
 	}
-	if _, err := Verify(f.root, f.ids(), VerifyOptions{Workers: 0}); !errors.Is(err, ErrForeignSymlink) {
+	if _, err := Verify(f.root, f.ids(), VerifyOptions{Workers: 0}); !errors.Is(err, repo.ErrForeignSymlink) {
 		t.Errorf("verify: %v", err)
 	}
 }
@@ -1335,7 +1335,7 @@ func TestForeignSymlinksAnywhereManaged(t *testing.T) {
 			if err := os.Symlink(t.TempDir(), p); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); !errors.Is(err, ErrForeignSymlink) {
+			if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); !errors.Is(err, repo.ErrForeignSymlink) {
 				t.Fatalf("seal with a symlink at %s: %v", link, err)
 			}
 		})

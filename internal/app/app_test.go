@@ -610,6 +610,57 @@ func TestDoctorGitHubLimit(t *testing.T) {
 	}
 }
 
+// Someone who can push can commit key.age as a symlink, or make it huge.
+// Recovery and doctor must refuse it before reading through it, and say
+// nothing of what it points at.
+func TestKeyFileRefusesWhatSaltDidNotWrite(t *testing.T) {
+	for name, tt := range map[string]struct {
+		plant func(t *testing.T, p string)
+		want  string
+	}{
+		"symlink": {func(t *testing.T, p string) {
+			secret := filepath.Join(t.TempDir(), "secret.txt")
+			os.WriteFile(secret, []byte("the secret line\n"), 0o644)
+			if err := os.Symlink(secret, p); err != nil {
+				t.Fatal(err)
+			}
+		}, "backup repo contains a symlink salt did not create at " + repo.KeyFile},
+		"too large": {func(t *testing.T, p string) {
+			os.WriteFile(p, []byte(strings.Repeat("the secret line\n", 5000)), 0o644)
+		}, repo.KeyFile + " is larger than 64 KiB"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			e.ui.interactive = false
+			pf := filepath.Join(t.TempDir(), "pass")
+			os.WriteFile(pf, []byte("correct horse battery staple\n"), 0o600)
+			if err := e.app.Init(InitOptions{Repo: e.root, Recovery: repo.RecoveryPassphrase, PassphraseFile: pf}); err != nil {
+				t.Fatal(err)
+			}
+			p := filepath.Join(e.root, repo.KeyFile)
+			if err := os.Remove(p); err != nil {
+				t.Fatal(err)
+			}
+			tt.plant(t, p)
+
+			e.ui.interactive = true
+			e.ui.answer = func(p, out string) (string, error) {
+				t.Fatalf("asked %q before refusing key.age", p)
+				return "", nil
+			}
+			err := e.app.RecoveryTest(e.root)
+			if err == nil || !strings.Contains(err.Error(), tt.want) || strings.Contains(err.Error(), "secret") {
+				t.Fatalf("RecoveryTest: %v, want %q", err, tt.want)
+			}
+			e.ui.out.Reset()
+			err = e.app.Doctor(e.root)
+			if out := e.ui.out.String(); !errors.Is(err, ErrReported) || !strings.Contains(out, tt.want) || strings.Contains(out, "secret") {
+				t.Fatalf("Doctor: %v, want %q\n%s", err, tt.want, out)
+			}
+		})
+	}
+}
+
 func TestDoctorPassphraseKeyFile(t *testing.T) {
 	e := newEnv(t)
 	e.ui.interactive = false

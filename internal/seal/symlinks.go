@@ -2,7 +2,6 @@ package seal
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -14,10 +13,6 @@ import (
 // symlink at or below any of them (symlinks from the source are recorded in
 // the encrypted index instead), so a symlink there was added by someone else.
 var managed = []string{repo.Dir, repo.IndexFile, repo.ObjectsDir, repo.FilesDir}
-
-// ErrForeignSymlink means the backup repo contains a symlink salt did not
-// create.
-var ErrForeignSymlink = errors.New("backup repo contains a symlink salt did not create")
 
 // CheckNoSymlinks refuses a repo with any symlink where salt keeps its data,
 // or at any of the extra repo paths given. os.Root already stops links that
@@ -36,8 +31,7 @@ func CheckNoSymlinks(root string, extra ...string) error {
 			}
 			if d.Type()&fs.ModeSymlink != 0 {
 				rel, _ := filepath.Rel(root, p)
-				return fmt.Errorf("%w at %s. Someone else added it. Remove it and check the repo's recent commits before backing up or restoring",
-					ErrForeignSymlink, filepath.ToSlash(rel))
+				return repo.ForeignSymlink(filepath.ToSlash(rel))
 			}
 			return nil
 		})
@@ -61,8 +55,7 @@ func walkRepoDir(rt *os.Root, dir string, fn fs.WalkDirFunc) error {
 		return err
 	}
 	if fi.Mode()&fs.ModeSymlink != 0 {
-		return fmt.Errorf("%w at %s. Someone else added it. Remove it and check the repo's recent commits before backing up or restoring",
-			ErrForeignSymlink, dir)
+		return repo.ForeignSymlink(dir)
 	}
 	return fs.WalkDir(rt.FS(), dir, fn)
 }

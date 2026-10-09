@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -188,9 +186,9 @@ func (a *App) promptIdentity(r *repo.Repo) (*age.X25519Identity, keys.Secret, er
 		}
 		secret = keys.PhraseSecret(entropy)
 	case repo.RecoveryPassphrase:
-		data, err := os.ReadFile(filepath.Join(r.Root, repo.KeyFile))
+		data, err := repo.ReadSaltFile(r.Root, repo.KeyFile)
 		if err != nil {
-			return nil, secret, fmt.Errorf("reading %s: %w", repo.KeyFile, err)
+			return nil, secret, err
 		}
 		p, err := a.UI.ReadSecret("Passphrase: ")
 		if err != nil {

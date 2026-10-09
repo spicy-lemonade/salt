@@ -392,7 +392,11 @@ against someone who can push to it:
   `index.age`, `objects/`, `files/`). Seal, restore and verify refuse to run
   if one is there, whether it points outside the repo or back inside it. As a
   second guard, every read and write goes through `os.Root`, which refuses
-  paths that lead outside the repo.
+  paths that lead outside the repo. Every command reads salt's own files in
+  `.salt/` only if neither they nor the folder are symlinks, and reads at most
+  64 KiB of each. So a pushed link to a device or to another file can't make
+  salt read without end or show what the file holds. A bad key in
+  `.salt/recipients.txt` is named by its line number, not quoted.
 - **Tampered index.** The index is read one entry at a time, capped at 100,000
   entries and 32 MB, so a crafted index can't use much memory. `salt verify`
   lists at most 50 problems, with long paths shortened.
