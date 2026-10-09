@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"math"
 	"math/rand/v2"
 	"os"
 	"path"
@@ -352,7 +353,7 @@ func TestPartWriterAndReader(t *testing.T) {
 		for _, p := range w.parts {
 			names = append(names, p.Object)
 		}
-		pr := &partReader{rt: rt, ids: f.ids(), names: names}
+		pr := &partReader{rt: rt, ids: f.ids(), names: names, left: math.MaxInt64}
 		got, err := io.ReadAll(pr)
 		pr.close()
 		if err != nil || !bytes.Equal(got, data) {
@@ -504,10 +505,15 @@ func TestOversizedObjectIsSealedAgain(t *testing.T) {
 			const rel = "data/store.db"
 			ce := c.Files[rel]
 			// Truncate makes the object sparse, so it takes no space on disk.
-			if err := os.Truncate(filepath.Join(f.root, filepath.FromSlash(ce.Object)), size); err != nil {
+			obj := filepath.Join(f.root, filepath.FromSlash(ce.Object))
+			if err := os.Truncate(obj, size); err != nil {
 				t.Fatal(err)
 			}
-			ce.CipherSize = size
+			fi, err := os.Stat(obj)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ce.CipherSize, ce.ModTime = size, fi.ModTime().UnixNano()
 			c.Files[rel] = ce
 			if err := c.save(cPath); err != nil {
 				t.Fatal(err)

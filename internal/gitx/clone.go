@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os/exec"
 	"regexp"
@@ -57,17 +58,45 @@ func RedactURL(s string) string {
 }
 
 // Clone downloads only the latest commit of remote's default branch into
-// dir, which must be empty. Cancelling ctx stops git. Errors never show the
-// credentials remote may hold.
+// dir, which must be empty. The URL is fetched from directly, never saved as
+// a remote, so a download left behind by a salt that was killed outright
+// holds no password or token from it. Cancelling ctx stops git. Errors never
+// show the credentials remote may hold.
 func Clone(ctx context.Context, remote, dir string) error {
-	// "--" stops a URL starting with "-" from being read as an option. git
-	// runs in dir and clones into ".", so a relative dir is not taken twice.
-	// --depth 1 also fetches only the default branch.
-	cmd := exec.CommandContext(ctx, "git", Args(dir, "clone", "--depth", "1", "--no-tags", "--quiet", "--", remote, ".")...)
+	if err := cloneStep(ctx, dir, remote, nil, "init", "--quiet"); err != nil {
+		return err
+	}
+	// "--" stops a URL starting with "-" from being read as an option.
+	// --depth 1 fetches only the commit HEAD names.
+	err := cloneStep(ctx, dir, remote, nil, "fetch", "--depth", "1", "--no-tags", "--quiet", "--", remote, "HEAD")
+	if failed := (*proc.Error)(nil); errors.As(err, &failed) {
+		// A remote with no default branch, such as a new, empty one, has
+		// nothing to download, as git clone finds too. A fetch that was
+		// stopped is not asked about.
+		head := &proc.LimitedBuffer{Max: 1}
+		if cloneStep(ctx, dir, remote, head, "ls-remote", "--", remote, "HEAD") == nil && head.String() == "" {
+			return nil
+		}
+	}
+	if err != nil {
+		return err
+	}
+	return cloneStep(ctx, dir, remote, nil, "checkout", "--quiet", "--detach", "FETCH_HEAD")
+}
+
+// cloneStep runs one git command for Clone in dir, with its output going to
+// stdout. Its errors name the command, with the URL for one that talks to
+// remote, and never show the credentials remote may hold.
+func cloneStep(ctx context.Context, dir, remote string, stdout io.Writer, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", Args(dir, args...)...)
+	cmd.Stdout = stdout
 	err := proc.Run(ctx, cmd)
 	var failed *proc.Error
 	if errors.As(err, &failed) {
-		failed.Program = "git clone " + RedactURL(remote)
+		failed.Program = "git " + args[0]
+		if slices.Contains(args, remote) {
+			failed.Program += " " + RedactURL(remote)
+		}
 		failed.Stderr = hideCredentials(failed.Stderr, remote)
 	}
 	return err

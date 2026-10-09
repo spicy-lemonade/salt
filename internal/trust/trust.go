@@ -19,6 +19,7 @@ import (
 	"slices"
 
 	"github.com/spicy-lemonade/salt/internal/repo"
+	"github.com/spicy-lemonade/salt/internal/seal"
 )
 
 // Pin is what was approved for one backup repo.
@@ -79,18 +80,11 @@ func (s Store) Save(root string, pin Pin) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(pin, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, p)
+	return seal.WritePrivate(p, append(b, '\n'))
 }
 
 // Diff describes, in plain words, how got differs from the approved pin.

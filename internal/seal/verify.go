@@ -133,7 +133,7 @@ func verifyEntry(rt *os.Root, ids []age.Identity, e Entry) (int64, error) {
 			return 0, fmt.Errorf("%s: its encrypted file %s is missing", clip(e.Path), clip(obj))
 		}
 	}
-	r, closeFn, err := decryptStream(rt, objects, ids)
+	r, closeFn, err := decryptStream(rt, objects, ids, e.Size)
 	if err != nil {
 		return 0, fmt.Errorf("%s: %v", clip(e.Path), err)
 	}

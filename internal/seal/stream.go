@@ -12,6 +12,7 @@ import (
 	"hash"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -156,7 +157,8 @@ func (w *partWriter) Write(p []byte) (int, error) {
 	return written, nil
 }
 
-// closePart finishes the open part, if any, and records its size.
+// closePart finishes the open part, if any, and records its size and
+// last-modified time.
 func (w *partWriter) closePart() error {
 	if w.f == nil {
 		return nil
@@ -167,13 +169,18 @@ func (w *partWriter) closePart() error {
 		f.Close()
 		return err
 	}
-	fi, err := f.Stat()
-	if err != nil {
-		f.Close()
+	if err := f.Close(); err != nil {
 		return err
 	}
-	w.parts[len(w.parts)-1].CipherSize = fi.Size()
-	return f.Close()
+	// Read once the file is closed, as some file systems date a file when
+	// it is closed. Renaming the part into place keeps both.
+	fi, err := w.rt.Lstat(w.tmps[len(w.tmps)-1])
+	if err != nil {
+		return err
+	}
+	part := &w.parts[len(w.parts)-1]
+	part.CipherSize, part.ModTime = fi.Size(), fi.ModTime().UnixNano()
+	return nil
 }
 
 // commit moves every part into place. The first part goes last, so a file
@@ -210,12 +217,14 @@ func tempName(dir string) (string, error) {
 }
 
 // decryptStream opens the objects (slash paths inside rt) holding one
-// compressed stream, for reading its plaintext. The first is opened now, so
-// a missing file or a wrong key is reported here; each later one is opened
-// only once the one before it is used up and closed. Call the returned
-// function when done.
-func decryptStream(rt *os.Root, objects []string, ids []age.Identity) (io.Reader, func(), error) {
-	pr := &partReader{rt: rt, ids: ids, names: objects}
+// compressed stream of at most plain bytes of plaintext, for reading it. The
+// first is opened now, so a missing file or a wrong key is reported here;
+// each later one is opened only once the one before it is used up and
+// closed. An object that takes the ciphertext past what plain bytes can
+// make (see maxCipher) is refused with errOversized before it is decrypted.
+// Call the returned function when done.
+func decryptStream(rt *os.Root, objects []string, ids []age.Identity, plain int64) (io.Reader, func(), error) {
+	pr := &partReader{rt: rt, ids: ids, names: objects, left: maxCipher(plain, len(objects))}
 	if err := pr.next(); err != nil {
 		return nil, nil, err
 	}
@@ -230,11 +239,33 @@ func decryptStream(rt *os.Root, objects []string, ids []age.Identity) (io.Reader
 	return zr, func() { zr.Close(); pr.close() }, nil
 }
 
+// errOversized means an object holds more ciphertext than the plaintext the
+// index records could ever make. Someone who can push may have replaced it.
+var errOversized = errors.New("its encrypted file is larger than the file it holds could make it")
+
+// cipherOverhead is what each object may add beyond its share of plain/64
+// (see maxCipher): its age header, which is about 100 bytes for each of the
+// at most 1,000 or so keys recipients.txt can hold, and its zstd frame.
+const cipherOverhead = 256 << 10
+
+// maxCipher is the most ciphertext n objects holding plain bytes of
+// plaintext can take. zstd adds at most about plain/128 to data that does
+// not compress, and age 16 bytes in every 64 KiB, so plain/64 is enough for
+// both.
+func maxCipher(plain int64, n int) int64 {
+	extra := int64(n) * cipherOverhead
+	if plain > (math.MaxInt64-extra)/2 {
+		return math.MaxInt64
+	}
+	return plain + plain/64 + extra
+}
+
 // partReader reads the decrypted parts one after another as one stream.
 type partReader struct {
 	rt    *os.Root
 	ids   []age.Identity
 	names []string // parts not yet opened
+	left  int64    // ciphertext the parts not yet opened may hold
 	f     *os.File // the open part, or nil
 	r     io.Reader
 }
@@ -244,7 +275,7 @@ func (p *partReader) next() error {
 	p.close()
 	name := p.names[0]
 	p.names = p.names[1:]
-	f, _, err := regular.Open(p.rt.OpenFile, filepath.FromSlash(name))
+	f, fi, err := regular.Open(p.rt.OpenFile, filepath.FromSlash(name))
 	if err != nil {
 		// The error's own path is the whole name from the index, so it is
 		// named through clip instead, keeping the cause for errors.Is.
@@ -254,6 +285,11 @@ func (p *partReader) next() error {
 		}
 		return fmt.Errorf("%s: %w", clip(path.Base(name)), err)
 	}
+	if fi.Size() > p.left {
+		f.Close()
+		return fmt.Errorf("%s: %w", clip(path.Base(name)), errOversized)
+	}
+	p.left -= fi.Size()
 	ar, err := age.Decrypt(f, p.ids...)
 	if err != nil {
 		f.Close()

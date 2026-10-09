@@ -258,7 +258,9 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 				if hashedHook != nil {
 					hashedHook(it.abs)
 				}
-				ok = cached && prev.SHA256 == sha && objectIntact(rt, prev)
+				if cached && prev.SHA256 == sha {
+					ce, ok = objectIntact(rt, prev)
+				}
 				chunk = !ok && size > int64(maxChunk)
 			}
 		}
@@ -359,15 +361,17 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	if len(b) > maxIndexSize {
 		return nil, fmt.Errorf("the index would be %d bytes; salt supports at most %d", len(b), maxIndexSize)
 	}
-	next.IndexSHA, next.IndexSize = ixSHA, c.IndexSize
-	if ixSHA != c.IndexSHA || !sizeIs(rt, repo.IndexFile, c.IndexSize) {
+	next.IndexSHA = ixSHA
+	ixPart, ok := partIntact(rt, cachePart{Object: repo.IndexFile, CipherSize: c.IndexSize, ModTime: c.IndexModTime})
+	if ixSHA != c.IndexSHA || !ok {
 		_, parts, err := encryptTo(rt, repo.IndexFile, bytes.NewReader(b), r.Recipients, 0)
 		if err != nil {
 			return nil, fmt.Errorf("writing index: %w", err)
 		}
-		next.IndexSize = parts[0].CipherSize
+		ixPart = parts[0]
 		res.IndexNew = true
 	}
+	next.IndexSize, next.IndexModTime = ixPart.CipherSize, ixPart.ModTime
 
 	removed, err := removeStale(rt, keep, opt.Prune)
 	res.Removed = removed
@@ -462,8 +466,9 @@ func encryptChunks(rt *os.Root, r *repo.Repo, abs string, gear *gearTable, prev 
 			if ok {
 				break
 			}
-			p, ok = m[key]
-			ok = ok && partIntact(rt, p)
+			if p, ok = m[key]; ok {
+				p, ok = partIntact(rt, p)
+			}
 		}
 		if !ok {
 			if chunkHook != nil {
@@ -519,28 +524,41 @@ func unixNano(t time.Time) int64 {
 }
 
 // objectIntact reports whether every part of a cached file is still in the
-// repo at the size it was written, and small enough to push. An older salt
-// wrote a large file as one object over GitHub's limit; that file is sealed
-// again, in chunks, even though it has not changed.
-func objectIntact(rt *os.Root, ce cacheEntry) bool {
-	for _, p := range ce.all() {
-		if !partIntact(rt, p) {
-			return false
+// repo as seal wrote it (see partIntact), and returns the entry with the
+// last-modified time of each part. An older salt wrote a large file as one
+// object over GitHub's limit; that file is sealed again, in chunks, even
+// though it has not changed.
+func objectIntact(rt *os.Root, ce cacheEntry) (cacheEntry, bool) {
+	parts := ce.all()
+	out := make([]cachePart, len(parts))
+	for i, p := range parts {
+		var ok bool
+		if out[i], ok = partIntact(rt, p); !ok {
+			return ce, false
 		}
 	}
-	return true
+	return newCacheEntry(ce.SHA256, out), true
 }
 
-// partIntact reports whether one part is still in the repo at the size it
-// was written, and small enough to push.
-func partIntact(rt *os.Root, p cachePart) bool {
-	return p.Object != "" && p.CipherSize <= repo.GitHubFileLimit && sizeIs(rt, p.Object, p.CipherSize)
-}
-
-// sizeIs reports whether rel is a regular file (not a symlink) of size n.
-func sizeIs(rt *os.Root, rel string, n int64) bool {
-	fi, err := rt.Lstat(filepath.FromSlash(rel))
-	return err == nil && fi.Mode().IsRegular() && fi.Size() == n
+// partIntact reports whether one part is still in the repo as seal wrote
+// it: a regular file (not a symlink) of the size it was written at, small
+// enough to push, and last modified when it was written, if the cache
+// recorded that (see cachePart). It returns the part with the file's
+// last-modified time, so a cache from an older salt gains it.
+func partIntact(rt *os.Root, p cachePart) (cachePart, bool) {
+	if p.Object == "" || p.CipherSize > repo.GitHubFileLimit {
+		return p, false
+	}
+	fi, err := rt.Lstat(filepath.FromSlash(p.Object))
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() != p.CipherSize {
+		return p, false
+	}
+	mtime := fi.ModTime().UnixNano()
+	if p.ModTime != 0 && p.ModTime != mtime {
+		return p, false
+	}
+	p.ModTime = mtime
+	return p, true
 }
 
 func walkSource(src string, exclude []string, res *Result, fn func(string) string) ([]item, error) {
