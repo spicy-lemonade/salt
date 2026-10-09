@@ -1067,9 +1067,9 @@ func TestRestoreAndVerifyStopAtSignedSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	i := slices.IndexFunc(ix.Entries, func(x Entry) bool { return x.Path == "SOUL.md" })
+	i := slices.IndexFunc(ix.Entries, func(x Entry) bool { return x.Symlink == "" })
 	if i < 0 {
-		t.Fatal("SOUL.md is not in the index")
+		t.Fatal("the index holds no regular file")
 	}
 	e := ix.Entries[i]
 	const bomb = 32 << 20
@@ -1086,7 +1086,7 @@ func TestRestoreAndVerifyStopAtSignedSize(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "does not match the index") {
 		t.Fatalf("restoreFile of a bomb: %v", err)
 	}
-	if fi, err := os.Stat(filepath.Join(tmp, "SOUL.md")); err != nil || fi.Size() != e.Size+1 {
+	if fi, err := os.Stat(filepath.Join(tmp, filepath.FromSlash(e.Path))); err != nil || fi.Size() != e.Size+1 {
 		t.Fatalf("restoreFile wrote %v, %v; want %d bytes", fi, err, e.Size+1)
 	}
 	n, err := verifyEntry(rt, f.ids(), e)
