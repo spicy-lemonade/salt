@@ -2,6 +2,7 @@ package repo
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,6 +160,29 @@ func TestOpenRefusesOddFiles(t *testing.T) {
 	os.WriteFile(filepath.Join(root, Dir), []byte("a file, not a dir"), 0o644)
 	if _, err := Open(root); err == nil || errors.Is(err, ErrNotInitialised) {
 		t.Fatalf("Open with .salt as a file: %v", err)
+	}
+	// So is a repo path that is a file.
+	if _, err := Open(filepath.Join(root, Dir)); err == nil || errors.Is(err, ErrNotInitialised) {
+		t.Fatalf("Open of a file: %v", err)
+	}
+}
+
+// A salt file that can't be opened is reported as it is, not taken for one
+// that is missing.
+func TestOpenUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every file")
+	}
+	id, _ := age.GenerateX25519Identity()
+	root := t.TempDir()
+	if err := Write(root, Format{Version: FormatVersion}, []string{id.Recipient().String()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(root, FormatFile), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(root); !errors.Is(err, fs.ErrPermission) || !strings.Contains(err.Error(), FormatFile) {
+		t.Fatalf("Open of an unreadable %s: %v", FormatFile, err)
 	}
 }
 

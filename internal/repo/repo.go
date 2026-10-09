@@ -174,12 +174,6 @@ func ReadSaltFile(root, name string) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
-	// The file checked above could have been swapped before it was opened.
-	if opened, err := f.Stat(); err != nil {
-		return nil, err
-	} else if !os.SameFile(fi, opened) {
-		return nil, fmt.Errorf("%s was replaced while salt opened it. Check the repo's recent commits before backing up or restoring", name)
-	}
 	b, err := io.ReadAll(io.LimitReader(f, maxSaltFile+1))
 	if err != nil {
 		return nil, err
