@@ -35,6 +35,10 @@ type Terminal struct {
 	out, raw io.Writer
 }
 
+// isTerminal reports whether fd is a terminal. Tests replace it, since they
+// never run in one.
+var isTerminal = term.IsTerminal
+
 func NewTerminal() *Terminal {
 	return &Terminal{in: bufio.NewReader(os.Stdin), out: escape.Writer(os.Stderr), raw: os.Stderr}
 }
@@ -52,7 +56,7 @@ func (t *Terminal) ReadLine(prompt string) (string, error) {
 
 func (t *Terminal) ReadSecret(prompt string) (string, error) {
 	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
+	if !isTerminal(fd) {
 		return t.ReadLine(prompt)
 	}
 	fmt.Fprint(t.out, prompt)
@@ -62,11 +66,11 @@ func (t *Terminal) ReadSecret(prompt string) (string, error) {
 }
 
 func (t *Terminal) Interactive() bool {
-	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
+	return isTerminal(int(os.Stdin.Fd())) && isTerminal(int(os.Stderr.Fd()))
 }
 
 func (t *Terminal) Clear() {
-	if term.IsTerminal(int(os.Stderr.Fd())) {
+	if isTerminal(int(os.Stderr.Fd())) {
 		// Clear screen and scrollback, cursor home.
 		fmt.Fprint(t.raw, "\033[H\033[2J\033[3J")
 	}

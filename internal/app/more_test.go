@@ -64,6 +64,16 @@ func TestTerminalEscapes(t *testing.T) {
 	if raw.Len() != 0 {
 		t.Fatalf("Clear printed %q", raw.String())
 	}
+
+	// On a terminal, Clear's own codes reach it unescaped, and only through raw.
+	orig := isTerminal
+	isTerminal = func(int) bool { return true }
+	t.Cleanup(func() { isTerminal = orig })
+	before := out.String()
+	term.Clear()
+	if raw.String() != "\033[H\033[2J\033[3J" || out.String() != before {
+		t.Fatalf("Clear wrote raw %q, out %q", raw.String(), out.String())
+	}
 }
 
 func TestFormatHelpers(t *testing.T) {
