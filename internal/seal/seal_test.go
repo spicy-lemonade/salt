@@ -60,12 +60,12 @@ func newFixture(t *testing.T, encryptPaths bool) *fixture {
 	if f.repo, err = repo.Open(f.root); err != nil {
 		t.Fatal(err)
 	}
-	f.write("memories/USER.md", "The user is called Ciaran.\n")
-	f.write("memories/MEMORY.md", "secret memory\n")
-	f.write("SOUL.md", "be kind\n")
-	f.write("skills/tax-return-2026/SKILL.md", "# Tax\n")
-	f.write("data/memory.db", "SQLite format 3\x00"+strings.Repeat("\x01\x02", 5000))
-	if err := os.Symlink("SOUL.md", filepath.Join(f.src, "soul-link")); err != nil {
+	f.write("notes/profile.md", "The user is called Ciaran.\n")
+	f.write("notes/facts.md", "secret memory\n")
+	f.write("NOTES.md", "be kind\n")
+	f.write("projects/tax-return-2026/plan.md", "# Tax\n")
+	f.write("data/store.db", "SQLite format 3\x00"+strings.Repeat("\x01\x02", 5000))
+	if err := os.Symlink("NOTES.md", filepath.Join(f.src, "notes-link")); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -141,7 +141,7 @@ func assertAllCiphertext(t *testing.T, root string, encryptPaths bool) {
 		if bytes.Contains(b, []byte("Ciaran")) || bytes.Contains(b, []byte("secret memory")) {
 			t.Errorf("%s contains plaintext", rel)
 		}
-		if encryptPaths && (strings.Contains(rel, "USER") || strings.Contains(rel, "tax-return") || strings.Contains(rel, "memory.db")) {
+		if encryptPaths && (strings.Contains(rel, "profile") || strings.Contains(rel, "tax-return") || strings.Contains(rel, "store.db")) {
 			t.Errorf("repo path %s reveals a source path", rel)
 		}
 	}
@@ -195,7 +195,7 @@ func TestRoundTrip(t *testing.T) {
 			}
 			assertAllCiphertext(t, f.root, encryptPaths)
 			if !encryptPaths {
-				if _, err := os.Stat(filepath.Join(f.root, "files/memories/USER.md.age")); err != nil {
+				if _, err := os.Stat(filepath.Join(f.root, "files/notes/profile.md.age")); err != nil {
 					t.Fatalf("plain-paths layout: %v", err)
 				}
 			}
@@ -234,13 +234,13 @@ func TestUnchangedSnapshotChangesNothing(t *testing.T) {
 func TestChangedAndRemovedFiles(t *testing.T) {
 	f := newFixture(t, true)
 	f.seal(false)
-	f.write("memories/USER.md", "The user moved to Cork.\n")
-	os.Remove(filepath.Join(f.src, "SOUL.md"))
+	f.write("notes/profile.md", "The user moved to Cork.\n")
+	os.Remove(filepath.Join(f.src, "NOTES.md"))
 	res := f.seal(false)
 	if res.Encrypted != 1 || res.Reused != 3 || !res.IndexNew {
 		t.Fatalf("seal after change: %+v", res)
 	}
-	// The old USER.md object and the SOUL.md object are gone.
+	// The old profile.md object and the NOTES.md object are gone.
 	if len(res.Removed) != 2 {
 		t.Fatalf("removed = %v, want 2 objects", res.Removed)
 	}
@@ -248,9 +248,9 @@ func TestChangedAndRemovedFiles(t *testing.T) {
 	if _, err := Restore(f.root, f.ids(), dest, RestoreOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(filepath.Join(dest, "memories/USER.md"))
+	b, _ := os.ReadFile(filepath.Join(dest, "notes/profile.md"))
 	if string(b) != "The user moved to Cork.\n" {
-		t.Fatalf("USER.md = %q", b)
+		t.Fatalf("profile.md = %q", b)
 	}
 }
 
@@ -286,9 +286,9 @@ func TestCacheOrObjectLoss(t *testing.T) {
 
 func TestPrune(t *testing.T) {
 	f := newFixture(t, true)
-	stray := filepath.Join(f.root, "memories")
+	stray := filepath.Join(f.root, "notes")
 	os.MkdirAll(stray, 0o755)
-	os.WriteFile(filepath.Join(stray, "USER.md"), []byte("old plaintext"), 0o644)
+	os.WriteFile(filepath.Join(stray, "profile.md"), []byte("old plaintext"), 0o644)
 	os.WriteFile(filepath.Join(f.root, "README.md"), []byte("# backups"), 0o644)
 
 	f.seal(false)
@@ -305,7 +305,7 @@ func TestPrune(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(f.root, repo.FormatFile)); err != nil {
 		t.Fatal(".salt removed by --prune")
 	}
-	if len(res.Removed) != 1 || res.Removed[0] != "memories" {
+	if len(res.Removed) != 1 || res.Removed[0] != "notes" {
 		t.Fatalf("removed = %v", res.Removed)
 	}
 }
@@ -352,7 +352,7 @@ func TestRestoreSafety(t *testing.T) {
 
 	t.Run("subset", func(t *testing.T) {
 		dest := filepath.Join(t.TempDir(), "r")
-		rr, err := Restore(f.root, f.ids(), dest, RestoreOptions{Paths: []string{"memories"}})
+		rr, err := Restore(f.root, f.ids(), dest, RestoreOptions{Paths: []string{"notes"}})
 		if err != nil || rr.Files != 2 {
 			t.Fatalf("subset restore: %+v, %v", rr, err)
 		}
@@ -704,7 +704,7 @@ func TestSealRefusesEntriesRestoreWouldRefuse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.write("SOUL.md", "be kinder\n")
+	f.write("NOTES.md", "be kinder\n")
 	entriesHook = breakEntries
 	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); err == nil {
 		t.Fatal("Seal accepted a bad entry")
@@ -919,8 +919,8 @@ func TestRestoreTracksUntilInPlace(t *testing.T) {
 	if _, err := os.Lstat(tracked); !os.IsNotExist(err) || doneCalls != 1 {
 		t.Fatalf("temporary folder %s: %v, done called %d times", tracked, err, doneCalls)
 	}
-	if b, _ := os.ReadFile(filepath.Join(dest, "SOUL.md")); string(b) != "be kind\n" {
-		t.Fatalf("restored SOUL.md = %q", b)
+	if b, _ := os.ReadFile(filepath.Join(dest, "NOTES.md")); string(b) != "be kind\n" {
+		t.Fatalf("restored NOTES.md = %q", b)
 	}
 }
 
@@ -1054,6 +1054,68 @@ func TestRestoreSizeMismatch(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "does not match the index") {
 		t.Fatalf("restore with a wrong size: %v", err)
 	}
+}
+
+// Anyone can encrypt to the repo's key, so someone who can push can put a
+// small object that expands hugely in place of a small file's object. The
+// signed index still checks out, so restore and verify must stop one byte
+// past the signed size rather than expanding it all.
+func TestRestoreAndVerifyStopAtSignedSize(t *testing.T) {
+	f := newFixture(t, true)
+	f.seal(false)
+	ix, err := ReadIndex(f.root, f.ids(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(ix.Entries, func(x Entry) bool { return x.Symlink == "" })
+	if i < 0 {
+		t.Fatal("the index holds no regular file")
+	}
+	e := ix.Entries[i]
+	const bomb = 32 << 20
+	rt := openRoot(t, f.root)
+	if _, _, err := encryptTo(rt, e.Object, io.LimitReader(zeros{}, bomb), f.repo.Recipients, 0); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(filepath.Join(f.root, e.Object)); err != nil || fi.Size() > 64<<10 {
+		t.Fatalf("bomb object: %v, %v; expected it to compress well", fi, err)
+	}
+
+	tmp := t.TempDir()
+	err = restoreFile(context.Background(), rt, f.ids(), tmp, e)
+	if err == nil || !strings.Contains(err.Error(), "does not match the index") {
+		t.Fatalf("restoreFile of a bomb: %v", err)
+	}
+	if fi, err := os.Stat(filepath.Join(tmp, filepath.FromSlash(e.Path))); err != nil || fi.Size() != e.Size+1 {
+		t.Fatalf("restoreFile wrote %v, %v; want %d bytes", fi, err, e.Size+1)
+	}
+	n, err := verifyEntry(rt, f.ids(), e)
+	if err == nil || !strings.Contains(err.Error(), "does not match the index") || n != e.Size+1 {
+		t.Fatalf("verifyEntry of a bomb read %d bytes: %v; want %d", n, err, e.Size+1)
+	}
+
+	dest := filepath.Join(t.TempDir(), "r")
+	if _, err := Restore(f.root, f.ids(), dest, RestoreOptions{}); err == nil {
+		t.Fatal("restore of a bomb succeeded")
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("failed restore left a destination")
+	}
+	res, err := Verify(f.root, f.ids(), VerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ProblemCount != 1 || res.Bytes > 1<<20 {
+		t.Fatalf("verify of a bomb: %d problems, %d bytes read", res.ProblemCount, res.Bytes)
+	}
+}
+
+// zeros reads as an endless run of zero bytes.
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
 }
 
 // writeBombIndex streams a crafted index into the repo: small once
@@ -1239,7 +1301,7 @@ func TestSealRefusesSymlinkedObjectFolders(t *testing.T) {
 			outside := t.TempDir()
 			// With visible paths the object name is predictable, so a file
 			// outside could be overwritten.
-			victim := filepath.Join(outside, "SOUL.md.age")
+			victim := filepath.Join(outside, "NOTES.md.age")
 			os.WriteFile(victim, []byte("do not touch"), 0o644)
 			if err := os.Symlink(outside, filepath.Join(f.root, dir)); err != nil {
 				t.Fatal(err)
