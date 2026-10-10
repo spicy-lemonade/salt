@@ -480,14 +480,23 @@ func (a *App) Check(repoRoot string) error {
 
 // InstallHook installs the pre-commit and pre-push hooks in the repository
 // at repoRoot, and returns where it wrote them. A hook of the person's own
-// is left as it is, and the next one is still installed. Each such hook is
-// named in the error, which is hook.ErrForeign.
+// is left as it is, and the next one is still installed. When that is the
+// only problem, each such hook is named in the error, which is then
+// hook.ErrForeign. Any other failure stops it, and its error is never
+// hook.ErrForeign, so a caller that only notes a hook of the person's own
+// still fails. The hooks found before it are named in its message.
 func (a *App) InstallHook(repoRoot string) (installed []string, err error) {
 	var foreign []error
+	fail := func(err error) error {
+		if len(foreign) == 0 {
+			return err
+		}
+		return fmt.Errorf("%w\n%s", err, errors.Join(foreign...).Error())
+	}
 	for _, h := range hook.All {
 		p, err := a.Git.HookPath(repoRoot, h.Name)
 		if err != nil {
-			return installed, errors.Join(append(foreign, err)...)
+			return installed, fail(err)
 		}
 		err = hook.Install(p, h)
 		switch {
@@ -495,7 +504,7 @@ func (a *App) InstallHook(repoRoot string) (installed []string, err error) {
 			foreign = append(foreign, fmt.Errorf("a %s %w at %s; add `%s` to it so plaintext %s are refused",
 				h.Name, err, a.short(p), h.Runs, h.Refuses))
 		case err != nil:
-			return installed, errors.Join(append(foreign, err)...)
+			return installed, fail(err)
 		default:
 			installed = append(installed, p)
 		}

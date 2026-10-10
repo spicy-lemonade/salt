@@ -17,6 +17,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/preset"
 	"github.com/spicy-lemonade/salt/internal/prune"
+	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/source"
 )
@@ -881,14 +882,24 @@ func TestInstallHooks(t *testing.T) {
 		t.Fatalf("InstallHook over a pre-push hook of the person's own = %v, %v", installed, err)
 	}
 
-	// A later hook that fails keeps what was found before it.
+	// A later hook that fails is a failure, never a hook of the person's
+	// own, and still names what was found before it. salt init then fails
+	// rather than only noting it.
 	e.git.hookFails = "pre-push"
 	os.WriteFile(want[0], []byte("#!/bin/sh\nexit 0\n"), 0o755)
-	if _, err := e.app.InstallHook(e.root); !errors.Is(err, hook.ErrForeign) || !strings.Contains(err.Error(), "no hooks folder") {
+	_, err = e.app.InstallHook(e.root)
+	if err == nil || errors.Is(err, hook.ErrForeign) || !strings.Contains(err.Error(), "no hooks folder") ||
+		!strings.Contains(err.Error(), "a pre-commit hook already exists") {
 		t.Fatalf("InstallHook with a failing pre-push hook = %v", err)
+	}
+	os.MkdirAll(filepath.Join(e.root, repo.Dir), 0o755)
+	e.ui.answer = phraseAnswers(0)
+	if err := e.app.Init(InitOptions{Repo: e.root}); err == nil || !strings.Contains(err.Error(), "installing the git hooks: no hooks folder") {
+		t.Fatalf("Init with a failing pre-push hook: %v", err)
 	}
 	e.git.hookFails = ""
 	os.Remove(want[0])
+	os.RemoveAll(filepath.Join(e.root, repo.Dir))
 
 	healthyRepo(t, e)
 	e.ui.out.Reset()
