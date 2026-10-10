@@ -8,11 +8,13 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spicy-lemonade/salt/internal/check"
@@ -21,6 +23,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/prune"
+	"github.com/spicy-lemonade/salt/internal/regular"
 	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/source"
@@ -52,8 +55,12 @@ type App struct {
 
 // GitOps is what salt asks of git. RealGit implements it; tests use a fake.
 type GitOps interface {
-	HookPath(repoRoot string) (string, error)
+	// HookPath returns where git looks for the hook called name.
+	HookPath(repoRoot, name string) (string, error)
 	Staged(repoRoot string) ([]check.Violation, error)
+	// Pushed checks the files the commits a push sends add or change (see
+	// check.Pushed).
+	Pushed(repoRoot string, tips, have []string, remote string) ([]check.Violation, error)
 	Committed(repoRoot string) ([]check.Violation, error)
 	LastCommit(repoRoot string) (t time.Time, ok bool, err error)
 	Remote(repoRoot string) string
@@ -89,9 +96,12 @@ type GitOps interface {
 // RealGit runs git through gitx (hooks disabled).
 type RealGit struct{}
 
-func (RealGit) HookPath(root string) (string, error) { return gitx.HookPath(root, "pre-commit") }
+func (RealGit) HookPath(root, name string) (string, error) { return gitx.HookPath(root, name) }
 func (RealGit) Staged(root string) ([]check.Violation, error) {
 	return check.Staged(root)
+}
+func (RealGit) Pushed(root string, tips, have []string, remote string) ([]check.Violation, error) {
+	return check.Pushed(root, tips, have, remote)
 }
 func (RealGit) Committed(root string) ([]check.Violation, error) {
 	return check.Committed(root)
@@ -196,12 +206,24 @@ func (a *App) Seal(o SealOptions) error {
 
 // lockRepo stops two salts changing the repo at root at once, such as a
 // backup still running, on a slow push, when the next one starts: each
-// would delete the objects the other had just written. The lock is the
-// state file lock (see stateFile).
+// would delete the objects the other had just written. The lock is in the
+// git folder every worktree of the repo shares (see sharedGitDir), as
+// prune deletes what git no longer needs from it, which a commit in
+// another worktree may have just written. A repo with no .git is locked
+// through the state file lock instead (see stateFile).
 func (a *App) lockRepo(root string) (unlock func(), err error) {
 	p, err := a.stateFile(root, "lock", "")
 	if err != nil {
 		return nil, err
+	}
+	// A .git salt cannot follow is refused, as locking elsewhere would let
+	// another worktree hold a lock of its own.
+	shared, err := sharedGitDir(root)
+	if err != nil {
+		return nil, fmt.Errorf("%s: cannot tell which git folder it uses, so salt cannot lock it: %w", a.short(root), err)
+	}
+	if shared != "" {
+		p = filepath.Join(shared, "salt", "lock")
 	}
 	unlock, err = guard.Lock(p)
 	if errors.Is(err, guard.ErrLocked) {
@@ -228,6 +250,71 @@ func (a *App) stateFile(root, name, ext string) (string, error) {
 	return seal.RepoFile(a.CacheDir, real, name+"-", ext)
 }
 
+// maxGitFile is the most sharedGitDir reads of the small files git keeps a
+// folder's path in.
+const maxGitFile = 4 << 10
+
+// sharedGitDir returns the git folder that the repository at root, with its
+// symlinks followed, shares with all its worktrees, or "" when root has no
+// .git. That is its .git folder, followed if it is a symlink, as stateFile
+// follows it, unless .git is a file, as in a linked worktree, which names
+// the worktree's own git folder ("gitdir: PATH"). That folder's commondir
+// file, if it has one, then names the shared folder. Each path may be
+// relative to the folder it is named in. These are the files git itself
+// reads. A .git file or commondir that cannot be read, or that names no
+// folder, is an error.
+func sharedGitDir(root string) (string, error) {
+	// A relative path in .git is relative to the real folder.
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	dotGit := filepath.Join(root, ".git")
+	fi, err := os.Stat(dotGit)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", nil
+	case err != nil:
+		return "", err
+	case fi.IsDir():
+		return dotGit, nil
+	}
+	named := func(dir, file, prefix string) (string, error) {
+		f, _, err := regular.Open(os.OpenFile, file)
+		var b []byte
+		if err == nil {
+			defer f.Close()
+			b, err = io.ReadAll(io.LimitReader(f, maxGitFile))
+		}
+		if err != nil {
+			return "", err
+		}
+		p, ok := strings.CutPrefix(strings.TrimSpace(string(b)), prefix)
+		if !ok || p == "" {
+			return "", fmt.Errorf("%s does not name a folder", file)
+		}
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(dir, p)
+		}
+		p = filepath.Clean(p)
+		// Locking in a folder that is not there would make it, out of
+		// sight of the other worktrees.
+		if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
+			return "", fmt.Errorf("%s names %s, which is not a folder", file, p)
+		}
+		return p, nil
+	}
+	gitDir, err := named(root, dotGit, "gitdir: ")
+	if err != nil {
+		return "", err
+	}
+	common, err := named(gitDir, filepath.Join(gitDir, "commondir"), "")
+	if errors.Is(err, fs.ErrNotExist) {
+		return gitDir, nil
+	}
+	return common, err
+}
+
 // openToSeal opens the salt repository at path for sealing. It refuses one
 // whose keys or settings this machine has not approved, or with no key on
 // this machine to sign its backups.
@@ -239,7 +326,8 @@ func (a *App) openToSeal(path string) (*repo.Repo, ed25519.PrivateKey, error) {
 	if err := a.checkTrusted(r); err != nil {
 		return nil, nil, err
 	}
-	signer, err := a.signingKey(r)
+	a.recordRecovery(r)
+	signer, _, err := a.signingKey(r)
 	if errors.Is(err, errNoSigningKey) {
 		return nil, nil, fmt.Errorf("this machine has no key to sign backups to %s. salt now signs every backup, so restore can tell if someone planted files in it. Run `salt trust %q` once to set it up",
 			a.short(r.Root), r.Root)
@@ -357,6 +445,30 @@ func (a *App) checkStorage(root, lead string) error {
 // ErrReported means the command failed and has already told the person why.
 var ErrReported = errors.New("problems reported")
 
+// CheckPush refuses a push from the repository at repoRoot to remote (git's
+// name for it, or its URL) that sends a file that is not encrypted. refs is
+// what git gives the pre-push hook on its input: for each ref pushed, a
+// line "LOCAL-REF LOCAL-ID REMOTE-REF REMOTE-ID". A deletion sends nothing.
+// Anything else stops the push.
+func (a *App) CheckPush(repoRoot, remote string, refs io.Reader) error {
+	tips, have, err := check.PushRefs(refs)
+	if err != nil {
+		return fmt.Errorf("salt check could not read what git is pushing, refusing the push: %w", err)
+	}
+	if len(tips) == 0 {
+		return nil
+	}
+	vs, err := a.Git.Pushed(repoRoot, tips, have, remote)
+	if err != nil {
+		return fmt.Errorf("salt check could not inspect the push, refusing it: %w", err)
+	}
+	if len(vs) > 0 {
+		a.UI.Printf("%s", check.PushReport(vs))
+		return ErrReported
+	}
+	return nil
+}
+
 // Check refuses plaintext staged in the repository at repoRoot.
 func (a *App) Check(repoRoot string) error {
 	vs, err := a.Git.Staged(repoRoot)
@@ -372,17 +484,38 @@ func (a *App) Check(repoRoot string) error {
 	return a.checkStorage(repoRoot, "salt check: refusing commit:")
 }
 
-// InstallHook installs the pre-commit hook in the repository at repoRoot.
-func (a *App) InstallHook(repoRoot string) (string, error) {
-	p, err := a.Git.HookPath(repoRoot)
-	if err != nil {
-		return "", err
+// InstallHook installs the pre-commit and pre-push hooks in the repository
+// at repoRoot, and returns where it wrote them. A hook of the person's own
+// is left as it is, and the next one is still installed. When that is the
+// only problem, each such hook is named in the error, which is then
+// hook.ErrForeign. Any other failure stops it, and its error is never
+// hook.ErrForeign, so a caller that only notes a hook of the person's own
+// still fails. The hooks found before it are named in its message.
+func (a *App) InstallHook(repoRoot string) (installed []string, err error) {
+	var foreign []error
+	fail := func(err error) error {
+		if len(foreign) == 0 {
+			return err
+		}
+		return fmt.Errorf("%w\n%s", err, errors.Join(foreign...).Error())
 	}
-	err = hook.Install(p)
-	if errors.Is(err, hook.ErrForeign) {
-		err = fmt.Errorf("%w at %s; add `salt check` to it so plaintext commits are refused", err, a.short(p))
+	for _, h := range hook.All {
+		p, err := a.Git.HookPath(repoRoot, h.Name)
+		if err != nil {
+			return installed, fail(err)
+		}
+		err = hook.Install(p, h)
+		switch {
+		case errors.Is(err, hook.ErrForeign):
+			foreign = append(foreign, fmt.Errorf("a %s %w at %s; add `%s` to it so plaintext %s are refused",
+				h.Name, err, a.short(p), h.Runs, h.Refuses))
+		case err != nil:
+			return installed, fail(err)
+		default:
+			installed = append(installed, p)
+		}
 	}
-	return p, err
+	return installed, errors.Join(foreign...)
 }
 
 func (a *App) requireGitRepo(root string) error {

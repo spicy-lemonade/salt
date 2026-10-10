@@ -136,20 +136,14 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 func (a *App) identities(r *repo.Repo) ([]age.Identity, error) {
 	var ids []age.Identity
 	for _, rcpt := range r.RecipientStrings {
-		s, err := a.Store.Get(rcpt)
-		if errors.Is(err, keys.ErrNotFound) {
+		id, err := a.storedIdentity(rcpt)
+		if errors.Is(err, keys.ErrNotFound) || errors.Is(err, errDamagedKey) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		id, err := s.Identity()
-		if err != nil {
-			return nil, err
-		}
-		if id.Recipient().String() == rcpt {
-			ids = append(ids, id)
-		}
+		ids = append(ids, id)
 	}
 	if len(ids) > 0 {
 		return ids, nil
@@ -173,6 +167,25 @@ func (a *App) identities(r *repo.Repo) ([]age.Identity, error) {
 		a.UI.Printf("✓ Key saved.\n")
 	}
 	return []age.Identity{id}, nil
+}
+
+// errDamagedKey means the key saved on this machine for a public key cannot
+// be read, or is the key for another one.
+var errDamagedKey = errors.New("the key saved for it on this machine is damaged")
+
+// storedIdentity returns the key saved on this machine for the public key
+// rcpt. It returns keys.ErrNotFound when none is saved, and errDamagedKey
+// unless the one saved really is rcpt's.
+func (a *App) storedIdentity(rcpt string) (*age.X25519Identity, error) {
+	s, err := a.Store.Get(rcpt)
+	if err != nil {
+		return nil, err
+	}
+	id, err := s.Identity()
+	if err != nil || id.Recipient().String() != rcpt {
+		return nil, errDamagedKey
+	}
+	return id, nil
 }
 
 // promptIdentity asks for the recovery phrase or passphrase and checks the

@@ -59,7 +59,8 @@ func TestHistoryAnswers(t *testing.T) {
 			"bbbb\x00\x002026-09-01T06:00:00Z\n",
 		"cat-file commit aaaa":             "tree 1\n\nmsg\n",
 		"hash-object -t commit -w --stdin": "cccc\n",
-		"for-each-ref --format=%(refname)": "refs/heads/main\nrefs/stash\nrefs/remotes/origin/main\n",
+		"for-each-ref --format=%(refname) refs/heads/main refs/remotes/origin/main": "refs/heads/main\nrefs/heads/main/old\nrefs/remotes/origin/main\n",
+		"for-each-ref --format=%(refname) refs/heads/new refs/remotes/origin/new":   "refs/heads/new\n",
 	}}
 	useFake(t, f)
 
@@ -93,19 +94,26 @@ func TestHistoryAnswers(t *testing.T) {
 		t.Errorf("UpdateRef ran %q", got)
 	}
 
-	// The stash's reflog holds the stash entries themselves, so it is never
-	// emptied; HEAD's and every other ref's are.
-	f.calls = nil
-	if err := ReclaimSpace("/repo"); err != nil {
-		t.Fatalf("ReclaimSpace = %v", err)
-	}
-	wantCalls := []string{
-		"for-each-ref --format=%(refname)",
-		"reflog expire --expire=now --expire-unreachable=now HEAD refs/heads/main refs/remotes/origin/main",
-		"-c gc.auto=0 gc --prune=now --quiet",
-	}
-	if !slices.Equal(f.calls, wantCalls) {
-		t.Errorf("ReclaimSpace ran\n%q\nwant\n%q", f.calls, wantCalls)
+	// Only the reflogs that hold what prune dropped are emptied: HEAD's,
+	// the branch's and origin's copy of it, when there is one. A ref below
+	// the branch's name, or any other, keeps its reflog.
+	for branch, expire := range map[string]string{
+		"refs/heads/main": "HEAD refs/heads/main refs/remotes/origin/main",
+		"refs/heads/new":  "HEAD refs/heads/new",
+	} {
+		f.calls = nil
+		if err := ReclaimSpace("/repo", branch); err != nil {
+			t.Fatalf("ReclaimSpace = %v", err)
+		}
+		short := strings.TrimPrefix(branch, "refs/heads/")
+		wantCalls := []string{
+			"for-each-ref --format=%(refname) " + branch + " refs/remotes/origin/" + short,
+			"reflog expire --expire=now --expire-unreachable=now " + expire,
+			"-c gc.auto=0 gc --prune=now --quiet",
+		}
+		if !slices.Equal(f.calls, wantCalls) {
+			t.Errorf("ReclaimSpace ran\n%q\nwant\n%q", f.calls, wantCalls)
+		}
 	}
 }
 
@@ -147,9 +155,9 @@ func TestHistoryGitFailures(t *testing.T) {
 		{"cat-file", func() error { _, err := CatCommit("/repo", "aaaa"); return err }, 1},
 		{"hash-object", func() error { _, err := HashCommit("/repo", []byte("x")); return err }, 1},
 		{"update-ref", func() error { return UpdateRef("/repo", "refs/heads/main", "b", "a", "why") }, 1},
-		{"for-each-ref", func() error { return ReclaimSpace("/repo") }, 1},
-		{"reflog expire", func() error { return ReclaimSpace("/repo") }, 2},
-		{"-c gc.auto=0", func() error { return ReclaimSpace("/repo") }, 3},
+		{"for-each-ref", func() error { return ReclaimSpace("/repo", "refs/heads/main") }, 1},
+		{"reflog expire", func() error { return ReclaimSpace("/repo", "refs/heads/main") }, 2},
+		{"-c gc.auto=0", func() error { return ReclaimSpace("/repo", "refs/heads/main") }, 3},
 	} {
 		t.Run(tt.fail, func(t *testing.T) {
 			f := &fakeGit{fail: tt.fail}

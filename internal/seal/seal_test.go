@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -1491,7 +1492,7 @@ func TestDecryptStreamClipsMissingObject(t *testing.T) {
 		"objects/aa/" + strings.Repeat("b", 200): `"bbbb`,
 		"objects/aa/x\n\x1b[2J.age":              `"x\n\x1b[2J.age": `,
 	} {
-		_, _, err := decryptStream(rt, []string{name}, nil)
+		_, _, err := decryptStream(rt, []string{name}, nil, 0)
 		if !errors.Is(err, fs.ErrNotExist) || !strings.HasPrefix(err.Error(), want) || len(err.Error()) > 120 || strings.ContainsAny(err.Error(), "\n\x1b") {
 			t.Errorf("decryptStream(%.40q) = %v, want it to start with %s", name, err, want)
 		}
@@ -1508,5 +1509,44 @@ func TestShowPathsInMessages(t *testing.T) {
 	mark := func(p string) string { return "<" + filepath.Base(p) + ">" }
 	if err := CheckDisjoint(inner, dir, mark); err == nil || !strings.Contains(err.Error(), "source <src> and repository <"+filepath.Base(dir)+">") {
 		t.Fatalf("with Show: %v", err)
+	}
+}
+
+// An object larger than its file could make is refused before it is
+// decrypted, by restore and verify alike, and so is an oversized index.
+func TestOversizedCiphertextIsRefused(t *testing.T) {
+	f := newFixture(t, true)
+	f.seal(false)
+	obj := f.objectOf("NOTES.md")
+	if err := os.Truncate(obj, maxCipher(int64(len("be kind\n")), 1)+1); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Restore(f.root, f.ids(), filepath.Join(t.TempDir(), "r"), RestoreOptions{})
+	if !errors.Is(err, errOversized) || !strings.HasPrefix(err.Error(), "NOTES.md: ") {
+		t.Fatalf("Restore: %v", err)
+	}
+	res, err := Verify(f.root, f.ids(), VerifyOptions{})
+	if err != nil || res.ProblemCount != 1 || !strings.Contains(res.Problems[0], errOversized.Error()) {
+		t.Fatalf("Verify: %+v, %v", res, err)
+	}
+
+	ix := filepath.Join(f.root, repo.IndexFile)
+	if err := os.Truncate(ix, maxCipher(maxIndexSize, 1)+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadIndex(f.root, f.ids(), SignatureOptions{}); !errors.Is(err, errOversized) {
+		t.Fatalf("ReadIndex: %v", err)
+	}
+}
+
+func TestMaxCipher(t *testing.T) {
+	if got := maxCipher(0, 1); got != cipherOverhead {
+		t.Errorf("maxCipher(0, 1) = %d", got)
+	}
+	if got := maxCipher(64<<20, 3); got != 65<<20+3*cipherOverhead {
+		t.Errorf("maxCipher(64 MiB, 3) = %d", got)
+	}
+	if got := maxCipher(math.MaxInt64-1, 1); got != math.MaxInt64 {
+		t.Errorf("maxCipher near the top = %d, want no limit", got)
 	}
 }

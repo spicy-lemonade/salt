@@ -81,11 +81,11 @@ func TestRestoreFromURLDownloadFails(t *testing.T) {
 	e := remoteEnv(t)
 	e.git.clone = func(_ context.Context, dir string) error {
 		os.WriteFile(filepath.Join(dir, "partial"), nil, 0o600)
-		return errors.New("git clone https://github.com/me/backup.git: exit status 128: fatal: repository not found")
+		return errors.New("git fetch https://github.com/me/backup.git: exit status 128: fatal: repository not found")
 	}
 	dest := filepath.Join(t.TempDir(), "restored")
 	err := e.app.Restore(RestoreOptions{Repo: backupURL, To: dest})
-	if err == nil || !strings.Contains(err.Error(), "downloading the backup: git clone") || strings.Contains(err.Error(), "secret") {
+	if err == nil || !strings.Contains(err.Error(), "downloading the backup: git fetch") || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("Restore: %v", err)
 	}
 	if _, err := os.Lstat(dest); !os.IsNotExist(err) {

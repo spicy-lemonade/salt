@@ -74,6 +74,11 @@ type Extra struct {
 	// deleted, or that is no longer a file, before it is read is left out of
 	// the backup and listed in Result.Gone, instead of failing the seal.
 	Live bool
+	// SHA256, if set, is the hex SHA-256 the contents must have, such as
+	// that of the contents checked for secrets. A file read with other
+	// contents, changed since, is left out of the backup and listed in
+	// Result.Changed, and whatever was written for it is removed.
+	SHA256 string
 }
 
 // ErrDuplicatePath means two files would be backed up at the same path, or a
@@ -100,6 +105,7 @@ type Result struct {
 	Removed   []string  // repo paths deleted as stale or unmanaged
 	Skipped   []string  // source paths that are not files or symlinks
 	Gone      []string  // backup paths of live extra files deleted, or no longer files, before they were read
+	Changed   []string  // backup paths of extra files whose contents were not Extra.SHA256
 	Written   []Written // files that wrote new ciphertext, in path order
 	IndexNew  bool      // whether index.age was rewritten
 }
@@ -117,7 +123,8 @@ type item struct {
 	modTime time.Time
 	symlink string
 	isLink  bool
-	live    bool // see Extra.Live
+	live    bool   // see Extra.Live
+	sha256  string // see Extra.SHA256
 }
 
 // entriesHook lets tests change the entries before Seal checks them,
@@ -186,7 +193,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 
 	entries := make([]Entry, len(items))
 	newCache := make([]cacheEntry, len(items))
-	gone := make([]bool, len(items))
+	left := make([]leftOut, len(items))
 	var encrypted, reused atomic.Int64
 	written := make([]int64, len(items))
 	done := make([]bool, len(items)) // regular files fully sealed
@@ -210,12 +217,13 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			}
 			switch {
 			case errors.Is(err, regular.ErrNotRegular):
-				gone[i] = true
+				left[i] = gone
 			case errors.Is(err, fs.ErrNotExist):
-				_, statErr := os.Lstat(it.abs)
-				gone[i] = errors.Is(statErr, fs.ErrNotExist)
+				if _, statErr := os.Lstat(it.abs); errors.Is(statErr, fs.ErrNotExist) {
+					left[i] = gone
+				}
 			}
-			return gone[i]
+			return left[i] == gone
 		}
 		// A live file's permissions and date are read now, just before its
 		// contents, as the tool may have changed it since it was found. One
@@ -229,7 +237,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 				return err
 			}
 			if !fi.Mode().IsRegular() {
-				gone[i] = true
+				left[i] = gone
 				return nil
 			}
 			it.mode, it.modTime = fi.Mode(), fi.ModTime()
@@ -258,7 +266,9 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 				if hashedHook != nil {
 					hashedHook(it.abs)
 				}
-				ok = cached && prev.SHA256 == sha && objectIntact(rt, prev)
+				if cached && prev.SHA256 == sha {
+					ce, ok = objectIntact(rt, prev)
+				}
 				chunk = !ok && size > int64(maxChunk)
 			}
 		}
@@ -279,6 +289,11 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", it.rel, err)
+		}
+		// What it wrote is not in the index, so removeStale removes it.
+		if it.sha256 != "" && ce.SHA256 != it.sha256 {
+			left[i] = changed
+			return nil
 		}
 		// A changed file whose chunks were all sealed before, such as one put
 		// back as it was, wrote nothing new but is not unchanged.
@@ -307,10 +322,17 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		// it is never kept for the content it held before. Nothing is
 		// removed; the next seal removes what no index needs. Losing this
 		// save only costs that reuse, so the seal's own error is returned.
-		partial := &cache{Key: c.Key, IndexSHA: c.IndexSHA, IndexSize: c.IndexSize, Files: maps.Clone(c.Files)}
+		// The cache is copied whole, so the index's entry keeps every field.
+		// A file left out because it changed may have had its plain-paths
+		// object replaced in place, so its entry is dropped.
+		partial := *c
+		partial.Files = maps.Clone(c.Files)
 		for i, d := range done {
-			if d {
+			switch {
+			case d:
 				partial.Files[items[i].rel] = newCache[i]
+			case left[i] == changed:
+				delete(partial.Files, items[i].rel)
 			}
 		}
 		partial.save(cPath)
@@ -322,7 +344,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 			res.Written = append(res.Written, Written{Path: items[i].rel, Bytes: n})
 		}
 	}
-	items, entries, newCache, res.Gone = dropGone(items, entries, newCache, gone)
+	items, entries, newCache, res.Gone, res.Changed = dropLeftOut(items, entries, newCache, left)
 
 	next := &cache{Key: c.Key, Files: map[string]cacheEntry{}}
 	keep := map[string]bool{}
@@ -359,15 +381,17 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	if len(b) > maxIndexSize {
 		return nil, fmt.Errorf("the index would be %d bytes; salt supports at most %d", len(b), maxIndexSize)
 	}
-	next.IndexSHA, next.IndexSize = ixSHA, c.IndexSize
-	if ixSHA != c.IndexSHA || !sizeIs(rt, repo.IndexFile, c.IndexSize) {
+	next.IndexSHA = ixSHA
+	ixPart, ok := partIntact(rt, cachePart{Object: repo.IndexFile, CipherSize: c.IndexSize, ModTime: c.IndexModTime})
+	if ixSHA != c.IndexSHA || !ok {
 		_, parts, err := encryptTo(rt, repo.IndexFile, bytes.NewReader(b), r.Recipients, 0)
 		if err != nil {
 			return nil, fmt.Errorf("writing index: %w", err)
 		}
-		next.IndexSize = parts[0].CipherSize
+		ixPart = parts[0]
 		res.IndexNew = true
 	}
+	next.IndexSize, next.IndexModTime = ixPart.CipherSize, ixPart.ModTime
 
 	removed, err := removeStale(rt, keep, opt.Prune)
 	res.Removed = removed
@@ -377,20 +401,32 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	return res, next.save(cPath)
 }
 
-// dropGone removes the items marked gone, with their entries and cache
-// entries, keeping the rest in order, and returns the paths it removed.
-func dropGone(items []item, entries []Entry, newCache []cacheEntry, gone []bool) ([]item, []Entry, []cacheEntry, []string) {
-	var paths []string
+// leftOut is why a file was left out of the backup, if it was.
+type leftOut uint8
+
+const (
+	kept    leftOut = iota
+	gone            // see Result.Gone
+	changed         // see Result.Changed
+)
+
+// dropLeftOut removes the items left out, with their entries and cache
+// entries, keeping the rest in order, and returns the paths of those gone
+// and of those changed.
+func dropLeftOut(items []item, entries []Entry, newCache []cacheEntry, left []leftOut) (_ []item, _ []Entry, _ []cacheEntry, goneRels, changedRels []string) {
 	n := 0
 	for i := range items {
-		if gone[i] {
-			paths = append(paths, items[i].rel)
-			continue
+		switch left[i] {
+		case gone:
+			goneRels = append(goneRels, items[i].rel)
+		case changed:
+			changedRels = append(changedRels, items[i].rel)
+		default:
+			items[n], entries[n], newCache[n] = items[i], entries[i], newCache[i]
+			n++
 		}
-		items[n], entries[n], newCache[n] = items[i], entries[i], newCache[i]
-		n++
 	}
-	return items[:n], entries[:n], newCache[:n], paths
+	return items[:n], entries[:n], newCache[:n], goneRels, changedRels
 }
 
 // encryptFile seals the file at abs into obj, in parts of limit compressed
@@ -462,8 +498,9 @@ func encryptChunks(rt *os.Root, r *repo.Repo, abs string, gear *gearTable, prev 
 			if ok {
 				break
 			}
-			p, ok = m[key]
-			ok = ok && partIntact(rt, p)
+			if p, ok = m[key]; ok {
+				p, ok = partIntact(rt, p)
+			}
 		}
 		if !ok {
 			if chunkHook != nil {
@@ -519,28 +556,41 @@ func unixNano(t time.Time) int64 {
 }
 
 // objectIntact reports whether every part of a cached file is still in the
-// repo at the size it was written, and small enough to push. An older salt
-// wrote a large file as one object over GitHub's limit; that file is sealed
-// again, in chunks, even though it has not changed.
-func objectIntact(rt *os.Root, ce cacheEntry) bool {
-	for _, p := range ce.all() {
-		if !partIntact(rt, p) {
-			return false
+// repo as seal wrote it (see partIntact), and returns the entry with the
+// last-modified time of each part. An older salt wrote a large file as one
+// object over GitHub's limit; that file is sealed again, in chunks, even
+// though it has not changed.
+func objectIntact(rt *os.Root, ce cacheEntry) (cacheEntry, bool) {
+	parts := ce.all()
+	out := make([]cachePart, len(parts))
+	for i, p := range parts {
+		var ok bool
+		if out[i], ok = partIntact(rt, p); !ok {
+			return ce, false
 		}
 	}
-	return true
+	return newCacheEntry(ce.SHA256, out), true
 }
 
-// partIntact reports whether one part is still in the repo at the size it
-// was written, and small enough to push.
-func partIntact(rt *os.Root, p cachePart) bool {
-	return p.Object != "" && p.CipherSize <= repo.GitHubFileLimit && sizeIs(rt, p.Object, p.CipherSize)
-}
-
-// sizeIs reports whether rel is a regular file (not a symlink) of size n.
-func sizeIs(rt *os.Root, rel string, n int64) bool {
-	fi, err := rt.Lstat(filepath.FromSlash(rel))
-	return err == nil && fi.Mode().IsRegular() && fi.Size() == n
+// partIntact reports whether one part is still in the repo as seal wrote
+// it: a regular file (not a symlink) of the size it was written at, small
+// enough to push, and last modified when it was written, if the cache
+// recorded that (see cachePart). It returns the part with the file's
+// last-modified time, so a cache from an older salt gains it.
+func partIntact(rt *os.Root, p cachePart) (cachePart, bool) {
+	if p.Object == "" || p.CipherSize > repo.GitHubFileLimit {
+		return p, false
+	}
+	fi, err := rt.Lstat(filepath.FromSlash(p.Object))
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() != p.CipherSize {
+		return p, false
+	}
+	mtime := fi.ModTime().UnixNano()
+	if p.ModTime != 0 && p.ModTime != mtime {
+		return p, false
+	}
+	p.ModTime = mtime
+	return p, true
 }
 
 func walkSource(src string, exclude []string, res *Result, fn func(string) string) ([]item, error) {
@@ -623,7 +673,7 @@ func addExtra(items []item, extra []Extra, foldCase bool) ([]item, error) {
 			return nil, fmt.Errorf("%w: %s", ErrDuplicatePath, rel)
 		}
 		t.add(rel)
-		items = append(items, item{rel: rel, abs: x.Path, mode: x.Mode, modTime: x.ModTime, live: x.Live})
+		items = append(items, item{rel: rel, abs: x.Path, mode: x.Mode, modTime: x.ModTime, live: x.Live, sha256: x.SHA256})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].rel < items[j].rel })
 	return items, nil

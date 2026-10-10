@@ -4,7 +4,10 @@ package e2e
 
 import (
 	"errors"
+	"io/fs"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -107,11 +110,11 @@ func TestRestoreFromURLFailures(t *testing.T) {
 	for _, tt := range []struct {
 		url, want string
 	}{
-		{"https://example.test/missing.git", "salt: downloading the backup: git clone https://example.test/missing.git"},
+		{"https://example.test/missing.git", "salt: downloading the backup: git fetch https://example.test/missing.git"},
 		{"https://example.test/empty.git", "salt: https://example.test/empty.git is not a salt backup repo (its default branch has no .salt/format.json)"},
 		{"http://you:s3cret@example.test/backup.git", "salt: salt cannot download a backup from http://example.test/backup.git."},
 		// Nothing listens on port 1, so this fails at once.
-		{"https://you:s3cret@127.0.0.1:1/backup.git", "salt: downloading the backup: git clone https://127.0.0.1:1/backup.git"},
+		{"https://you:s3cret@127.0.0.1:1/backup.git", "salt: downloading the backup: git fetch https://127.0.0.1:1/backup.git"},
 	} {
 		dest := filepath.Join(t.TempDir(), "restored")
 		out, code := e.run(e.home, "salt", "restore", tt.url, "--to", dest)
@@ -126,14 +129,40 @@ func TestRestoreFromURLFailures(t *testing.T) {
 		}
 		noDownloadsLeft(t, e)
 	}
+
+	// A wrong password fails the download after it is asked for once. Salt
+	// talks to the remote only once, so nothing asks again, not even a
+	// GIT_ASKPASS helper such as an editor's terminal sets.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="backup"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(srv.Close)
+	asked := filepath.Join(t.TempDir(), "asked")
+	askpass := filepath.Join(t.TempDir(), "askpass")
+	write(t, askpass, "#!/bin/sh\necho \"$1\" >> "+asked+"\necho wrong\n")
+	if err := os.Chmod(askpass, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	url := "https://you@" + strings.TrimPrefix(srv.URL, "https://") + "/backup.git"
+	out, code := e.with("GIT_ASKPASS="+askpass, "GIT_SSL_NO_VERIFY=1").run(e.home, "salt", "restore", url, "--to", filepath.Join(t.TempDir(), "restored"))
+	if code != 1 || !strings.Contains(out, "salt: downloading the backup: git fetch https://127.0.0.1:") {
+		t.Fatalf("restore with a wrong password: exit %d\n%s", code, out)
+	}
+	b, _ := os.ReadFile(asked)
+	if n := strings.Count(string(b), "\n"); n != 1 || !strings.Contains(string(b), "Password") {
+		t.Fatalf("asked %d times:\n%s", n, b)
+	}
+	noDownloadsLeft(t, e)
 }
 
-// startStuckDownload starts salt restore from an https URL served by a
-// server that takes the connection and never answers, as one on a network
-// that has gone quiet does, and returns once git has connected. salt runs in
+// startStuckDownload starts salt restore from an https URL, with the user
+// name and password in userinfo if it is not empty, served by a server that
+// takes the connection and never answers, as one on a network that has gone
+// quiet does, and returns once git has connected. salt runs in
 // a process group of its own, which is killed when the test ends, with
 // anything git started.
-func startStuckDownload(t *testing.T, e *env) (*exec.Cmd, *strings.Builder) {
+func startStuckDownload(t *testing.T, e *env, userinfo string) (*exec.Cmd, *strings.Builder) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -146,7 +175,7 @@ func startStuckDownload(t *testing.T, e *env) (*exec.Cmd, *strings.Builder) {
 			conns <- c
 		}
 	}()
-	cmd := exec.Command(e.bin, "restore", "https://"+ln.Addr().String()+"/backup.git", "--to", filepath.Join(t.TempDir(), "restored"))
+	cmd := exec.Command(e.bin, "restore", "https://"+userinfo+ln.Addr().String()+"/backup.git", "--to", filepath.Join(t.TempDir(), "restored"))
 	cmd.Dir = e.home
 	cmd.Env = e.vars
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -189,7 +218,7 @@ func assertInterrupted(t *testing.T, e *env, cmd *exec.Cmd, out *strings.Builder
 // it.
 func TestRestoreFromURLStopsAStuckDownload(t *testing.T) {
 	e := newEnv(t)
-	cmd, out := startStuckDownload(t, e)
+	cmd, out := startStuckDownload(t, e, "")
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +230,7 @@ func TestRestoreFromURLStopsAStuckDownload(t *testing.T) {
 // from git alone, and must still treat it as an interruption.
 func TestRestoreFromURLGitInterruptedFirst(t *testing.T) {
 	e := newEnv(t)
-	cmd, out := startStuckDownload(t, e)
+	cmd, out := startStuckDownload(t, e, "")
 	pids := strings.Fields(e.must(e.home, "pgrep", "-P", strconv.Itoa(cmd.Process.Pid), "git"))
 	if len(pids) != 1 {
 		t.Fatalf("git processes under salt: %q", pids)
@@ -219,11 +248,39 @@ func TestRestoreFromURLGitInterruptedFirst(t *testing.T) {
 // Ctrl-C in a terminal sends SIGINT to every program in its process group.
 func TestRestoreFromURLCtrlC(t *testing.T) {
 	e := newEnv(t)
-	cmd, out := startStuckDownload(t, e)
+	cmd, out := startStuckDownload(t, e, "")
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
 	assertInterrupted(t, e, cmd, out)
+}
+
+// A download killed outright, part way, is left behind, but holds no
+// password or token from the URL, since the URL is never saved in it.
+func TestRestoreFromURLKilledLeavesNoToken(t *testing.T) {
+	e := newEnv(t)
+	cmd, _ := startStuckDownload(t, e, "you:s3cret-token@")
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Wait()
+	found, _ := filepath.Glob(filepath.Join(e.home, "salt-download-*"))
+	if len(found) != 1 {
+		t.Fatalf("downloads left: %v", found)
+	}
+	err := filepath.WalkDir(found[0], func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		if err == nil && strings.Contains(string(b), "s3cret-token") {
+			t.Errorf("%s holds the token:\n%s", p, b)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 // Without git, a restore from a URL says what is missing and leaves nothing

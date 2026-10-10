@@ -632,6 +632,103 @@ func TestPushedAttributeStopsTheBackup(t *testing.T) {
 	}
 }
 
+// The pre-push hook salt init installs refuses a push of commits holding
+// plaintext that the pre-commit hook never saw: one made with --no-verify,
+// one a merge brings in, and a merge commit that adds a file itself. The
+// remote is left as it was. Plaintext already on the remote, such as history
+// from before salt, is not checked again, so a clean push still works.
+// log.diffMerges is set to a format salt cannot read, which salt overrides.
+func TestPrePushRefusesPlaintext(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	e.must(b.dir, "git", "config", "log.diffMerges", "combined")
+	b.files["USER.md"] = "secret\n"
+	b.backup(t, "2026-09-01")
+	e.must(b.dir, "git", "push", "-q", "origin", "main")
+	commit := func(file, msg string) {
+		t.Helper()
+		write(t, filepath.Join(b.dir, file), msg+"\n")
+		e.must(b.dir, "git", "add", file)
+		e.must(b.dir, "git", "commit", "-q", "--no-verify", "-m", msg)
+	}
+	refused := func(what, branch, file string) {
+		t.Helper()
+		before, _ := e.run(b.remote, "git", "rev-parse", "--verify", "-q", branch)
+		out, code := e.run(b.dir, "git", "push", "-q", "origin", branch)
+		if code == 0 || !strings.Contains(out, "salt check: refusing push: 1 file(s) in the commits being pushed are not encrypted:\n  "+file+": not encrypted") {
+			t.Fatalf("%s: exit %d\n%s", what, code, out)
+		}
+		if after, _ := e.run(b.remote, "git", "rev-parse", "--verify", "-q", branch); after != before {
+			t.Fatalf("%s reached the remote", what)
+		}
+	}
+
+	commit("notes.md", "skip the hook")
+	refused("a --no-verify commit", "main", "notes.md")
+
+	e.must(b.dir, "git", "reset", "-q", "--hard", "HEAD~1")
+	e.must(b.dir, "git", "checkout", "-q", "-b", "side")
+	commit("notes.md", "on a side branch")
+	e.must(b.dir, "git", "checkout", "-q", "main")
+	commit("README.md", "readme")
+	e.must(b.dir, "git", "merge", "-q", "--no-edit", "side")
+	refused("a merge", "main", "notes.md")
+	e.must(b.dir, "git", "reset", "-q", "--hard", "HEAD~1")
+	e.must(b.dir, "git", "push", "-q", "origin", "main")
+
+	// Plaintext on another branch of the remote, as from before salt, is
+	// already there: a new branch is pushed without checking it.
+	e.must(b.dir, "git", "push", "-q", "--no-verify", "origin", "side:old")
+	e.must(b.dir, "git", "fetch", "-q", "origin")
+	e.must(b.dir, "git", "checkout", "-q", "-b", "feature", "main")
+	commit("LICENSE", "license")
+	e.must(b.dir, "git", "push", "-q", "origin", "feature")
+
+	// A merge commit that adds a file of its own.
+	e.must(b.dir, "git", "checkout", "-q", "-b", "other", "main")
+	commit(".gitignore", "ignore")
+	e.must(b.dir, "git", "checkout", "-q", "feature")
+	e.must(b.dir, "git", "merge", "-q", "--no-ff", "--no-commit", "other")
+	commit("merged.md", "added by the merge")
+	refused("a merge commit's own file", "feature", "merged.md")
+	e.must(b.dir, "git", "reset", "-q", "--hard", "HEAD~1")
+
+	// A push git cannot be asked about, here from outside any repo, is
+	// refused.
+	head := strings.TrimSpace(e.must(b.dir, "git", "rev-parse", "HEAD"))
+	zero := strings.Repeat("0", len(head))
+	out, code := e.runInput(t.TempDir(), "refs/heads/x "+head+" refs/heads/x "+zero+"\n", "salt", "check", "--pre-push", "origin", b.remote)
+	if code != 1 || !strings.Contains(out, "salt check could not inspect the push, refusing it: git log:") {
+		t.Fatalf("a push outside a repo: exit %d\n%s", code, out)
+	}
+	// So is one where git cannot be started, or prints what salt cannot
+	// read, here from a stand-in git.
+	refs := "refs/heads/main " + head + " refs/heads/main " + zero + "\n"
+	out, code = e.with("PATH="+filepath.Dir(e.bin)).runInput(b.dir, refs, "salt", "check", "--pre-push", "origin", b.remote)
+	if code != 1 || !strings.Contains(out, "salt check could not inspect the push, refusing it:") {
+		t.Fatalf("a push without git: exit %d\n%s", code, out)
+	}
+	out, code = e.with(e.stubPath(t, "git", `printf 'junk\000'`)).runInput(b.dir, refs, "salt", "check", "--pre-push", "origin", b.remote)
+	if code != 1 || !strings.Contains(out, `salt check could not inspect the push, refusing it: git log: unexpected output "junk"`) {
+		t.Fatalf("a git printing junk: exit %d\n%s", code, out)
+	}
+
+	if out := e.must(b.base, "salt", "doctor", b.dir); !strings.Contains(out, "pre-push hook runs `salt check --pre-push`") {
+		t.Fatalf("doctor:\n%s", out)
+	}
+}
+
+// A pushed attribute that would change salt's settings files, as a fresh
+// clone checks them out, stops the backup too.
+func TestPushedSettingsAttributeStopsTheBackup(t *testing.T) {
+	e := newEnv(t)
+	mine, src := pushedChange(t, e, ".gitattributes", "/.salt/format.json filter=nope")
+	out, code := e.run(mine, "salt", "seal", "--prune", src, mine)
+	if code != 1 || !strings.Contains(out, "git would change .salt/format.json when storing it or checking it out (filter is set to nope), so salt could not read it from another copy of the repo.") {
+		t.Fatalf("seal after the attribute: exit %d\n%s", code, out)
+	}
+}
+
 // Someone who can push chooses file names and attribute values. Salt's
 // messages show the control codes in them escaped, never raw, whether the UI
 // prints them or main prints the error, and quote a name holding a newline,

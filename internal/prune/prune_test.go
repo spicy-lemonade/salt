@@ -20,12 +20,13 @@ import (
 // memGit is an in-memory repository with one branch. Commit objects are
 // stored in git's real format and hashed the way git hashes them.
 type memGit struct {
-	top      string
-	shallow  bool
-	branch   string
-	head     string
-	objects  map[string][]byte
-	reclaims int
+	top       string
+	shallow   bool
+	branch    string
+	head      string
+	objects   map[string][]byte
+	reclaims  int
+	reclaimed string // the branch ReclaimSpace was last given
 	// fail makes the named method return an error.
 	fail map[string]error
 	// corrupt makes CatCommit return this instead of the stored object.
@@ -121,7 +122,8 @@ func (g *memGit) UpdateRef(_, ref, newSHA, oldSHA, reason string) error {
 	return nil
 }
 
-func (g *memGit) ReclaimSpace(string) error {
+func (g *memGit) ReclaimSpace(_, branch string) error {
+	g.reclaimed = branch
 	g.reclaims++
 	return g.err("ReclaimSpace")
 }
@@ -318,8 +320,8 @@ func TestRunKeepsTheLastDaysWithAChange(t *testing.T) {
 	if log, _ := g.FirstParentLog(""); log[4].Day != "2026-09-05" || log[4].Parents != 0 {
 		t.Fatalf("oldest kept = %+v, want the 5th as the new first commit", log[4])
 	}
-	if g.reclaims != 1 {
-		t.Fatalf("ReclaimSpace called %d times", g.reclaims)
+	if g.reclaims != 1 || g.reclaimed != "refs/heads/main" {
+		t.Fatalf("ReclaimSpace called %d times, last for %q", g.reclaims, g.reclaimed)
 	}
 	// Each kept commit differs from its original only in its parent line.
 	newRaw := g.objects[g.head]

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spicy-lemonade/salt/internal/escape"
@@ -19,6 +20,11 @@ var saltPaths = []string{repo.IndexFile, repo.Dir, repo.ObjectsDir, repo.FilesDi
 // or checks it out. Ciphertext must have none of them, and text must be unset
 // (as `*.age binary` does).
 var storageAttrs = []string{"text", "eol", "filter", "working-tree-encoding", "ident"}
+
+// settingsFiles are salt's own settings in the repo, which are text. text and
+// eol may change their line ends, which salt reads either way, but no other
+// attribute may change them.
+var settingsFiles = []string{repo.FormatFile, repo.RecipientsFile}
 
 // MaxStorageProblems is how many files with problems StorageProblems
 // describes in full.
@@ -58,12 +64,20 @@ func (p StorageProblem) String() string {
 	for i, a := range p.Attrs {
 		descs[i] = a.String()
 	}
+	if slices.Contains(settingsFiles, p.Path) {
+		return fmt.Sprintf("git would change %s when storing it or checking it out (%s), so salt could not read it from another copy of the repo. Remove the attribute from .gitattributes (or your git config).",
+			name, strings.Join(descs, ", "))
+	}
 	return fmt.Sprintf("git would change %s when storing it (%s); backups could not be restored. Remove the attribute from .gitattributes (or your git config) so *.age stays binary.",
 		name, strings.Join(descs, ", "))
 }
 
-// badAttr reports whether an attribute would make git change ciphertext.
+// badAttr reports whether an attribute would make git change ciphertext, or
+// one of settingsFiles other than in its line ends.
 func badAttr(a gitx.Attr) bool {
+	if slices.Contains(settingsFiles, a.Path) && (a.Name == "text" || a.Name == "eol") {
+		return false
+	}
 	switch a.Name {
 	case "text":
 		return a.Value != "unset"
@@ -112,9 +126,9 @@ func (l *problemList) flush() {
 }
 
 // StorageProblems asks git whether it would store every file salt wrote in
-// the repository at dir exactly as written. It reports files git ignores and
-// ciphertext with attributes that would change it, whether the file is
-// tracked already or not yet added. At most MaxStorageProblems files are
+// the repository at dir exactly as written. It reports files git ignores,
+// and ciphertext and settingsFiles with attributes that would change them,
+// whether the file is tracked already or not yet added. At most MaxStorageProblems files are
 // described; total counts them all.
 func StorageProblems(dir string) (problems []StorageProblem, total int, err error) {
 	var l problemList
@@ -129,11 +143,11 @@ func StorageProblems(dir string) (problems []StorageProblem, total int, err erro
 	if err != nil {
 		return nil, 0, err
 	}
-	cipher, err := onDisk(dir, paths)
+	written, err := onDisk(dir, paths)
 	if err != nil {
 		return nil, 0, err
 	}
-	err = gitx.CheckAttrs(dir, cipher, storageAttrs, func(a gitx.Attr) error {
+	err = gitx.CheckAttrs(dir, written, storageAttrs, func(a gitx.Attr) error {
 		l.attr(a)
 		return nil
 	})
@@ -144,9 +158,10 @@ func StorageProblems(dir string) (problems []StorageProblem, total int, err erro
 	return l.problems, l.total, nil
 }
 
-// onDisk keeps the ciphertext paths that exist in the working tree. git still
-// lists a file salt has just deleted until the deletion is staged, and that
-// file never reaches the remote, so it is not a problem.
+// onDisk keeps the ciphertext paths and settingsFiles that exist in the
+// working tree. git still lists a file salt has just deleted until the
+// deletion is staged, and that file never reaches the remote, so it is not
+// a problem.
 func onDisk(dir string, paths []string) ([]string, error) {
 	rt, err := os.OpenRoot(dir)
 	if err != nil {
@@ -155,7 +170,7 @@ func onDisk(dir string, paths []string) ([]string, error) {
 	defer rt.Close()
 	var out []string
 	for _, p := range paths {
-		if !strings.HasSuffix(p, ".age") {
+		if !strings.HasSuffix(p, ".age") && !slices.Contains(settingsFiles, p) {
 			continue
 		}
 		if _, err := rt.Lstat(filepath.FromSlash(p)); err == nil {

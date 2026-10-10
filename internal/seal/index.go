@@ -228,7 +228,7 @@ func ReadIndex(root string, ids []age.Identity, opt SignatureOptions) (*Index, e
 		return nil, err
 	}
 	defer rt.Close()
-	r, closeFn, err := decryptStream(rt, []string{repo.IndexFile}, ids)
+	r, closeFn, err := decryptStream(rt, []string{repo.IndexFile}, ids, maxIndexSize)
 	if err != nil {
 		return nil, err
 	}

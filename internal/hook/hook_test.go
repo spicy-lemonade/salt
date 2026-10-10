@@ -13,18 +13,18 @@ import (
 
 func TestInstall(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "hooks", "pre-commit")
-	if err := Install(p); err != nil {
+	if err := Install(p, PreCommit); err != nil {
 		t.Fatal(err)
 	}
 	fi, err := os.Stat(p)
 	if err != nil || fi.Mode().Perm()&0o100 == 0 {
 		t.Fatalf("hook not executable: %v", err)
 	}
-	if !Installed(p) {
+	if !Installed(p, PreCommit) {
 		t.Fatal("Installed() = false after Install")
 	}
 	// Re-installing over salt's own hook is fine.
-	if err := Install(p); err != nil {
+	if err := Install(p, PreCommit); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -32,7 +32,7 @@ func TestInstall(t *testing.T) {
 func TestInstallKeepsForeignHook(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "pre-commit")
 	os.WriteFile(p, []byte("#!/bin/sh\nnpm test\n"), 0o755)
-	if err := Install(p); !errors.Is(err, ErrForeign) {
+	if err := Install(p, PreCommit); !errors.Is(err, ErrForeign) {
 		t.Fatalf("Install over foreign hook: %v", err)
 	}
 	b, _ := os.ReadFile(p)
@@ -42,11 +42,50 @@ func TestInstallKeepsForeignHook(t *testing.T) {
 }
 
 func TestScriptCallsSaltByName(t *testing.T) {
-	if !strings.Contains(Script, "exec salt check\n") {
-		t.Fatal("hook must exec `salt check` by name")
+	for h, want := range map[Hook]string{
+		PreCommit: "exec salt check\n",
+		PrePush:   "exec salt check --pre-push \"$@\"\n",
+	} {
+		if !strings.Contains(h.Script, want) || !strings.Contains(h.Script, h.Runs) {
+			t.Fatalf("%s hook must exec %q by name:\n%s", h.Name, want, h.Script)
+		}
+		if strings.Contains(h.Script, "/salt ") || strings.Contains(h.Script, ".test") {
+			t.Fatalf("%s hook must not reference a binary path", h.Name)
+		}
+		if !strings.Contains(h.Script, Marker) || !strings.Contains(h.Script, "refuses "+h.Refuses+" that contain") {
+			t.Fatalf("%s hook:\n%s", h.Name, h.Script)
+		}
 	}
-	if strings.Contains(Script, "/salt ") || strings.Contains(Script, ".test") {
-		t.Fatal("hook must not reference a binary path")
+	if len(All) != 2 || All[0] != PreCommit || All[1] != PrePush {
+		t.Fatalf("All = %v", All)
+	}
+}
+
+// Each hook counts only as itself: a pre-commit hook is not salt's pre-push
+// hook.
+func TestInstalledIsPerHook(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "hooks", "pre-push")
+	if err := Install(p, PrePush); err != nil {
+		t.Fatal(err)
+	}
+	if !Installed(p, PrePush) {
+		t.Fatal("pre-push hook not installed")
+	}
+	other := filepath.Join(t.TempDir(), "pre-push")
+	os.WriteFile(other, []byte(PreCommit.Script), 0o755)
+	if Installed(other, PrePush) {
+		t.Fatal("a pre-commit script counts as the pre-push hook")
+	}
+	// A pre-commit hook of the person's own that runs only the pre-push
+	// check does not run salt check.
+	own := filepath.Join(t.TempDir(), "pre-commit")
+	os.WriteFile(own, []byte("#!/bin/sh\nsalt check --pre-push\n"), 0o755)
+	if Installed(own, PreCommit) {
+		t.Fatal("salt check --pre-push counts as salt check")
+	}
+	os.WriteFile(own, []byte("#!/bin/sh\nnpm test && salt check\n"), 0o755)
+	if !Installed(own, PreCommit) {
+		t.Fatal("a hook of the person's own running salt check is not counted")
 	}
 }
 
@@ -58,10 +97,10 @@ func TestHookRefusesAPipe(t *testing.T) {
 	if err := syscall.Mkfifo(p, 0o600); err != nil {
 		t.Skip("mkfifo:", err)
 	}
-	if err := Install(p); !errors.Is(err, regular.ErrNotRegular) {
+	if err := Install(p, PreCommit); !errors.Is(err, regular.ErrNotRegular) {
 		t.Fatalf("Install over a pipe: %v", err)
 	}
-	if Installed(p) {
+	if Installed(p, PreCommit) {
 		t.Fatal("a pipe counts as salt's hook")
 	}
 }
@@ -70,12 +109,12 @@ func TestHookRefusesAPipe(t *testing.T) {
 // it, so install keeps it and doctor's check does not count it.
 func TestHookOverTheCapIsForeign(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "pre-commit")
-	big := Script + strings.Repeat("#\n", maxHook)
+	big := PreCommit.Script + strings.Repeat("#\n", maxHook)
 	os.WriteFile(p, []byte(big), 0o755)
-	if err := Install(p); !errors.Is(err, ErrForeign) {
+	if err := Install(p, PreCommit); !errors.Is(err, ErrForeign) {
 		t.Fatalf("Install over a huge hook: %v", err)
 	}
-	if Installed(p) {
+	if Installed(p, PreCommit) {
 		t.Fatal("a huge hook counts as salt's")
 	}
 	if b, _ := os.ReadFile(p); string(b) != big {

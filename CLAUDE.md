@@ -34,7 +34,7 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - BIP39 12-word recovery phrases; the age key is derived from the phrase with HKDF-SHA256
 - OS keychain via `github.com/zalando/go-keyring`, with a 0600 file fallback (`SALT_KEYSTORE=file`)
 
-**Commands:** `init`, `seal [--sqlite DB] [--postgres CONN] [--postgres-env VAR] [--name NAME]`, `backup --preset NAME [--keep-days N]`, `prune`, `check`, `restore [--allow-unsigned]`, `verify [--allow-unsigned]`, `doctor`, `trust`, `recovery test|show`, `hook install`, `version`.
+**Commands:** `init`, `seal [--sqlite DB] [--postgres CONN] [--postgres-env VAR] [--name NAME]`, `backup --preset NAME [--keep-days N]`, `prune`, `check [--pre-push]`, `restore [--allow-unsigned]`, `verify [--allow-unsigned]`, `doctor`, `trust`, `recovery test|show`, `hook install`, `version`.
 
 **Package layout:**
 - `cmd/salt`: CLI entry point and flag parsing
@@ -42,15 +42,16 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - `internal/seal`: streaming seal, restore and verify; encrypted index; change-detection cache
 - `internal/keys`: recovery phrase, key derivation, passphrase wrapping, key stores
 - `internal/repo`: backup repo layout, format file, recipients, public-file allowlist
-- `internal/check`: pre-commit plaintext detection
-- `internal/hook`: pre-commit hook script and installation
+- `internal/check`: pre-commit and pre-push plaintext detection
+- `internal/hook`: pre-commit and pre-push hook scripts and installation
 - `internal/gitx`: the only way salt runs git (hooks, compression and delta search always off)
 - `internal/source`: safe copies of live databases (runs `sqlite3` and `pg_dump`); each kind is a `Database` listed in `Kinds`; with `gitx` and `proc`, the only packages that start programs
-- `internal/proc`: runs the programs `gitx` and `source` may stop part way (`git clone`, `git ls-remote`, `git rev-list`, `git push`, `git commit`, `sqlite3`, `pg_dump`); caps their error output and how long a stopped one is waited for
-- `internal/preset`: presets for `salt backup`, one embedded JSON file per tool in `presets/`, read by the same tool-agnostic code; finds each preset's files, SQLite databases and the databases it names by connection (such as Postgres), and leaves out files holding secrets
+- `internal/proc`: runs the programs `gitx` and `source` may stop part way (`git init`, `git fetch`, `git checkout`, `git ls-remote`, `git rev-list`, `git push`, `git commit`, `sqlite3`, `pg_dump`); caps their error output and how long a stopped one is waited for
+- `internal/preset`: presets for `salt backup`, one embedded JSON file per tool in `presets/`, read by the same tool-agnostic code; finds each preset's files, SQLite databases and the databases it names by connection (such as Postgres), and leaves out files holding secrets and what any preset's `never` list names
+- `internal/private`: writes salt's owner-only files on this machine (caches, records, approvals, key files) through a new temporary file and a rename
 - `internal/regular`: opens a file salt reads without waiting, and refuses it at once if it is not a regular file, such as a named pipe
 - `internal/escape`: keeps control characters in names from the repo and in program output from reaching the terminal; everything salt prints goes through its writer
-- `internal/guard`: refuses nested salt processes; sets a soft memory limit; locks a backup repo so two salts never seal, back up or prune it at once
+- `internal/guard`: refuses nested salt processes; sets a soft memory limit; locks a backup repo, in the git folder its worktrees share, so two salts never seal, back up or prune it at once
 - `internal/prune`: keeps only the backups from the last N days with a change (counted for the whole repo, not per file), all of the latest day's and the last of each earlier day's, by rewriting the branch's history
 - `internal/trust`: this machine's approved copy of each repo's keys and settings; seal refuses if the repo differs
 - `internal/rules`: source-scan test enforcing the process-safety rules
@@ -74,9 +75,9 @@ Salt is a general-purpose open-source tool for public release. Write code, defau
 - The private key lives in the OS keychain.
 - Recovery is either a 12-word phrase (the recommended option, where the words are the key, and nothing secret is stored in the repo) or a user-chosen passphrase that wraps `.salt/key.age`.
 
-**Approved keys:** `salt init` saves the repo's keys and file-name setting to the OS config dir (`salt/trusted/<hash>.json`, 0600). `salt seal` refuses if the repo's `.salt/recipients.txt` or `format.json` differ, because anyone who can push could otherwise add their own key. `salt trust` approves a change. Restore and verify accept only an index signed by an approved key, and warn if the repo differs; with no approved copy (a new machine, or a restore from a URL) any key that opens the backup may have signed it. All repo reads and writes go through `os.Root` so symlinks can't lead outside the repo.
+**Approved keys:** `salt init` saves the repo's keys, file-name setting and recovery method to the OS config dir (`salt/trusted/<hash>.json`, 0600, named by the repo's real path). `salt seal` refuses if the repo's `.salt/recipients.txt` or `format.json` differ, because anyone who can push could otherwise add their own key. `salt trust` approves a change. Restore and verify accept only an index signed by an approved key, and warn if the repo differs; with no approved copy (a new machine, or a restore from a URL) any key that opens the backup may have signed it. All repo reads and writes go through `os.Root` so symlinks can't lead outside the repo.
 
-**Change detection:** age output is randomised, so a local cache (the OS cache dir, `seal-<hash>.json`, 0600, never committed) maps plaintext hashes, of whole files and of chunks, to existing ciphertext. Unchanged files and chunks keep their ciphertext, a seal that fails still saves the entries of the files it finished, and an unchanged snapshot (same contents, permissions and last-modified dates) produces no commit. The same folder holds `copykey-<hash>` (0600), a random key per repo that database copies use in place of a random one of their own (for `pg_dump --restrict-key`), so an unchanged database also makes no commit.
+**Change detection:** age output is randomised, so a local cache (the OS cache dir, `seal-<hash>.json`, 0600, never committed) maps plaintext hashes, of whole files and of chunks, to existing ciphertext. Unchanged files and chunks keep their ciphertext while it still has the size and last-modified time seal wrote it with, a seal that fails still saves the entries of the files it finished, and an unchanged snapshot (same contents, permissions and last-modified dates) produces no commit. The same folder holds `copykey-<hash>` (0600), a random key per repo that database copies use in place of a random one of their own (for `pg_dump --restrict-key`), so an unchanged database also makes no commit.
 
 **Restore:** decrypts into a temp directory, verifies every file against the index, then moves the result into place with owner-only permissions. An existing destination is moved aside, never overwritten.
 

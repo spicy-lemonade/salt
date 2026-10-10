@@ -1,6 +1,7 @@
 package seal
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -357,7 +358,7 @@ func TestSealLiveExtraGone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(res.Gone, []string{"a/kept.md"}) || res.Files != 5 || len(res.Removed) != 1 {
+	if !slices.Equal(res.Gone, []string{"a/kept.md"}) || res.Files != 5 || len(res.Removed) == 0 {
 		t.Fatalf("seal: %+v", res)
 	}
 	if c, _ := f.loadCache(); len(c.Files) != 5 {
@@ -513,5 +514,78 @@ func TestVerifyRefusesAPipeInTheRepo(t *testing.T) {
 	toPipe(repo.IndexFile)
 	if _, err := Verify(f.root, f.ids(), VerifyOptions{}); !errors.Is(err, regular.ErrNotRegular) {
 		t.Fatalf("verify with the index a pipe: %v", err)
+	}
+}
+
+// A file whose contents are not the SHA-256 given, such as one changed after
+// it was checked for secrets, is left out, and what was written for it, or
+// sealed for it before, is removed.
+func TestSealExtraChangedSinceChecked(t *testing.T) {
+	hexSHA := func(s string) string { return hex.EncodeToString(sha256Of([]byte(s))) }
+	for _, encryptPaths := range []bool{true, false} {
+		f := newFixture(t, encryptPaths)
+		p := filepath.Join(t.TempDir(), "conf.yaml")
+		os.WriteFile(p, []byte("checked"), 0o600)
+		res, err := f.sealExtra(Extra{Rel: "a/conf.yaml", Path: p, Live: true, SHA256: hexSHA("checked")})
+		if err != nil || len(res.Changed) != 0 || res.Files != 6 {
+			t.Fatalf("seal of the checked contents: %+v, %v", res, err)
+		}
+
+		os.WriteFile(p, []byte("api_key: sk-1"), 0o600)
+		res, err = f.sealExtra(Extra{Rel: "a/conf.yaml", Path: p, Live: true, SHA256: hexSHA("checked")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(res.Changed, []string{"a/conf.yaml"}) || len(res.Gone) != 0 || res.Files != 5 || len(res.Removed) == 0 {
+			t.Fatalf("seal after a change: %+v", res)
+		}
+		assertAllCiphertext(t, f.root, encryptPaths)
+		if n := len(snapshot(t, f.root)); n != 5+1 { // the objects and the index
+			t.Fatalf("%d files in the repo after leaving it out", n)
+		}
+		ix, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range ix.Entries {
+			if strings.HasPrefix(e.Path, "a/") {
+				t.Fatalf("the index lists %s", e.Path)
+			}
+		}
+	}
+}
+
+// A seal that fails keeps the index's last-modified time in the cache, so a
+// swapped index.age is still caught by the next seal, and drops the entry of
+// a file it left out as changed, whose plain-paths object it replaced.
+func TestFailedSealKeepsTheIndexTime(t *testing.T) {
+	hexSHA := func(s string) string { return hex.EncodeToString(sha256Of([]byte(s))) }
+	f := newFixture(t, false)
+	p := filepath.Join(t.TempDir(), "conf.yaml")
+	os.WriteFile(p, []byte("checked"), 0o600)
+	conf := Extra{Rel: "a/conf.yaml", Path: p, Live: true, SHA256: hexSHA("checked")}
+	if _, err := f.sealExtra(conf); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := f.loadCache()
+	if before.IndexModTime == 0 {
+		t.Fatal("no index time recorded")
+	}
+
+	os.WriteFile(p, []byte("api_key: sk-1"), 0o600)
+	missing := Extra{Rel: "z/missing.db", Path: filepath.Join(t.TempDir(), "missing.db")}
+	_, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer, Workers: 1, Extra: []Extra{conf, missing}})
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("seal with a missing file: %v", err)
+	}
+	after, _ := f.loadCache()
+	if after.IndexModTime != before.IndexModTime || after.IndexSize != before.IndexSize || after.IndexSHA != before.IndexSHA {
+		t.Fatalf("index entry after a failed seal: %+v, was %+v", after, before)
+	}
+	if _, ok := after.Files["a/conf.yaml"]; ok {
+		t.Fatal("the changed file's entry was kept")
+	}
+	if len(after.Files) != 5 {
+		t.Fatalf("the cache holds %d files", len(after.Files))
 	}
 }

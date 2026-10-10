@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -120,6 +121,31 @@ func TestBackupMnemosyne(t *testing.T) {
 		t.Fatalf("restored %v", files)
 	}
 	assertDB(t, e, sqlite, filepath.Join(dest, "mnemosyne-data/mnemosyne.db"), 4)
+}
+
+// A secret written to a settings file after salt checked it, here while the
+// database is copied, is not backed up: the file is left out this time, and
+// the next backup finds the secret and leaves it out as usual.
+func TestBackupLeavesOutAFileChangedAfterItsCheck(t *testing.T) {
+	sqlite := realSQLite(t)
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	hermes := filepath.Join(e.home, ".hermes")
+	makeDB(t, e, sqlite, filepath.Join(hermes, "mnemosyne", "data", "mnemosyne.db"), 1)
+	conf := filepath.Join(hermes, "mnemosyne", "config.yaml")
+	write(t, conf, "vec_weight: 0.5\n")
+	stub := e.stubPath(t, "sqlite3", fmt.Sprintf("printf 'llm_api_key: sk-late\\n' >> %q\nexec %q \"$@\"", conf, sqlite))
+	out := e.with(stub).must(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	if out != "salt: left hermes/mnemosyne/config.yaml out of the backup because it changed after salt checked it for secrets. The next backup checks it again\n" {
+		t.Fatalf("backup printed:\n%s", out)
+	}
+	if _, files := restoredFiles(t, e, b); !slices.Equal(files, []string{"hermes/mnemosyne/data/mnemosyne.db"}) {
+		t.Fatalf("restored %v", files)
+	}
+	out = e.must(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	if !strings.Contains(out, "config.yaml out of the backup because its setting llm_api_key holds a secret") {
+		t.Fatalf("next backup printed:\n%s", out)
+	}
 }
 
 // salt backup --preset hermes backs up Hermes's memory, persona, settings,
@@ -716,6 +742,30 @@ func TestBackupFailures(t *testing.T) {
 	}
 	if subject := strings.TrimSpace(e.must(b.remote, "git", "log", "-1", "--format=%s")); subject != "elsewhere" {
 		t.Fatalf("after a fetch, the remote's latest commit is %q", subject)
+	}
+}
+
+// ls-remote lists every ref whose name ends in the branch's. Enough of them
+// on origin to make its output longer than salt reads stop the backup
+// before old backups are dropped, rather than reading as no branch there.
+func TestBackupRefusesAFloodOfRefs(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	tip := strings.TrimSpace(e.must(b.remote, "git", "rev-parse", "main"))
+	var refs strings.Builder
+	for i := range 1200 {
+		fmt.Fprintf(&refs, "create refs/heads/a%04d/refs/heads/main %s\n", i, tip)
+	}
+	if out, code := e.runInput(b.remote, refs.String(), "git", "update-ref", "--stdin"); code != 0 {
+		t.Fatalf("update-ref: exit %d:\n%s", code, out)
+	}
+	write(t, filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "x"), "a file")
+	out, code := e.run(b.base, "salt", "backup", "--preset", "mnemosyne", "--keep-days", "1", b.dir)
+	if code != 1 || !strings.Contains(out, "salt could not check origin, so old backups were not dropped and it was not pushed: git ls-remote printed more than 64 KiB") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if log := e.must(b.dir, "git", "log", "--format=%s"); !strings.Contains(log, "Set up salt") {
+		t.Fatalf("old backups were dropped:\n%s", log)
 	}
 }
 

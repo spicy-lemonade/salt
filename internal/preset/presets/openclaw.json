@@ -18,10 +18,12 @@
     {"from": "~/.openclaw-*/skills", "to": "openclaw-profiles/*/skills"},
     {"from": "~/.openclaw-*/agents/*/agent/workshop-skills", "to": "openclaw-profiles/*/agents/*/agent/workshop-skills"}
   ],
-  "skip": [
+  "never": [
     ".env", "*.env", "*.key", "*.pem", "*.p12", "*.pfx", "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*",
     ".ssh", ".aws", ".docker", ".kube", ".gnupg", ".netrc", ".npmrc", ".pypirc", ".git-credentials",
-    "openclaw.sqlite*", "openclaw-agent.sqlite*",
+    "openclaw.sqlite*", "openclaw-agent.sqlite*"
+  ],
+  "skip": [
     "__pycache__", "*.pyc", "*.pyo", "node_modules", ".venv", "venv", "site-packages",
     ".cache", ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache"
   ],

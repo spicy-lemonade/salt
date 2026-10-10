@@ -12,6 +12,8 @@ import (
 
 	"filippo.io/age"
 	"github.com/zalando/go-keyring"
+
+	"github.com/spicy-lemonade/salt/internal/private"
 )
 
 // Secret is what salt keeps in the keychain for one key. Phrase-based keys
@@ -133,14 +135,11 @@ func (f FileStore) Get(recipient string) (Secret, error) {
 }
 
 func (f FileStore) Set(recipient string, s Secret) error {
-	if err := os.MkdirAll(f.Dir, 0o700); err != nil {
-		return err
-	}
 	b, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(f.path(recipient), b, 0o600)
+	return private.Write(f.path(recipient), b)
 }
 
 func (f FileStore) Delete(recipient string) error {
@@ -182,26 +181,6 @@ func (m *MemStore) Delete(recipient string) error {
 	defer m.mu.Unlock()
 	delete(m.m, recipient)
 	return nil
-}
-
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
 }
 
 // FallbackStore uses Primary (the OS keychain) and falls back to Secondary

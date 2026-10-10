@@ -275,9 +275,6 @@ func TestFileStoreErrors(t *testing.T) {
 	if _, err := good.Get("age1bad"); err == nil {
 		t.Error("Get of a corrupt file succeeded")
 	}
-	if err := writeFileAtomic(filepath.Join(dir, "missing", "f"), nil, 0o600); err == nil {
-		t.Error("writeFileAtomic into a missing dir succeeded")
-	}
 	if err := (FileStore{Dir: filepath.Join(dir, "none")}).Delete("age1x"); err != nil {
 		t.Errorf("Delete missing: %v", err)
 	}

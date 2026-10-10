@@ -68,11 +68,17 @@ func (f fileDB) Copy(_ context.Context, o source.CopyOptions) (source.Meta, erro
 type noGit struct {
 	storageCalls int
 	pruneDays    []int
+	// pushed records the remote and tips each Pushed was given.
+	pushed []string
 }
 
 var testGit = &noGit{}
 
-func (*noGit) HookPath(string) (string, error)             { return "", errors.New("no git in unit tests") }
+func (*noGit) HookPath(string, string) (string, error) { return "", errors.New("no git in unit tests") }
+func (g *noGit) Pushed(_ string, tips, _ []string, remote string) ([]check.Violation, error) {
+	g.pushed = append(g.pushed, remote+" "+strings.Join(tips, " "))
+	return nil, nil
+}
 func (*noGit) Staged(string) ([]check.Violation, error)    { return nil, nil }
 func (*noGit) Committed(string) ([]check.Violation, error) { return nil, nil }
 func (*noGit) LastCommit(string) (time.Time, bool, error)  { return time.Time{}, false, nil }
@@ -145,6 +151,7 @@ func TestRunUsageErrors(t *testing.T) {
 		{"init"},
 		{"seal", "only-one"},
 		{"check", "a", "b"},
+		{"check", "--pre-push", "origin", "url", "extra"},
 		{"restore", "repo"},
 		{"recovery"},
 		{"recovery", "bogus", "repo"},
@@ -402,5 +409,29 @@ func TestNewAppWithoutHome(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	if _, err := newApp(); err == nil {
 		t.Fatal("newApp without a home folder succeeded")
+	}
+}
+
+// check --pre-push reads the refs git pushes from its input and checks the
+// commits they send, with the remote git names.
+func TestRunCheckPrePush(t *testing.T) {
+	isolate(t)
+	in := filepath.Join(t.TempDir(), "refs")
+	tip := strings.Repeat("a", 40)
+	os.WriteFile(in, []byte("refs/heads/main "+tip+" refs/heads/main "+strings.Repeat("0", 40)+"\n"), 0o600)
+	f, err := os.Open(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	stdin := os.Stdin
+	os.Stdin = f
+	t.Cleanup(func() { os.Stdin = stdin })
+	testGit.pushed = nil
+	if err := run("check", []string{"--pre-push", "origin", "https://example.test/backup.git"}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(testGit.pushed, []string{"origin " + tip}) {
+		t.Fatalf("Pushed was given %q", testGit.pushed)
 	}
 }

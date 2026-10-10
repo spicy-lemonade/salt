@@ -82,7 +82,9 @@ func Lease(ctx context.Context, dir string, known []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out, err := remote(ctx, dir, "git ls-remote", "ls-remote", "origin", ref)
+	// --refs leaves out peeled tags. ls-remote has no exact match, so a
+	// ref whose name ends in ref is listed too; remoteTip picks ref itself.
+	out, err := remote(ctx, dir, "git ls-remote", "ls-remote", "--refs", "origin", ref)
 	if err != nil {
 		return "", err
 	}
@@ -167,7 +169,8 @@ const maxRemoteOutput = 64 << 10
 // returns its output. git never waits for a password to be typed, an HTTP
 // transfer that stalls is stopped, the command is stopped after
 // RemoteTimeout, and errors never show the credentials origin's URL may
-// hold.
+// hold. Output longer than maxRemoteOutput is an error, never cut short:
+// someone who can push could add refs to push the line salt needs out of it.
 func remote(ctx context.Context, dir, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, RemoteTimeout)
 	defer cancel()
@@ -183,6 +186,8 @@ func remote(ctx context.Context, dir, name string, args ...string) (string, erro
 		failed.Stderr = hideCredentials(failed.Stderr, Remote(dir))
 	case errors.Is(err, context.DeadlineExceeded):
 		err = fmt.Errorf("%s took longer than %v, so salt stopped it", name, RemoteTimeout)
+	case err == nil && stdout.Cut():
+		err = fmt.Errorf("%s printed more than %d KiB, far more than salt expects. Someone may have added many branches to origin, so check it", name, maxRemoteOutput>>10)
 	}
 	return stdout.String(), err
 }

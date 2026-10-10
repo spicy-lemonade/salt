@@ -47,7 +47,7 @@ const usageText = `salt encrypts your agent's memory backups before they are pus
 Setup:
   salt init REPO [--plain-paths] [--recovery phrase|passphrase] [--passphrase-file F]
       Set up salt in a git backup repo: create your key, choose how to
-      recover it, and install the pre-commit hook.
+      recover it, and install the pre-commit and pre-push hooks.
 
 Nightly (one command, for a cron line):
   salt backup --preset NAME... [--keep-days N] REPO
@@ -91,6 +91,10 @@ Nightly (in your backup script):
   salt check [REPO]
       Pre-commit hook: refuse the commit if any staged file is not encrypted,
       or if git would ignore or change any file salt wrote.
+  salt check --pre-push REMOTE URL
+      Pre-push hook: refuse the push if any file in the commits being pushed
+      is not encrypted, such as one a merge, a rebase or git commit
+      --no-verify added. Reads the refs being pushed from its input.
 
 Restoring:
   salt restore REPO --to DIR [--force] [--allow-unsigned] [PATH...]
@@ -322,9 +326,23 @@ func run(cmd string, args []string) error {
 		}
 		return a.Prune(pos[0], *days)
 	case "check":
-		pos, err := parse(newFlags("check"), args, 0, 1)
+		fs := newFlags("check")
+		prePush := fs.Bool("pre-push", false, "check the commits git is about to push, as the pre-push hook does")
+		pos, err := parse(fs, args, 0, 2)
 		if err != nil {
 			return err
+		}
+		// git runs the pre-push hook in the repo, with the remote's name and
+		// URL, and the refs it pushes on the hook's input.
+		if *prePush {
+			remote := ""
+			if len(pos) > 0 {
+				remote = pos[0]
+			}
+			return a.CheckPush(".", remote, os.Stdin)
+		}
+		if len(pos) > 1 {
+			return usageError{"check: wrong number of arguments"}
 		}
 		return a.Check(orDot(pos))
 	case "restore":
@@ -389,8 +407,8 @@ func run(cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		p, err := a.InstallHook(orDot(pos))
-		if err == nil {
+		installed, err := a.InstallHook(orDot(pos))
+		for _, p := range installed {
 			a.UI.Printf("✓ Installed %s\n", app.ShortPath(p, a.Home))
 		}
 		return err

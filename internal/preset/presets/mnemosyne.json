@@ -11,7 +11,8 @@
     {"from": "${MNEMOSYNE_SHARED_DB_PATH}", "to": "mnemosyne-shared.db"},
     {"from": "${MNEMOSYNE_HOME:-~/.mnemosyne}/data", "to": "mnemosyne-home/data"}
   ],
-  "skip": [".env", "*.env", ".mnemosyne-repair-*", "*.pre_*_backup"],
+  "never": [".env", "*.env"],
+  "skip": [".mnemosyne-repair-*", "*.pre_*_backup"],
   "secrets": [
     {
       "files": ["config.yaml"],

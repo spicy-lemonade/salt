@@ -256,3 +256,68 @@ func TestPlantedBackupRefused(t *testing.T) {
 		t.Fatalf("verify after resealing: %v\n%s", err, e.ui.out.String())
 	}
 }
+
+// A saved signing key that is not the one the saved decryption key derives,
+// whose backups restore would refuse, is reported by doctor and replaced by
+// salt trust.
+func TestWrongSigningKeyIsReplaced(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	r, err := repo.Open(e.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rcpt := r.RecipientStrings[0]
+	other, _ := age.GenerateX25519Identity()
+	if err := e.app.signStore().Set(rcpt, keys.SigningSecret(keys.SigningKey(other))); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.app.Doctor(e.root); !errors.Is(err, ErrReported) || !strings.Contains(e.ui.out.String(), "the signing key saved on this machine does not match your key") {
+		t.Fatalf("doctor: %v\n%s", err, e.ui.out.String())
+	}
+	if err := e.app.Trust(e.root, true); err != nil {
+		t.Fatal(err)
+	}
+	id, err := e.app.storedIdentity(rcpt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k, _, err := e.app.signingKey(r); err != nil || !k.Equal(keys.SigningKey(id)) {
+		t.Fatalf("signing key after trust is still wrong: %v", err)
+	}
+	// One whose decryption key is not saved here cannot be checked, and is
+	// kept.
+	if err := e.app.Store.Delete(rcpt); err != nil {
+		t.Fatal(err)
+	}
+	e.app.signStore().Set(rcpt, keys.SigningSecret(keys.SigningKey(other)))
+	if k, rcpt, _ := e.app.signingKey(r); e.app.wrongSigningKey(k, rcpt) {
+		t.Fatal("a key that cannot be checked counts as wrong")
+	}
+}
+
+// A key saved for a public key that it is not the key for is damaged: trust
+// does not call it the person's, and restore asks for the phrase instead.
+func TestTrustMarksADamagedKey(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	r, err := repo.Open(e.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _ := age.GenerateX25519Identity()
+	e.app.Store.Set(r.RecipientStrings[0], keys.IdentitySecret(other))
+	e.ui.answer = func(p, out string) (string, error) { return "n", nil }
+	if err := e.app.Trust(e.root, false); err != nil {
+		t.Fatal(err)
+	}
+	out := e.ui.out.String()
+	if strings.Contains(out, "(your key on this machine)") || !strings.Contains(out, "⚠ the key saved for it on this machine is damaged") {
+		t.Fatalf("trust output:\n%s", out)
+	}
+	e.ui.out.Reset()
+	e.app.identities(r)
+	if !strings.Contains(e.ui.out.String(), "No key for this backup is saved on this machine") {
+		t.Fatalf("identities used a damaged key:\n%s", e.ui.out.String())
+	}
+}

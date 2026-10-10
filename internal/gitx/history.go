@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 )
@@ -164,13 +165,15 @@ func UpdateRef(dir, ref, newSHA, oldSHA, reason string) error {
 	return err
 }
 
-// ReclaimSpace deletes objects no longer reachable from any ref. It first
-// empties the reflogs, which would otherwise keep dropped commits for 30 to
-// 90 days, except the stash's, which holds the stash entries themselves.
-// Args turns the delta search off, which also keeps repacking from using
-// much memory.
-func ReclaimSpace(dir string) error {
-	refs, err := reflogRefs(dir)
+// ReclaimSpace deletes objects no longer reachable from any ref, once
+// prune has rewritten branch (its full name). It first empties the reflogs
+// that hold the commits prune dropped, which would otherwise keep them for
+// 30 to 90 days: HEAD's, branch's and that of origin's copy of branch,
+// which a push moves along with it. Every other ref's reflog is left as it
+// is. Args turns the delta search off, which also keeps repacking from
+// using much memory.
+func ReclaimSpace(dir, branch string) error {
+	refs, err := reflogRefs(dir, branch)
 	if err != nil {
 		return err
 	}
@@ -182,15 +185,18 @@ func ReclaimSpace(dir string) error {
 	return err
 }
 
-// reflogRefs lists HEAD and every ref except the stash.
-func reflogRefs(dir string) ([]string, error) {
-	out, err := gitLine(dir, "for-each-ref", "--format=%(refname)")
+// reflogRefs lists HEAD, then branch and origin's copy of it,
+// refs/remotes/origin/NAME, those that exist. for-each-ref also lists the
+// refs below a name it is given, which are left out.
+func reflogRefs(dir, branch string) ([]string, error) {
+	want := []string{branch, "refs/remotes/origin/" + strings.TrimPrefix(branch, "refs/heads/")}
+	out, err := gitLine(dir, append([]string{"for-each-ref", "--format=%(refname)"}, want...)...)
 	if err != nil {
 		return nil, err
 	}
 	refs := []string{"HEAD"}
 	for _, r := range strings.Split(out, "\n") {
-		if r != "" && r != "refs/stash" {
+		if slices.Contains(want, r) {
 			refs = append(refs, r)
 		}
 	}

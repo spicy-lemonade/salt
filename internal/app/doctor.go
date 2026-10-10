@@ -158,16 +158,16 @@ func (a *App) doctorKeys(r *report, rp *repo.Repo) {
 	}
 
 	for _, rcpt := range rp.RecipientStrings {
-		s, err := a.Store.Get(rcpt)
+		_, err := a.storedIdentity(rcpt)
 		if errors.Is(err, keys.ErrNotFound) {
 			continue
 		}
-		if err != nil {
-			r.add(warn, "could not read the %s: %v", a.StoreName, err)
+		if errors.Is(err, errDamagedKey) {
+			r.add(fail, "the key saved for %s in the %s is damaged", shortKey(rcpt), a.StoreName)
 			return
 		}
-		if id, err := s.Identity(); err != nil || id.Recipient().String() != rcpt {
-			r.add(fail, "the key saved for %s in the %s is damaged", shortKey(rcpt), a.StoreName)
+		if err != nil {
+			r.add(warn, "could not read the %s: %v", a.StoreName, err)
 			return
 		}
 		where := "the " + a.StoreName
@@ -197,11 +197,13 @@ func (a *App) doctorTrust(r *report, rp *repo.Repo) {
 }
 
 func (a *App) doctorSigning(r *report, rp *repo.Repo) {
-	switch _, err := a.signingKey(rp); {
+	switch k, rcpt, err := a.signingKey(rp); {
 	case errors.Is(err, errNoSigningKey):
 		r.add(warn, "this machine has no key to sign backups, so `salt seal` will refuse; run `salt trust %q`", rp.Root)
 	case err != nil:
 		r.add(fail, "the signing key saved on this machine cannot be read: %v", err)
+	case a.wrongSigningKey(k, rcpt):
+		r.add(fail, "the signing key saved on this machine does not match your key, so restore would refuse the backups it signs; run `salt trust %q` to replace it", rp.Root)
 	default:
 		r.add(ok, "this machine can sign backups")
 	}
@@ -227,18 +229,24 @@ func (a *App) doctorStorage(r *report, root string) {
 }
 
 func (a *App) doctorHook(r *report, root string) {
-	p, err := a.Git.HookPath(root)
-	if err != nil {
-		r.add(fail, "could not locate the pre-commit hook: %v", err)
-		return
-	}
-	switch _, statErr := os.Stat(p); {
-	case hook.Installed(p):
-		r.add(ok, "pre-commit hook runs `salt check` (%s)", a.short(p))
-	case statErr == nil:
-		r.add(fail, "pre-commit hook at %s does not run `salt check`; add it so plaintext commits are refused", a.short(p))
-	default:
-		r.add(fail, "no pre-commit hook; run `salt hook install %q`", root)
+	for _, h := range hook.All {
+		missing := fail
+		if h.WarnIfMissing {
+			missing = warn
+		}
+		p, err := a.Git.HookPath(root, h.Name)
+		if err != nil {
+			r.add(fail, "could not locate the %s hook: %v", h.Name, err)
+			continue
+		}
+		switch _, statErr := os.Stat(p); {
+		case hook.Installed(p, h):
+			r.add(ok, "%s hook runs `%s` (%s)", h.Name, h.Runs, a.short(p))
+		case statErr == nil:
+			r.add(missing, "%s hook at %s does not run `%s`; add it so plaintext %s are refused", h.Name, a.short(p), h.Runs, h.Refuses)
+		default:
+			r.add(missing, "no %s hook; run `salt hook install %q`", h.Name, root)
+		}
 	}
 	if sp, found := a.LookPath("salt"); found {
 		r.add(ok, "the hook can find salt (%s)", sp)

@@ -1,6 +1,7 @@
 package check
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -41,6 +42,11 @@ func TestReport(t *testing.T) {
 	if !strings.Contains(r, "25 staged file(s)") || !strings.Contains(r, "and 5 more") {
 		t.Fatalf("Report:\n%s", r)
 	}
+	r = PushReport(vs)
+	if !strings.HasPrefix(r, "salt check: refusing push: 25 file(s) in the commits being pushed are not encrypted:\n") ||
+		!strings.Contains(r, "and 5 more") || !strings.HasSuffix(r, "for example with git rebase, and encrypt with `salt seal` instead.\n") {
+		t.Fatalf("PushReport:\n%s", r)
+	}
 }
 
 // A pushed file name holding a newline or ESC is quoted, so it can't fake a
@@ -54,6 +60,21 @@ func TestViolationQuotesNames(t *testing.T) {
 	} {
 		if got := (Violation{path, "not encrypted"}).String(); got != want {
 			t.Errorf("Violation(%q) = %s, want %s", path, got, want)
+		}
+	}
+}
+
+func TestPushRefs(t *testing.T) {
+	zero := strings.Repeat("0", 40)
+	a, b := strings.Repeat("a", 40), strings.Repeat("b", 64)
+	tips, have, err := PushRefs(strings.NewReader("refs/heads/main " + a + " refs/heads/main " + zero + "\n\n" +
+		"(delete) " + zero + " refs/heads/old " + b + "\n"))
+	if err != nil || !slices.Equal(tips, []string{a}) || !slices.Equal(have, []string{b}) {
+		t.Fatalf("PushRefs = %v, %v, %v", tips, have, err)
+	}
+	for _, bad := range []string{"refs/heads/main " + a + "\n", "x -" + a[1:] + " y " + a + "\n", strings.Repeat("x", 70<<10)} {
+		if _, _, err := PushRefs(strings.NewReader(bad)); err == nil {
+			t.Errorf("PushRefs(%.30q) succeeded", bad)
 		}
 	}
 }

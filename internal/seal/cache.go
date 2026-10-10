@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/spicy-lemonade/salt/internal/private"
 )
 
 // cache is salt's local memory of what it sealed last time, so unchanged
@@ -20,10 +22,12 @@ import (
 type cache struct {
 	// Key ties the cache to a set of recipients and layout; if either
 	// changes, everything is re-encrypted.
-	Key       string                `json:"key"`
-	IndexSHA  string                `json:"index_sha"`
-	IndexSize int64                 `json:"index_size"`
-	Files     map[string]cacheEntry `json:"files"`
+	Key       string `json:"key"`
+	IndexSHA  string `json:"index_sha"`
+	IndexSize int64  `json:"index_size"`
+	// IndexModTime is index.age's last-modified time (see cachePart.ModTime).
+	IndexModTime int64                 `json:"index_mtime,omitempty"`
+	Files        map[string]cacheEntry `json:"files"`
 }
 
 // cacheEntry is one sealed file. A file in one object is embedded, so its
@@ -37,12 +41,17 @@ type cacheEntry struct {
 	Parts []cachePart `json:"parts,omitempty"` // every part, for a split file
 }
 
-// cachePart is one file of ciphertext and its size. For a chunk (see
+// cachePart is one file of ciphertext, its size and its last-modified time
+// in Unix nanoseconds. git writes a new file whenever it changes one, as a
+// pull or a reset does, so a file with another time is not reused, even at
+// the same size. A cache from an older salt has no times, and its files are
+// checked by size alone until a seal records them. For a chunk (see
 // encryptChunks) Chunk is the SHA-256 of its plaintext, so a later seal can
 // reuse it wherever the same chunk appears.
 type cachePart struct {
 	Object     string `json:"object"`
 	CipherSize int64  `json:"cipher_size"`
+	ModTime    int64  `json:"mtime,omitempty"`
 	Chunk      string `json:"chunk,omitempty"`
 }
 
@@ -135,7 +144,7 @@ func CopyKey(dir, repoRoot string) (string, error) {
 	raw := make([]byte, copyKeyLen/2)
 	rand.Read(raw)
 	key := hex.EncodeToString(raw)
-	if err := WritePrivate(p, []byte(key)); err != nil {
+	if err := private.Write(p, []byte(key)); err != nil {
 		return "", err
 	}
 	return key, nil
@@ -178,19 +187,7 @@ func (c *cache) save(path string) error {
 	if err != nil {
 		return err
 	}
-	return WritePrivate(path, b)
-}
-
-// WritePrivate replaces the file at path with b, readable only by its owner.
-func WritePrivate(path string, b []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return private.Write(path, b)
 }
 
 // DefaultCacheDir is ~/Library/Caches/salt, ~/.cache/salt, etc.

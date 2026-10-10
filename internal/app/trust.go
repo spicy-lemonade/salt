@@ -49,6 +49,19 @@ func (a *App) checkTrusted(r *repo.Repo) error {
 	return nil
 }
 
+// recordRecovery adds how r's key is recovered to its approval, if this
+// machine approved r with a salt that did not record it, as the rest was
+// recorded when approved. Call it once checkTrusted passes. Losing this save
+// only means trying again next time.
+func (a *App) recordRecovery(r *repo.Repo) {
+	pin, err := a.trustStore().Load(r.Root)
+	if err != nil || pin.Recovery != "" || r.Format.Recovery == "" {
+		return
+	}
+	pin.Recovery = r.Format.Recovery
+	a.trustStore().Save(r.Root, pin)
+}
+
 // approvedSigners returns the keys this machine approved for r, the only
 // ones restore and verify accept a signature from. Otherwise someone who can
 // push could add another of the person's keys to the repo, with a backup
@@ -91,10 +104,14 @@ func (a *App) Trust(repoRoot string, yes bool) error {
 	unknown := 0
 	for _, rcpt := range pin.Recipients {
 		mark := "  (your key on this machine)"
-		if _, err := a.Store.Get(rcpt); errors.Is(err, keys.ErrNotFound) {
+		switch _, err := a.storedIdentity(rcpt); {
+		case errors.Is(err, keys.ErrNotFound):
 			mark = "  ⚠ NOT on this machine"
 			unknown++
-		} else if err != nil {
+		case errors.Is(err, errDamagedKey):
+			mark = "  ⚠ " + errDamagedKey.Error()
+			unknown++
+		case err != nil:
 			return err
 		}
 		a.UI.Printf("  %s%s\n", rcpt, mark)

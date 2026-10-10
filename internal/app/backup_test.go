@@ -14,8 +14,10 @@ import (
 	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/gitx"
 	"github.com/spicy-lemonade/salt/internal/guard"
+	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/preset"
 	"github.com/spicy-lemonade/salt/internal/prune"
+	"github.com/spicy-lemonade/salt/internal/repo"
 	"github.com/spicy-lemonade/salt/internal/seal"
 	"github.com/spicy-lemonade/salt/internal/source"
 )
@@ -362,16 +364,22 @@ func TestBackupPushRecordProblems(t *testing.T) {
 	}
 }
 
-// The record holds at most maxKnownPushes commits.
+// The record holds at most maxKnownPushes commits, and always the one the
+// last push that worked left on origin.
 func TestBackupCapsThePushRecord(t *testing.T) {
 	e, _, presets := backupEnv(t)
+	e.git.head = "pushed"
+	if err := e.backup(presets); err != nil {
+		t.Fatal(err)
+	}
 	e.git.push = func(context.Context) error { return errors.New("offline") }
 	for i := range maxKnownPushes + 5 {
 		e.git.head = fmt.Sprint("h", i)
 		e.backup(presets)
 	}
-	if last := e.git.known[len(e.git.known)-1]; len(last) != maxKnownPushes || last[len(last)-1] != fmt.Sprint("h", maxKnownPushes+3) {
-		t.Fatalf("last push was told %d commits, ending %v", len(last), last[len(last)-1])
+	last := e.git.known[len(e.git.known)-1]
+	if len(last) != maxKnownPushes || last[0] != "pushed" || last[len(last)-1] != fmt.Sprint("h", maxKnownPushes+3) {
+		t.Fatalf("last push was told %d commits: %v … %v", len(last), last[0], last[len(last)-1])
 	}
 }
 
@@ -436,6 +444,99 @@ func TestRepoLockWithoutGit(t *testing.T) {
 	unlock()
 	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A linked worktree is locked in the git folder it shares with the main
+// one, so salt in two worktrees of a repo never works on it at once.
+func TestRepoLockInALinkedWorktree(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	main := filepath.Join(t.TempDir(), "main", ".git")
+	own := filepath.Join(main, "worktrees", "backup")
+	os.MkdirAll(own, 0o700)
+	os.WriteFile(filepath.Join(own, "commondir"), []byte("../..\n"), 0o600)
+	if err := os.RemoveAll(filepath.Join(e.root, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(e.root, ".git"), []byte("gitdir: "+own+"\n"), 0o600)
+	unlock, err := guard.Lock(filepath.Join(main, "salt", "lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); !errors.Is(err, guard.ErrLocked) {
+		t.Fatalf("seal: %v", err)
+	}
+	unlock()
+}
+
+func TestSharedGitDir(t *testing.T) {
+	// Paths come back real, as macOS keeps temporary folders behind a
+	// symlink.
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := func(parts ...string) string {
+		p := filepath.Join(append([]string{base}, parts...)...)
+		os.MkdirAll(p, 0o700)
+		return p
+	}
+	file := func(p, text string) { os.WriteFile(p, []byte(text), 0o600) }
+
+	plain := dir("plain")
+	withGit := dir("repo")
+	dir("repo", ".git")
+	// A submodule's .git names its own folder, relative, with no commondir.
+	sub := dir("sub")
+	modules := dir("repo", ".git", "modules", "sub")
+	file(filepath.Join(sub, ".git"), "gitdir: ../repo/.git/modules/sub\n")
+	linked := dir("linked")
+	own := dir("repo", ".git", "worktrees", "linked")
+	file(filepath.Join(linked, ".git"), "gitdir: "+own)
+	file(filepath.Join(own, "commondir"), "../..")
+	broken := dir("broken")
+	file(filepath.Join(broken, ".git"), "not a git file")
+	empty := dir("empty")
+	file(filepath.Join(empty, ".git"), "gitdir: ")
+	gone := dir("gone")
+	file(filepath.Join(gone, ".git"), "gitdir: "+filepath.Join(base, "nowhere"))
+	// A commondir naming a folder that is not there would make the lock
+	// there, out of sight of the other worktrees.
+	lost := dir("lost")
+	lostOwn := dir("repo", ".git", "worktrees", "lost")
+	file(filepath.Join(lost, ".git"), "gitdir: "+lostOwn)
+	file(filepath.Join(lostOwn, "commondir"), "../../../nowhere")
+	// A .git that is a symlink to a folder is followed, as stateFile
+	// follows it.
+	linkedDir := dir("linked-dir")
+	if err := os.Symlink(filepath.Join(withGit, ".git"), filepath.Join(linkedDir, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	for root, want := range map[string]string{
+		plain:     "",
+		withGit:   filepath.Join(withGit, ".git"),
+		sub:       modules,
+		linked:    filepath.Join(withGit, ".git"),
+		linkedDir: filepath.Join(linkedDir, ".git"),
+	} {
+		if got, err := sharedGitDir(root); err != nil || got != want {
+			t.Errorf("sharedGitDir(%s) = %q, %v; want %q", root, got, err, want)
+		}
+	}
+	// One that cannot be followed is an error, never another lock.
+	loop := dir("loop")
+	if err := os.Symlink(".git", filepath.Join(loop, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{broken, empty, gone, lost, loop, filepath.Join(base, "missing")} {
+		if got, err := sharedGitDir(root); err == nil {
+			t.Errorf("sharedGitDir(%s) = %q, want an error", root, got)
+		}
+	}
+	e := newEnv(t)
+	if _, err := e.app.lockRepo(broken); err == nil || !strings.Contains(err.Error(), "cannot tell which git folder it uses") {
+		t.Errorf("lockRepo of a broken worktree: %v", err)
 	}
 }
 
@@ -731,5 +832,120 @@ func TestBackupInterruptedWhileMeasuringThePush(t *testing.T) {
 				t.Fatalf("calls = %v", e.git.calls)
 			}
 		})
+	}
+}
+
+// CheckPush reads the refs git is pushing, checks the commits that would
+// send, and refuses a push that sends a file that is not encrypted, or
+// whose refs it cannot read.
+func TestCheckPush(t *testing.T) {
+	e := newEnv(t)
+	zero := strings.Repeat("0", 40)
+	a, b, c := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 64)
+	refs := "refs/heads/main " + a + " refs/heads/main " + b + "\n" +
+		"refs/heads/new " + c + " refs/heads/new " + zero + "\n" +
+		"(delete) " + zero + " refs/heads/old " + b + "\n\n"
+	if err := e.app.CheckPush(e.root, "origin", strings.NewReader(refs)); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(e.git.pushedTips, []string{a, c}) || !slices.Equal(e.git.pushedHave, []string{b, b}) || e.git.pushedRemote != "origin" {
+		t.Fatalf("Pushed was given %v, %v, %q", e.git.pushedTips, e.git.pushedHave, e.git.pushedRemote)
+	}
+
+	// A push that only deletes sends nothing to check.
+	e.git.pushedTips = nil
+	if err := e.app.CheckPush(e.root, "origin", strings.NewReader("(delete) "+zero+" refs/heads/old "+b+"\n")); err != nil || e.git.pushedTips != nil {
+		t.Fatalf("deletion: %v, checked %v", err, e.git.pushedTips)
+	}
+
+	e.git.pushedFound = []check.Violation{{Path: "USER.md", Reason: "not encrypted"}}
+	if err := e.app.CheckPush(e.root, "origin", strings.NewReader(refs)); !errors.Is(err, ErrReported) ||
+		!strings.Contains(e.ui.out.String(), "salt check: refusing push: 1 file(s) in the commits being pushed are not encrypted:\n  USER.md: not encrypted\n") {
+		t.Fatalf("plaintext: %v\n%s", err, e.ui.out.String())
+	}
+	e.git.pushedFound, e.git.pushedErr = nil, errors.New("git broke")
+	if err := e.app.CheckPush(e.root, "origin", strings.NewReader(refs)); err == nil || !strings.Contains(err.Error(), "could not inspect the push, refusing it: git broke") {
+		t.Fatalf("git failing: %v", err)
+	}
+	for _, bad := range []string{
+		"refs/heads/main " + a + " refs/heads/main\n",
+		"refs/heads/main --all refs/heads/main " + b + "\n",
+		"refs/heads/main " + strings.ToUpper(a) + " refs/heads/main " + b + "\n",
+		strings.Repeat("x", 70<<10) + "\n",
+	} {
+		if err := e.app.CheckPush(e.root, "origin", strings.NewReader(bad)); err == nil || !strings.Contains(err.Error(), "could not read what git is pushing, refusing the push") {
+			t.Errorf("CheckPush(%.40q) = %v", bad, err)
+		}
+	}
+}
+
+// Both hooks are installed. A hook of the person's own is kept and named,
+// and the other is still installed. Doctor reports each.
+func TestInstallHooks(t *testing.T) {
+	e := newEnv(t)
+	hooks := filepath.Dir(e.hook)
+	installed, err := e.app.InstallHook(e.root)
+	want := []string{filepath.Join(hooks, "pre-commit"), filepath.Join(hooks, "pre-push")}
+	if err != nil || !slices.Equal(installed, want) {
+		t.Fatalf("InstallHook = %v, %v", installed, err)
+	}
+	os.Remove(want[0])
+	os.WriteFile(want[1], []byte("#!/bin/sh\nexit 0\n"), 0o755)
+	installed, err = e.app.InstallHook(e.root)
+	if !errors.Is(err, hook.ErrForeign) || !slices.Equal(installed, want[:1]) ||
+		!strings.Contains(err.Error(), "a pre-push hook already exists at "+want[1]+"; add `salt check --pre-push` to it so plaintext pushes are refused") {
+		t.Fatalf("InstallHook over a pre-push hook of the person's own = %v, %v", installed, err)
+	}
+
+	// A later hook that fails is a failure, never a hook of the person's
+	// own, and still names what was found before it. salt init then fails
+	// rather than only noting it.
+	e.git.hookFails = "pre-push"
+	os.WriteFile(want[0], []byte("#!/bin/sh\nexit 0\n"), 0o755)
+	_, err = e.app.InstallHook(e.root)
+	if err == nil || errors.Is(err, hook.ErrForeign) || !strings.Contains(err.Error(), "no hooks folder") ||
+		!strings.Contains(err.Error(), "a pre-commit hook already exists") {
+		t.Fatalf("InstallHook with a failing pre-push hook = %v", err)
+	}
+	os.MkdirAll(filepath.Join(e.root, repo.Dir), 0o755)
+	e.ui.answer = phraseAnswers(0)
+	if err := e.app.Init(InitOptions{Repo: e.root}); err == nil || !strings.Contains(err.Error(), "installing the git hooks: no hooks folder") {
+		t.Fatalf("Init with a failing pre-push hook: %v", err)
+	}
+	e.git.hookFails = ""
+	os.Remove(want[0])
+
+	// Init asks for the pre-commit hook's path again, to name it, and stops
+	// if it cannot.
+	os.RemoveAll(filepath.Join(e.root, repo.Dir))
+	e.git.hookCalls, e.git.hookFailsOn = 0, 3
+	e.ui.answer = phraseAnswers(0)
+	if err := e.app.Init(InitOptions{Repo: e.root}); err == nil || !strings.Contains(err.Error(), "no hooks folder") {
+		t.Fatalf("Init when the hook's path cannot be found: %v", err)
+	}
+	e.git.hookFailsOn = 0
+	os.RemoveAll(filepath.Join(e.root, repo.Dir))
+
+	// Something at a hook's path that cannot be read is a failure, not a
+	// hook of the person's own.
+	os.Remove(want[1])
+	os.Mkdir(want[1], 0o755)
+	if _, err := e.app.InstallHook(e.root); err == nil || errors.Is(err, hook.ErrForeign) {
+		t.Fatalf("InstallHook over a folder = %v", err)
+	}
+	os.Remove(want[1])
+	os.WriteFile(want[1], []byte("#!/bin/sh\nexit 0\n"), 0o755)
+
+	healthyRepo(t, e)
+	e.ui.out.Reset()
+	e.app.Doctor(e.root)
+	if out := e.ui.out.String(); !strings.Contains(out, "pre-push hook at "+want[1]+" does not run `salt check --pre-push`; add it so plaintext pushes are refused") {
+		t.Fatalf("doctor:\n%s", out)
+	}
+	// A repo set up before the pre-push hook is warned, not failed.
+	os.Remove(want[1])
+	e.ui.out.Reset()
+	if err := e.app.Doctor(e.root); err != nil || !strings.Contains(e.ui.out.String(), "no pre-push hook; run `salt hook install") {
+		t.Fatalf("doctor without a pre-push hook: %v\n%s", err, e.ui.out.String())
 	}
 }

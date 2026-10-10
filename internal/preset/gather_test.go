@@ -2,6 +2,8 @@ package preset
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -350,6 +352,72 @@ func TestGatherOverlapRules(t *testing.T) {
 		}
 		if len(f.LeftOut) != 1 || filepath.Base(f.LeftOut[0].Path) != "settings.yaml" {
 			t.Errorf("%s first: the outer preset's secrets rule was not used: %+v", order[0].Name, f.LeftOut)
+		}
+	}
+}
+
+// What one preset never backs up, such as a file or folder of secrets, no
+// preset given with it backs up either, wherever it is, even a place
+// another preset names that is such a folder.
+func TestGatherNeverAppliesToEveryPreset(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, "agent", "auth.json"), `{"token": "x"}`)
+	write(t, filepath.Join(home, "agent", "keys", "id"), "key")
+	write(t, filepath.Join(home, "agent", "notes.md"), "notes")
+	write(t, filepath.Join(home, "elsewhere", "auth.json"), `{"token": "y"}`)
+	write(t, filepath.Join(home, "elsewhere", "m.md"), "memory")
+	write(t, filepath.Join(home, "keys", "id"), "key")
+	agent, err := Parse("agent", []byte(`{"name": "agent", "paths": [{"from": "~/agent", "to": "agent"}],
+		"never": ["auth.json", "keys"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another tool's preset, pointed by a variable at the agent's folder.
+	other, err := Parse("other", []byte(`{"name": "other", "paths": [
+		{"from": "${OTHER_DIR}", "to": "other"},
+		{"from": "~/elsewhere", "to": "elsewhere"},
+		{"from": "~/keys", "to": "keys"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := envOf(home, map[string]string{"OTHER_DIR": filepath.Join(home, "agent")})
+	for _, order := range [][]*Preset{{agent, other}, {other, agent}} {
+		f, err := env.Gather(order, t.TempDir(), plain)
+		if err != nil {
+			t.Fatalf("%s first: %v", order[0].Name, err)
+		}
+		if files, _ := rels(f); !slices.Equal(files, []string{"agent/notes.md", "elsewhere/m.md"}) {
+			t.Errorf("%s first: files = %v", order[0].Name, files)
+		}
+	}
+	// Alone, the other preset backs them all up: never is the agent's rule.
+	f, err := env.Gather([]*Preset{other}, t.TempDir(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files, _ := rels(f); len(files) != 6 {
+		t.Errorf("alone: files = %v", files)
+	}
+}
+
+// A file checked for secrets carries the SHA-256 of the contents checked, so
+// seal leaves it out if it changes before it is read. Other files carry none.
+func TestGatherRecordsWhatWasChecked(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, "tool", "settings.yaml"), "model: x\n")
+	write(t, filepath.Join(home, "tool", "notes.md"), "notes")
+	f, err := envOf(home, nil).Gather([]*Preset{testPreset(t)}, t.TempDir(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte("model: x\n"))
+	for _, x := range f.Files {
+		want := ""
+		if x.Rel == "tool/settings.yaml" {
+			want = hex.EncodeToString(sum[:])
+		}
+		if x.SHA256 != want {
+			t.Errorf("%s: SHA256 = %q, want %q", x.Rel, x.SHA256, want)
 		}
 	}
 }
@@ -983,7 +1051,7 @@ func TestGatherOpenClaw(t *testing.T) {
 		"mainKey": false, "defaultSessionKey": false, "cacheKey": false, "sectionKey": false, "publicKey": false,
 	} {
 		write(t, conf, fmt.Sprintf(`{"x": {%q: "v-1"}}`, name))
-		if why, _, _ := secretIn(conf, sec); (why != "") != secret {
+		if why, _, _ := secretInFile(t, conf, sec); (why != "") != secret {
 			t.Errorf("%s: %q", name, why)
 		}
 	}
@@ -1143,7 +1211,7 @@ func TestGatherOpenViking(t *testing.T) {
 		sec := Secret{Keys: slices.Concat(defaultSecretKeys, openviking.Secrets[i].Keys)}
 		for name, secret := range cases {
 			write(t, conf, fmt.Sprintf(`{"x": {%q: "v-1"}}`, name))
-			if why, _, _ := secretIn(conf, sec); (why != "") != secret {
+			if why, _, _ := secretInFile(t, conf, sec); (why != "") != secret {
 				t.Errorf("rule %d, %s: %q", i, name, why)
 			}
 		}
@@ -1350,14 +1418,14 @@ func TestSecretIn(t *testing.T) {
 	} {
 		p := filepath.Join(dir, "f.yaml")
 		write(t, p, content)
-		if got, secret, _ := secretIn(p, sec); got != want || secret != strings.HasSuffix(want, "holds a secret") {
-			t.Errorf("secretIn(%.40q) = %q, want %q", content, got, want)
+		if got, secret, _ := secretInFile(t, p, sec); got != want || secret != strings.HasSuffix(want, "holds a secret") {
+			t.Errorf("secretInFile(t, %.40q) = %q, want %q", content, got, want)
 		}
 	}
 	// Without refs, such an object is taken for a secret.
 	p := filepath.Join(dir, "f.yaml")
 	write(t, p, `{"token": {"source": "env", "id": "K"}}`)
-	if got, _, _ := secretIn(p, Secret{Keys: sec.Keys}); got != "its setting token holds a secret" {
+	if got, _, _ := secretInFile(t, p, Secret{Keys: sec.Keys}); got != "its setting token holds a secret" {
 		t.Errorf("without refs: %q", got)
 	}
 	// A setting named like a secret that holds a number and no text is not
@@ -1379,16 +1447,16 @@ func TestSecretIn(t *testing.T) {
 	} {
 		p := filepath.Join(dir, "f.yaml")
 		write(t, p, content)
-		if _, _, got := secretIn(p, sec); got != want {
-			t.Errorf("secretIn(%q) names the number in %q, want %q", content, got, want)
+		if _, _, got := secretInFile(t, p, sec); got != want {
+			t.Errorf("secretInFile(t, %q) names the number in %q, want %q", content, got, want)
 		}
 	}
 	// A file deleted since it was listed is for the caller to skip.
-	if got, secret, _ := secretIn(filepath.Join(dir, "missing"), sec); got != "" || secret {
-		t.Errorf("missing file: %q", got)
+	if _, got, err := readToCheck(filepath.Join(dir, "missing")); got != "" || !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("missing file: %q, %v", got, err)
 	}
-	if got, _, _ := secretIn(dir, sec); !strings.Contains(got, "could not be read") {
-		t.Errorf("folder: %q", got)
+	if _, got, err := readToCheck(dir); !strings.Contains(got, "could not be read") || err != nil {
+		t.Errorf("folder: %q, %v", got, err)
 	}
 }
 
@@ -1658,8 +1726,22 @@ func TestSecretInRefusesAPipe(t *testing.T) {
 	if err := syscall.Mkfifo(p, 0o600); err != nil {
 		t.Skip("mkfifo:", err)
 	}
-	why, secret, _ := secretIn(p, Secret{Keys: defaultSecretKeys})
+	why, secret, _ := secretInFile(t, p, Secret{Keys: defaultSecretKeys})
 	if !strings.HasPrefix(why, "it could not be read to check it for secrets") || !strings.Contains(why, "not a regular file") || secret {
-		t.Fatalf("secretIn(pipe) = %q, %v", why, secret)
+		t.Fatalf("secretInFile(t, pipe) = %q, %v", why, secret)
 	}
+}
+
+// secretInFile checks the file at p for the secrets sec names, as Gather
+// does, and says why it is left out when it cannot be read to check.
+func secretInFile(t *testing.T, p string, sec Secret) (why string, secret bool, number string) {
+	t.Helper()
+	b, why, err := readToCheck(p)
+	if err != nil {
+		t.Fatalf("reading %s: %v", p, err)
+	}
+	if why != "" {
+		return why, false, ""
+	}
+	return secretsIn(b, sec)
 }

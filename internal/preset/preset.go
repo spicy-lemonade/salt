@@ -34,9 +34,13 @@ type Preset struct {
 	// Databases lists each live database to back up that is not a file,
 	// such as one on a Postgres server.
 	Databases []Database `json:"databases"`
-	// Skip lists name patterns (path.Match) of files and folders never backed
-	// up, such as caches.
+	// Skip lists name patterns (path.Match) of files and folders this preset
+	// never backs up, such as caches.
 	Skip []string `json:"skip"`
+	// Never lists name patterns (path.Match) of files and folders that hold
+	// secrets, such as .env or a folder of keys. No preset given with this
+	// one backs them up either, wherever it finds them.
+	Never []string `json:"never"`
 	// Secrets lists files that may hold secrets, which are left out when they
 	// do.
 	Secrets []Secret `json:"secrets"`
@@ -237,7 +241,7 @@ func (p *Preset) check(name string) error {
 			}
 		}
 	}
-	for _, pat := range slices.Concat(p.Skip, secretPatterns(p.Secrets)) {
+	for _, pat := range slices.Concat(p.Skip, p.Never, secretPatterns(p.Secrets)) {
 		if _, err := path.Match(pat, ""); err != nil {
 			return fmt.Errorf("bad pattern %q", pat)
 		}

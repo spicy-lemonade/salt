@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+
+	"github.com/spicy-lemonade/salt/internal/private"
 )
 
 // ErrInterrupted means the person stopped a restore or a seal (Ctrl-C or
@@ -39,18 +41,11 @@ func (l restoreLog) load() ([]string, error) {
 }
 
 func (l restoreLog) save(dirs []string) error {
-	if err := os.MkdirAll(filepath.Dir(l.path), 0o700); err != nil {
-		return err
-	}
 	b, err := json.Marshal(dirs)
 	if err != nil {
 		return err
 	}
-	tmp := l.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, l.path)
+	return private.Write(l.path, b)
 }
 
 // add records dir. Entries whose folder is already gone are dropped, and an

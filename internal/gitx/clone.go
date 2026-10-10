@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
 	"regexp"
 	"slices"
@@ -57,17 +58,49 @@ func RedactURL(s string) string {
 }
 
 // Clone downloads only the latest commit of remote's default branch into
-// dir, which must be empty. Cancelling ctx stops git. Errors never show the
-// credentials remote may hold.
+// dir, which must be empty. The URL is fetched from directly, never saved as
+// a remote, so a download left behind by a salt that was killed outright
+// holds no password or token from it. It talks to remote once, so a
+// password or passphrase is asked for at most once. Cancelling ctx stops
+// git. Errors never show the credentials remote may hold.
 func Clone(ctx context.Context, remote, dir string) error {
-	// "--" stops a URL starting with "-" from being read as an option. git
-	// runs in dir and clones into ".", so a relative dir is not taken twice.
-	// --depth 1 also fetches only the default branch.
-	cmd := exec.CommandContext(ctx, "git", Args(dir, "clone", "--depth", "1", "--no-tags", "--quiet", "--", remote, ".")...)
+	if err := cloneStep(ctx, dir, remote, nil, "init", "--quiet"); err != nil {
+		return err
+	}
+	// "--" stops a URL starting with "-" from being read as an option.
+	// --depth 1 fetches only the commit HEAD names. git's messages are in
+	// English, so the one for a missing HEAD can be told apart.
+	err := cloneStep(ctx, dir, remote, []string{"LC_ALL=C"},
+		"fetch", "--depth", "1", "--no-tags", "--quiet", "--", remote, "HEAD")
+	// A remote with no default branch, such as a new, empty one, has
+	// nothing to download, as git clone finds too.
+	if failed := (*proc.Error)(nil); errors.As(err, &failed) && strings.Contains(failed.Stderr, noRemoteHead) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return cloneStep(ctx, dir, remote, nil, "checkout", "--quiet", "--detach", "FETCH_HEAD")
+}
+
+// noRemoteHead is what git fetch says when the remote has no HEAD to fetch.
+const noRemoteHead = "couldn't find remote ref HEAD"
+
+// cloneStep runs one git command for Clone in dir, with env added to its
+// environment. Its errors name the command, with the URL for one that talks
+// to remote, and never show the credentials remote may hold.
+func cloneStep(ctx context.Context, dir, remote string, env []string, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", Args(dir, args...)...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	err := proc.Run(ctx, cmd)
 	var failed *proc.Error
 	if errors.As(err, &failed) {
-		failed.Program = "git clone " + RedactURL(remote)
+		failed.Program = "git " + args[0]
+		if slices.Contains(args, remote) {
+			failed.Program += " " + RedactURL(remote)
+		}
 		failed.Stderr = hideCredentials(failed.Stderr, remote)
 	}
 	return err

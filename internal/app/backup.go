@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/spicy-lemonade/salt/internal/preset"
+	"github.com/spicy-lemonade/salt/internal/private"
 	"github.com/spicy-lemonade/salt/internal/seal"
 )
 
@@ -94,6 +95,11 @@ func (a *App) Backup(o BackupOptions) error {
 	sealed, err := a.seal(r, signer, so)
 	if err != nil {
 		return err
+	}
+	// Such a file is no less there than before, so it is not dropped from
+	// what was found, and is not named as missing.
+	for _, rel := range sealed.Changed {
+		a.UI.Printf("salt: left %s out of the backup because it changed after salt checked it for secrets. The next backup checks it again\n", rel)
 	}
 	found.Drop(sealed.Gone)
 	a.warnMissing(last, o.Presets, found)
@@ -267,7 +273,12 @@ func (a *App) push(ctx context.Context, root, path string, known []string, lease
 	if !slices.Contains(tried, head) {
 		tried = append(tried, head)
 	}
-	if err := writeKnown(path, tried[max(0, len(tried)-maxKnownPushes):]); err != nil {
+	// The first is what origin held after the last push that worked, so it
+	// is kept however many pushes have failed since.
+	if len(tried) > maxKnownPushes {
+		tried = append(tried[:1:1], tried[len(tried)-maxKnownPushes+1:]...)
+	}
+	if err := writeKnown(path, tried); err != nil {
 		return err
 	}
 	if err := a.Git.Push(ctx, root, lease); err != nil {
@@ -280,5 +291,5 @@ func (a *App) push(ctx context.Context, root, path string, known []string, lease
 
 func writeKnown(p string, known []string) error {
 	b, _ := json.Marshal(known) // a list of strings always marshals
-	return seal.WritePrivate(p, b)
+	return private.Write(p, b)
 }

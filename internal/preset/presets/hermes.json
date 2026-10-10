@@ -41,8 +41,8 @@
     {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/skins", "to": "hermes/profiles/*/skins"},
     {"from": "${HERMES_HOME:-~/.hermes}/profiles/*/plans", "to": "hermes/profiles/*/plans"}
   ],
+  "never": [".env", "*.env", "auth.json", "vault.key", "vault.json.enc"],
   "skip": [
-    ".env", "*.env", "auth.json", "vault.key", "vault.json.enc",
     "__pycache__", "*.pyc", "*.pyo", "node_modules", ".venv", "venv", "site-packages",
     ".cache", ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache"
   ],
