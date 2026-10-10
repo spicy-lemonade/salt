@@ -1,9 +1,12 @@
 package gitx
 
 import (
+	"errors"
+	"io"
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 )
 
 func TestReadRaw(t *testing.T) {
@@ -20,8 +23,12 @@ func TestReadRaw(t *testing.T) {
 	if err != nil || !slices.Equal(got, want) {
 		t.Fatalf("readRaw = %v, %v", got, err)
 	}
-	if got, err := readRaw(strings.NewReader("")); err != nil || got != nil {
+	if got, err := readRaw(strings.NewReader("\x00\n\x00")); err != nil || got != nil {
 		t.Fatalf("readRaw of nothing = %v, %v", got, err)
+	}
+	broken := io.MultiReader(strings.NewReader("\n"+entry(z, a, "A", "x")), iotest.ErrReader(errors.New("pipe broke")))
+	if _, err := readRaw(broken); err == nil || !strings.Contains(err.Error(), "pipe broke") {
+		t.Fatalf("readRaw of a broken read = %v", err)
 	}
 	for _, bad := range []string{
 		"commit " + a + "\x00",

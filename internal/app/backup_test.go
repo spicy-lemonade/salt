@@ -514,7 +514,11 @@ func TestSharedGitDir(t *testing.T) {
 		}
 	}
 	// One that cannot be followed is an error, never another lock.
-	for _, root := range []string{broken, empty, gone} {
+	loop := dir("loop")
+	if err := os.Symlink(".git", filepath.Join(loop, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{broken, empty, gone, loop} {
 		if got, err := sharedGitDir(root); err == nil {
 			t.Errorf("sharedGitDir(%s) = %q, want an error", root, got)
 		}
@@ -899,7 +903,27 @@ func TestInstallHooks(t *testing.T) {
 	}
 	e.git.hookFails = ""
 	os.Remove(want[0])
+
+	// Init asks for the pre-commit hook's path again, to name it, and stops
+	// if it cannot.
 	os.RemoveAll(filepath.Join(e.root, repo.Dir))
+	e.git.hookCalls, e.git.hookFailsOn = 0, 3
+	e.ui.answer = phraseAnswers(0)
+	if err := e.app.Init(InitOptions{Repo: e.root}); err == nil || !strings.Contains(err.Error(), "no hooks folder") {
+		t.Fatalf("Init when the hook's path cannot be found: %v", err)
+	}
+	e.git.hookFailsOn = 0
+	os.RemoveAll(filepath.Join(e.root, repo.Dir))
+
+	// Something at a hook's path that cannot be read is a failure, not a
+	// hook of the person's own.
+	os.Remove(want[1])
+	os.Mkdir(want[1], 0o755)
+	if _, err := e.app.InstallHook(e.root); err == nil || errors.Is(err, hook.ErrForeign) {
+		t.Fatalf("InstallHook over a folder = %v", err)
+	}
+	os.Remove(want[1])
+	os.WriteFile(want[1], []byte("#!/bin/sh\nexit 0\n"), 0o755)
 
 	healthyRepo(t, e)
 	e.ui.out.Reset()

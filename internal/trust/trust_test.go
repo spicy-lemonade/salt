@@ -139,3 +139,21 @@ func TestDiffRecovery(t *testing.T) {
 		t.Errorf("Diff from an older pin = %v", d)
 	}
 }
+
+// A relative repo path needs the current folder, which may be gone.
+func TestStoreWithoutCurrentFolder(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "gone")
+	os.Mkdir(gone, 0o700)
+	t.Chdir(gone)
+	os.Remove(gone)
+	if _, err := os.Getwd(); err == nil {
+		t.Skip("this system still reports a removed current folder")
+	}
+	s := Store{Dir: t.TempDir()}
+	if _, err := s.Load("repo"); err == nil || errors.Is(err, ErrNotApproved) {
+		t.Fatalf("Load without a current folder: %v", err)
+	}
+	if err := s.Save("repo", Pin{Recipients: []string{"age1a"}}); err == nil {
+		t.Fatal("Save without a current folder succeeded")
+	}
+}

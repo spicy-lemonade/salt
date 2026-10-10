@@ -26,8 +26,8 @@ func Write(path string, b []byte) error {
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
-	if err != nil {
-		return err
+	if err == nil {
+		err = os.Rename(f.Name(), path)
 	}
-	return os.Rename(f.Name(), path)
+	return err
 }

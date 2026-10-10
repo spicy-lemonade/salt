@@ -541,11 +541,10 @@ func readToCheck(p string) (b []byte, why string, err error) {
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, "", err
 	}
-	if err != nil {
-		return nil, fmt.Sprintf("it could not be read to check it for secrets (%v)", err), nil
+	if err == nil {
+		defer file.Close()
+		b, err = io.ReadAll(io.LimitReader(file, maxSecretsFile+1))
 	}
-	defer file.Close()
-	b, err = io.ReadAll(io.LimitReader(file, maxSecretsFile+1))
 	if err != nil {
 		return nil, fmt.Sprintf("it could not be read to check it for secrets (%v)", err), nil
 	}

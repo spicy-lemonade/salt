@@ -64,8 +64,10 @@ type testEnv struct {
 }
 
 type fakeGit struct {
-	hook      string
-	hookFails string
+	hook        string
+	hookFails   string
+	hookCalls   int
+	hookFailsOn int
 	// pushedFound and pushedErr are what Pushed returns, and the others
 	// what it was last given.
 	pushedFound  []check.Violation
@@ -122,9 +124,10 @@ type fakeGit struct {
 }
 
 // HookPath puts every hook beside the pre-commit hook, at hook. It fails
-// for the hook named hookFails.
+// for the hook named hookFails, and on call number hookFailsOn.
 func (f *fakeGit) HookPath(_, name string) (string, error) {
-	if name == f.hookFails {
+	f.hookCalls++
+	if name == f.hookFails || f.hookCalls == f.hookFailsOn {
 		return "", errors.New("no hooks folder")
 	}
 	return filepath.Join(filepath.Dir(f.hook), name), nil

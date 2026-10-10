@@ -22,18 +22,24 @@ func NewBlobs(dir string, tips, have []string, remote string) ([]Blob, error) {
 	// -m follows log.diffMerges, which the person may have set to a format
 	// that lists merges differently or not at all. An older git, which does
 	// not know the setting, always compares with each parent.
-	args := []string{"-c", "log.diffMerges=separate", "log", "--stdin", "--ignore-missing", "-z", "--raw",
+	// log.showSignature would print signature checks among the output.
+	args := []string{"-c", "log.diffMerges=separate", "-c", "log.showSignature=false", "log", "--stdin", "--ignore-missing", "-z", "--raw",
 		"--no-abbrev", "--no-renames", "--format=", "-m", "--root", "--diff-filter=ACMRT"}
 	// --not applies to what follows it here, not to what git reads on its
 	// input, so tips stay included.
 	if remote != "" {
 		args = append(args, "--not", "--remotes="+remote)
 	}
-	cmd := exec.Command("git", Args(dir, append(args, "--")...)...)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
+	// Older git reads no options, such as --not, on its input.
+	var in strings.Builder
+	for _, id := range tips {
+		in.WriteString(id + "\n")
 	}
+	for _, id := range have {
+		in.WriteString("^" + id + "\n")
+	}
+	cmd := exec.Command("git", Args(dir, append(args, "--")...)...)
+	cmd.Stdin = strings.NewReader(in.String())
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -43,18 +49,6 @@ func NewBlobs(dir string, tips, have []string, remote string) ([]Blob, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	go func() {
-		w := bufio.NewWriter(stdin)
-		// Older git reads no options, such as --not, on its input.
-		for _, id := range tips {
-			fmt.Fprintln(w, id)
-		}
-		for _, id := range have {
-			fmt.Fprintln(w, "^"+id)
-		}
-		w.Flush()
-		stdin.Close()
-	}()
 	blobs, err := readRaw(stdout)
 	if err != nil {
 		cmd.Process.Kill()

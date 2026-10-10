@@ -693,6 +693,15 @@ func TestPrePushRefusesPlaintext(t *testing.T) {
 	refused("a merge commit's own file", "feature", "merged.md")
 	e.must(b.dir, "git", "reset", "-q", "--hard", "HEAD~1")
 
+	// A push git cannot be asked about, here from outside any repo, is
+	// refused.
+	head := strings.TrimSpace(e.must(b.dir, "git", "rev-parse", "HEAD"))
+	zero := strings.Repeat("0", len(head))
+	out, code := e.runInput(t.TempDir(), "refs/heads/x "+head+" refs/heads/x "+zero+"\n", "salt", "check", "--pre-push", "origin", b.remote)
+	if code != 1 || !strings.Contains(out, "salt check could not inspect the push, refusing it: git log:") {
+		t.Fatalf("a push outside a repo: exit %d\n%s", code, out)
+	}
+
 	if out := e.must(b.base, "salt", "doctor", b.dir); !strings.Contains(out, "pre-push hook runs `salt check --pre-push`") {
 		t.Fatalf("doctor:\n%s", out)
 	}

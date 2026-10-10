@@ -169,12 +169,13 @@ func (w *partWriter) closePart() error {
 		f.Close()
 		return err
 	}
-	if err := f.Close(); err != nil {
-		return err
-	}
 	// Read once the file is closed, as some file systems date a file when
 	// it is closed. Renaming the part into place keeps both.
-	fi, err := w.rt.Lstat(w.tmps[len(w.tmps)-1])
+	var fi os.FileInfo
+	err := f.Close()
+	if err == nil {
+		fi, err = w.rt.Lstat(w.tmps[len(w.tmps)-1])
+	}
 	if err != nil {
 		return err
 	}
