@@ -496,6 +496,12 @@ func TestSharedGitDir(t *testing.T) {
 	file(filepath.Join(empty, ".git"), "gitdir: ")
 	gone := dir("gone")
 	file(filepath.Join(gone, ".git"), "gitdir: "+filepath.Join(base, "nowhere"))
+	// A commondir naming a folder that is not there would make the lock
+	// there, out of sight of the other worktrees.
+	lost := dir("lost")
+	lostOwn := dir("repo", ".git", "worktrees", "lost")
+	file(filepath.Join(lost, ".git"), "gitdir: "+lostOwn)
+	file(filepath.Join(lostOwn, "commondir"), "../../../nowhere")
 	// A .git that is a symlink to a folder is followed, as stateFile
 	// follows it.
 	linkedDir := dir("linked-dir")
@@ -518,7 +524,7 @@ func TestSharedGitDir(t *testing.T) {
 	if err := os.Symlink(".git", filepath.Join(loop, ".git")); err != nil {
 		t.Fatal(err)
 	}
-	for _, root := range []string{broken, empty, gone, loop} {
+	for _, root := range []string{broken, empty, gone, lost, loop} {
 		if got, err := sharedGitDir(root); err == nil {
 			t.Errorf("sharedGitDir(%s) = %q, want an error", root, got)
 		}

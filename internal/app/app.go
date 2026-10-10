@@ -264,7 +264,8 @@ const maxGitFile = 4 << 10
 // worktree's own git folder ("gitdir: PATH"). That folder's commondir file,
 // if it has one, then names the shared folder. Each path may be relative to
 // the folder it is named in. These are the files git itself reads. A .git
-// file or commondir that cannot be read is an error.
+// file or commondir that cannot be read, or that names no folder, is an
+// error.
 func sharedGitDir(root string) (string, error) {
 	dotGit := filepath.Join(root, ".git")
 	fi, err := os.Stat(dotGit)
@@ -293,14 +294,17 @@ func sharedGitDir(root string) (string, error) {
 		if !filepath.IsAbs(p) {
 			p = filepath.Join(dir, p)
 		}
-		return filepath.Clean(p), nil
+		p = filepath.Clean(p)
+		// Locking in a folder that is not there would make it, out of
+		// sight of the other worktrees.
+		if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
+			return "", fmt.Errorf("%s names %s, which is not a folder", file, p)
+		}
+		return p, nil
 	}
 	gitDir, err := named(root, dotGit, "gitdir: ")
 	if err != nil {
 		return "", err
-	}
-	if fi, err := os.Stat(gitDir); err != nil || !fi.IsDir() {
-		return "", fmt.Errorf("%s names %s, which is not a folder", dotGit, gitDir)
 	}
 	common, err := named(gitDir, filepath.Join(gitDir, "commondir"), "")
 	if errors.Is(err, fs.ErrNotExist) {

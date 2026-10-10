@@ -37,7 +37,7 @@ func TestWrite(t *testing.T) {
 	}
 	// A failed write leaves no temporary file.
 	if err := Write(filepath.Join(p, "under-a-file"), nil); err == nil {
-		t.Fatal("WritePrivate under a file succeeded")
+		t.Fatal("Write under a file succeeded")
 	}
 	if names, _ := filepath.Glob(filepath.Join(dir, "*")); len(names) != 2 {
 		t.Fatalf("files left after a failure: %v", names)
