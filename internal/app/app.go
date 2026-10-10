@@ -256,14 +256,13 @@ const maxGitFile = 4 << 10
 
 // sharedGitDir returns the git folder that the repository at root, with its
 // symlinks followed, shares with all its worktrees, or "" when root has no
-// .git. That is
-// its .git folder, followed if it is a symlink, as stateFile follows it,
-// unless .git is a file, as in a linked worktree, which names the
-// worktree's own git folder ("gitdir: PATH"). That folder's commondir file,
-// if it has one, then names the shared folder. Each path may be relative to
-// the folder it is named in. These are the files git itself reads. A .git
-// file or commondir that cannot be read, or that names no folder, is an
-// error.
+// .git. That is its .git folder, followed if it is a symlink, as stateFile
+// follows it, unless .git is a file, as in a linked worktree, which names
+// the worktree's own git folder ("gitdir: PATH"). That folder's commondir
+// file, if it has one, then names the shared folder. Each path may be
+// relative to the folder it is named in. These are the files git itself
+// reads. A .git file or commondir that cannot be read, or that names no
+// folder, is an error.
 func sharedGitDir(root string) (string, error) {
 	// A relative path in .git is relative to the real folder.
 	root, err := filepath.EvalSymlinks(root)
