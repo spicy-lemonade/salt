@@ -212,21 +212,18 @@ func (a *App) Seal(o SealOptions) error {
 // another worktree may have just written. A repo with no .git is locked
 // through the state file lock instead (see stateFile).
 func (a *App) lockRepo(root string) (unlock func(), err error) {
-	real, err := filepath.EvalSymlinks(root)
+	p, err := a.stateFile(root, "lock", "")
 	if err != nil {
 		return nil, err
 	}
 	// A .git salt cannot follow is refused, as locking elsewhere would let
 	// another worktree hold a lock of its own.
-	shared, err := sharedGitDir(real)
+	shared, err := sharedGitDir(root)
 	if err != nil {
 		return nil, fmt.Errorf("%s: cannot tell which git folder it uses, so salt cannot lock it: %w", a.short(root), err)
 	}
-	p := filepath.Join(shared, "salt", "lock")
-	if shared == "" {
-		if p, err = a.stateFile(root, "lock", ""); err != nil {
-			return nil, err
-		}
+	if shared != "" {
+		p = filepath.Join(shared, "salt", "lock")
 	}
 	unlock, err = guard.Lock(p)
 	if errors.Is(err, guard.ErrLocked) {
@@ -257,8 +254,9 @@ func (a *App) stateFile(root, name, ext string) (string, error) {
 // folder's path in.
 const maxGitFile = 4 << 10
 
-// sharedGitDir returns the git folder that the repository whose real path is
-// root shares with all its worktrees, or "" when root has no .git. That is
+// sharedGitDir returns the git folder that the repository at root, with its
+// symlinks followed, shares with all its worktrees, or "" when root has no
+// .git. That is
 // its .git folder, followed if it is a symlink, as stateFile follows it,
 // unless .git is a file, as in a linked worktree, which names the
 // worktree's own git folder ("gitdir: PATH"). That folder's commondir file,
@@ -267,6 +265,11 @@ const maxGitFile = 4 << 10
 // file or commondir that cannot be read, or that names no folder, is an
 // error.
 func sharedGitDir(root string) (string, error) {
+	// A relative path in .git is relative to the real folder.
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
 	dotGit := filepath.Join(root, ".git")
 	fi, err := os.Stat(dotGit)
 	switch {
@@ -279,11 +282,11 @@ func sharedGitDir(root string) (string, error) {
 	}
 	named := func(dir, file, prefix string) (string, error) {
 		f, _, err := regular.Open(os.OpenFile, file)
-		if err != nil {
-			return "", err
+		var b []byte
+		if err == nil {
+			defer f.Close()
+			b, err = io.ReadAll(io.LimitReader(f, maxGitFile))
 		}
-		defer f.Close()
-		b, err := io.ReadAll(io.LimitReader(f, maxGitFile))
 		if err != nil {
 			return "", err
 		}

@@ -471,7 +471,12 @@ func TestRepoLockInALinkedWorktree(t *testing.T) {
 }
 
 func TestSharedGitDir(t *testing.T) {
-	base := t.TempDir()
+	// Paths come back real, as macOS keeps temporary folders behind a
+	// symlink.
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := func(parts ...string) string {
 		p := filepath.Join(append([]string{base}, parts...)...)
 		os.MkdirAll(p, 0o700)
@@ -524,7 +529,7 @@ func TestSharedGitDir(t *testing.T) {
 	if err := os.Symlink(".git", filepath.Join(loop, ".git")); err != nil {
 		t.Fatal(err)
 	}
-	for _, root := range []string{broken, empty, gone, lost, loop} {
+	for _, root := range []string{broken, empty, gone, lost, loop, filepath.Join(base, "missing")} {
 		if got, err := sharedGitDir(root); err == nil {
 			t.Errorf("sharedGitDir(%s) = %q, want an error", root, got)
 		}

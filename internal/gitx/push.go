@@ -41,13 +41,13 @@ func NewBlobs(dir string, tips, have []string, remote string) ([]Blob, error) {
 	}
 	cmd := exec.Command("git", Args(dir, append(args, "--")...)...)
 	cmd.Stdin = strings.NewReader(in.String())
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
+	stdout, err := cmd.StdoutPipe()
+	if err == nil {
+		err = cmd.Start()
+	}
+	if err != nil {
 		return nil, err
 	}
 	blobs, err := readRaw(stdout)

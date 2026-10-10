@@ -701,6 +701,17 @@ func TestPrePushRefusesPlaintext(t *testing.T) {
 	if code != 1 || !strings.Contains(out, "salt check could not inspect the push, refusing it: git log:") {
 		t.Fatalf("a push outside a repo: exit %d\n%s", code, out)
 	}
+	// So is one where git cannot be started, or prints what salt cannot
+	// read, here from a stand-in git.
+	refs := "refs/heads/main " + head + " refs/heads/main " + zero + "\n"
+	out, code = e.with("PATH="+filepath.Dir(e.bin)).runInput(b.dir, refs, "salt", "check", "--pre-push", "origin", b.remote)
+	if code != 1 || !strings.Contains(out, "salt check could not inspect the push, refusing it:") {
+		t.Fatalf("a push without git: exit %d\n%s", code, out)
+	}
+	out, code = e.with(e.stubPath(t, "git", `printf 'junk\000'`)).runInput(b.dir, refs, "salt", "check", "--pre-push", "origin", b.remote)
+	if code != 1 || !strings.Contains(out, `salt check could not inspect the push, refusing it: git log: unexpected output "junk"`) {
+		t.Fatalf("a git printing junk: exit %d\n%s", code, out)
+	}
 
 	if out := e.must(b.base, "salt", "doctor", b.dir); !strings.Contains(out, "pre-push hook runs `salt check --pre-push`") {
 		t.Fatalf("doctor:\n%s", out)
