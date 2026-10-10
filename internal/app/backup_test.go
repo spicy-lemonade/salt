@@ -493,17 +493,34 @@ func TestSharedGitDir(t *testing.T) {
 	file(filepath.Join(broken, ".git"), "not a git file")
 	empty := dir("empty")
 	file(filepath.Join(empty, ".git"), "gitdir: ")
+	gone := dir("gone")
+	file(filepath.Join(gone, ".git"), "gitdir: "+filepath.Join(base, "nowhere"))
+	// A .git that is a symlink to a folder is followed, as stateFile
+	// follows it.
+	linkedDir := dir("linked-dir")
+	if err := os.Symlink(filepath.Join(withGit, ".git"), filepath.Join(linkedDir, ".git")); err != nil {
+		t.Fatal(err)
+	}
 	for root, want := range map[string]string{
-		plain:   "",
-		withGit: filepath.Join(withGit, ".git"),
-		sub:     modules,
-		linked:  filepath.Join(withGit, ".git"),
-		broken:  "",
-		empty:   "",
+		plain:     "",
+		withGit:   filepath.Join(withGit, ".git"),
+		sub:       modules,
+		linked:    filepath.Join(withGit, ".git"),
+		linkedDir: filepath.Join(linkedDir, ".git"),
 	} {
-		if got := sharedGitDir(root); got != want {
-			t.Errorf("sharedGitDir(%s) = %q, want %q", root, got, want)
+		if got, err := sharedGitDir(root); err != nil || got != want {
+			t.Errorf("sharedGitDir(%s) = %q, %v; want %q", root, got, err, want)
 		}
+	}
+	// One that cannot be followed is an error, never another lock.
+	for _, root := range []string{broken, empty, gone} {
+		if got, err := sharedGitDir(root); err == nil {
+			t.Errorf("sharedGitDir(%s) = %q, want an error", root, got)
+		}
+	}
+	e := newEnv(t)
+	if _, err := e.app.lockRepo(broken); err == nil || !strings.Contains(err.Error(), "cannot tell which git folder it uses") {
+		t.Errorf("lockRepo of a broken worktree: %v", err)
 	}
 }
 
@@ -863,6 +880,15 @@ func TestInstallHooks(t *testing.T) {
 		!strings.Contains(err.Error(), "a pre-push hook already exists at "+want[1]+"; add `salt check --pre-push` to it so plaintext pushes are refused") {
 		t.Fatalf("InstallHook over a pre-push hook of the person's own = %v, %v", installed, err)
 	}
+
+	// A later hook that fails keeps what was found before it.
+	e.git.hookFails = "pre-push"
+	os.WriteFile(want[0], []byte("#!/bin/sh\nexit 0\n"), 0o755)
+	if _, err := e.app.InstallHook(e.root); !errors.Is(err, hook.ErrForeign) || !strings.Contains(err.Error(), "no hooks folder") {
+		t.Fatalf("InstallHook with a failing pre-push hook = %v", err)
+	}
+	e.git.hookFails = ""
+	os.Remove(want[0])
 
 	healthyRepo(t, e)
 	e.ui.out.Reset()

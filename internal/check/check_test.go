@@ -1,6 +1,7 @@
 package check
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -59,6 +60,21 @@ func TestViolationQuotesNames(t *testing.T) {
 	} {
 		if got := (Violation{path, "not encrypted"}).String(); got != want {
 			t.Errorf("Violation(%q) = %s, want %s", path, got, want)
+		}
+	}
+}
+
+func TestPushRefs(t *testing.T) {
+	zero := strings.Repeat("0", 40)
+	a, b := strings.Repeat("a", 40), strings.Repeat("b", 64)
+	tips, have, err := PushRefs(strings.NewReader("refs/heads/main " + a + " refs/heads/main " + zero + "\n\n" +
+		"(delete) " + zero + " refs/heads/old " + b + "\n"))
+	if err != nil || !slices.Equal(tips, []string{a}) || !slices.Equal(have, []string{b}) {
+		t.Fatalf("PushRefs = %v, %v, %v", tips, have, err)
+	}
+	for _, bad := range []string{"refs/heads/main " + a + "\n", "x -" + a[1:] + " y " + a + "\n", strings.Repeat("x", 70<<10)} {
+		if _, _, err := PushRefs(strings.NewReader(bad)); err == nil {
+			t.Errorf("PushRefs(%.30q) succeeded", bad)
 		}
 	}
 }

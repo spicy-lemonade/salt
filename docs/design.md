@@ -225,7 +225,11 @@ changes one, as a pull or a reset does, so an object someone replaced with
 another of the same size is encrypted again by the next seal, which repairs
 the backup. A cache from an older salt, which recorded no times, is checked
 by size alone until the next seal records them, so upgrading encrypts
-nothing again.
+nothing again. Anything else that gives an object a new last-modified time
+has the same effect, so its file is encrypted and pushed again. Checking out
+another branch and back, `touch`, or keeping the backup repo in a folder a
+sync service rewrites can do this to much of the backup, which then shows
+as an unexpectedly large push.
 
 A file's own chunks from its last seal are looked up before those of other
 files, so an unchanged file always keeps its own objects, even when another
@@ -586,7 +590,11 @@ start another until the machine runs out of memory. These rules prevent that:
    stopped too, since prune deletes what git no longer needs from that
    shared folder, which a commit in the other worktree may have just
    written. Salt finds the shared folder from the files git itself reads
-   (`.git`, and then `commondir`), without starting git. The lock is never
+   (`.git`, and then `commondir`), without starting git. A `.git` it cannot
+   follow stops the command, rather than taking a lock another worktree
+   would not see. A salt from before this change locks a linked worktree in
+   its cache folder instead, so during an upgrade an old and a new salt in
+   such a worktree do not stop each other. The lock is never
    committed. It is the same file whatever the environment, so a cron job
    and a shell, which can have different cache folders, still share it. A repo with no `.git` folder,
    which `salt seal` accepts, is locked through a file in salt's cache folder

@@ -19,8 +19,8 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/spicy-lemonade/salt/internal/private"
 	"github.com/spicy-lemonade/salt/internal/repo"
-	"github.com/spicy-lemonade/salt/internal/seal"
 )
 
 // Pin is what was approved for one backup repo.
@@ -96,7 +96,7 @@ func (s Store) Load(root string) (Pin, error) {
 
 // Save approves pin for the repo at root.
 func (s Store) Save(root string, pin Pin) error {
-	p, _, err := s.paths(root)
+	p, older, err := s.paths(root)
 	if err != nil {
 		return err
 	}
@@ -104,7 +104,15 @@ func (s Store) Save(root string, pin Pin) error {
 	if err != nil {
 		return err
 	}
-	return seal.WritePrivate(p, append(b, '\n'))
+	if err := private.Write(p, append(b, '\n')); err != nil {
+		return err
+	}
+	// An approval an older salt saved under the path it was given is
+	// replaced by this one. Losing this removal only leaves it unread.
+	if older != p {
+		os.Remove(older)
+	}
+	return nil
 }
 
 // Diff describes, in plain words, how got differs from the approved pin.

@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/spicy-lemonade/salt/internal/seal"
+	"github.com/spicy-lemonade/salt/internal/private"
 )
 
 // ErrInterrupted means the person stopped a restore or a seal (Ctrl-C or
@@ -45,7 +45,7 @@ func (l restoreLog) save(dirs []string) error {
 	if err != nil {
 		return err
 	}
-	return seal.WritePrivate(l.path, b)
+	return private.Write(l.path, b)
 }
 
 // add records dir. Entries whose folder is already gone are dropped, and an

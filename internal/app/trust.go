@@ -33,7 +33,7 @@ func (a *App) approval(r *repo.Repo) (trust.Pin, []string, error) {
 // checkTrusted refuses to seal unless the repo's keys and settings match the
 // ones approved on this machine.
 func (a *App) checkTrusted(r *repo.Repo) error {
-	pin, d, err := a.approval(r)
+	_, d, err := a.approval(r)
 	if errors.Is(err, trust.ErrNotApproved) {
 		return fmt.Errorf("%w: this machine has not approved the keys in %s yet. Check them and run `salt trust %q`",
 			ErrNotTrusted, a.short(r.Root), r.Root)
@@ -46,14 +46,20 @@ func (a *App) checkTrusted(r *repo.Repo) error {
 			"If you made this change, run `salt trust %q`. If you didn't, someone else changed your backup repo. Don't back up until you've checked it",
 			ErrNotTrusted, a.short(r.Root), strings.Join(d, "\n  "), r.Root)
 	}
-	// An approval saved by a salt that did not record how the key is
-	// recovered records it now, as the rest was recorded when approved.
-	// Losing this save only means trying again next time.
-	if pin.Recovery == "" && r.Format.Recovery != "" {
-		pin.Recovery = r.Format.Recovery
-		a.trustStore().Save(r.Root, pin)
-	}
 	return nil
+}
+
+// recordRecovery adds how r's key is recovered to its approval, if this
+// machine approved r with a salt that did not record it, as the rest was
+// recorded when approved. Call it once checkTrusted passes. Losing this save
+// only means trying again next time.
+func (a *App) recordRecovery(r *repo.Repo) {
+	pin, err := a.trustStore().Load(r.Root)
+	if err != nil || pin.Recovery != "" || r.Format.Recovery == "" {
+		return
+	}
+	pin.Recovery = r.Format.Recovery
+	a.trustStore().Save(r.Root, pin)
 }
 
 // approvedSigners returns the keys this machine approved for r, the only

@@ -110,6 +110,9 @@ func TestPinsByRealPath(t *testing.T) {
 	if got, err := older.Load(link); err != nil || got.Recipients[0] != "age1a" {
 		t.Fatalf("Load after saving = %+v, %v", got, err)
 	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("the older approval is still there: %v", err)
+	}
 	if _, err := s.Load(filepath.Join(t.TempDir(), "gone")); err == nil {
 		t.Fatal("Load of a missing repo succeeded")
 	}

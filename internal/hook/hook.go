@@ -25,6 +25,9 @@ type Hook struct {
 	Runs string
 	// Refuses is what it refuses when they hold plaintext, such as commits.
 	Refuses string
+	// WarnIfMissing is set for a hook newer than salt init in some repos,
+	// so doctor warns, rather than fails, when it is missing.
+	WarnIfMissing bool
 	// Script is the hook.
 	Script string
 }
@@ -54,7 +57,8 @@ var (
 	// encrypted, such as one a merge, a rebase or git commit --no-verify
 	// made, which the pre-commit hook does not see. git gives it the
 	// remote's name and URL, and the refs it pushes on its input.
-	PrePush = Hook{Name: "pre-push", Runs: "salt check --pre-push", Refuses: "pushes", Script: script("push", "pushes", `salt check --pre-push "$@"`)}
+	PrePush = Hook{Name: "pre-push", Runs: "salt check --pre-push", Refuses: "pushes", WarnIfMissing: true,
+		Script: script("push", "pushes", `salt check --pre-push "$@"`)}
 	// All are the hooks salt installs.
 	All = []Hook{PreCommit, PrePush}
 )
@@ -92,9 +96,10 @@ func Install(path string, h Hook) error {
 	return os.WriteFile(path, []byte(h.Script), 0o755)
 }
 
-// Installed reports whether path holds a hook that runs h.Runs. It never
-// waits on something that is not a regular file, such as a named pipe, and
-// reads at most maxHook bytes.
+// Installed reports whether path holds a hook that runs h.Runs, and not only
+// a longer command another hook runs, as "salt check --pre-push" is to
+// "salt check". It never waits on something that is not a regular file,
+// such as a named pipe, and reads at most maxHook bytes.
 func Installed(path string, h Hook) bool {
 	f, _, err := regular.Open(os.OpenFile, path)
 	if err != nil {
@@ -102,5 +107,14 @@ func Installed(path string, h Hook) bool {
 	}
 	defer f.Close()
 	b, err := io.ReadAll(io.LimitReader(f, maxHook+1))
-	return err == nil && len(b) <= maxHook && strings.Contains(string(b), h.Runs)
+	if err != nil || len(b) > maxHook {
+		return false
+	}
+	text := string(b)
+	for _, o := range All {
+		if o.Runs != h.Runs && strings.HasPrefix(o.Runs, h.Runs) {
+			text = strings.ReplaceAll(text, o.Runs, "")
+		}
+	}
+	return strings.Contains(text, h.Runs)
 }

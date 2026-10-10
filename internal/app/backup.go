@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/spicy-lemonade/salt/internal/preset"
+	"github.com/spicy-lemonade/salt/internal/private"
 	"github.com/spicy-lemonade/salt/internal/seal"
 )
 
@@ -290,5 +291,5 @@ func (a *App) push(ctx context.Context, root, path string, known []string, lease
 
 func writeKnown(p string, known []string) error {
 	b, _ := json.Marshal(known) // a list of strings always marshals
-	return seal.WritePrivate(p, b)
+	return private.Write(p, b)
 }

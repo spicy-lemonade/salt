@@ -4,8 +4,10 @@
 package check
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/spicy-lemonade/salt/internal/escape"
@@ -61,6 +63,44 @@ func Committed(dir string) ([]Violation, error) {
 	}
 	return classifyBlobs(dir, "HEAD", paths)
 }
+
+// PushRefs reads what git gives the pre-push hook on its input: for each
+// ref pushed, a line "LOCAL-REF LOCAL-ID REMOTE-REF REMOTE-ID". It returns
+// the commits pushed and those the remote holds, for Pushed. A deletion
+// pushes nothing, and a new ref has nothing on the remote. A line it cannot
+// read is an error.
+func PushRefs(r io.Reader) (tips, have []string, err error) {
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		f := strings.Fields(sc.Text())
+		if len(f) == 0 {
+			continue
+		}
+		if len(f) != 4 || !isObjectID(f[1]) || !isObjectID(f[3]) {
+			return nil, nil, fmt.Errorf("unexpected line %.80q", sc.Text())
+		}
+		if !isZeroID(f[1]) {
+			tips = append(tips, f[1])
+		}
+		if !isZeroID(f[3]) {
+			have = append(have, f[3])
+		}
+	}
+	return tips, have, sc.Err()
+}
+
+// isObjectID reports whether s is a git object ID: 40 hex digits, or 64 in a
+// SHA-256 repository.
+func isObjectID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	return strings.Trim(s, "0123456789abcdef") == ""
+}
+
+// isZeroID reports whether the object ID s is all zeros, which git uses for
+// a ref that does not exist.
+func isZeroID(s string) bool { return strings.Trim(s, "0") == "" }
 
 // Pushed checks every file that the commits a push sends add or change: those
 // reachable from tips and not from have or remote's remote-tracking branches

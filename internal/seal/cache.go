@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/spicy-lemonade/salt/internal/private"
 )
 
 // cache is salt's local memory of what it sealed last time, so unchanged
@@ -142,7 +144,7 @@ func CopyKey(dir, repoRoot string) (string, error) {
 	raw := make([]byte, copyKeyLen/2)
 	rand.Read(raw)
 	key := hex.EncodeToString(raw)
-	if err := WritePrivate(p, []byte(key)); err != nil {
+	if err := private.Write(p, []byte(key)); err != nil {
 		return "", err
 	}
 	return key, nil
@@ -185,31 +187,7 @@ func (c *cache) save(path string) error {
 	if err != nil {
 		return err
 	}
-	return WritePrivate(path, b)
-}
-
-// WritePrivate replaces the file at path with b, readable only by its owner.
-// b is written to a new file under a random name beside path, which is never
-// one already there, and then renamed over path, so a reader sees the old
-// contents or the new, never part of them.
-func WritePrivate(path string, b []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name()) // fails, harmlessly, once renamed
-	_, err = f.Write(b)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
+	return private.Write(path, b)
 }
 
 // DefaultCacheDir is ~/Library/Caches/salt, ~/.cache/salt, etc.

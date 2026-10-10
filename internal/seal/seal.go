@@ -413,18 +413,20 @@ const (
 // dropLeftOut removes the items left out, with their entries and cache
 // entries, keeping the rest in order, and returns the paths of those gone
 // and of those changed.
-func dropLeftOut(items []item, entries []Entry, newCache []cacheEntry, left []leftOut) ([]item, []Entry, []cacheEntry, []string, []string) {
-	var paths [3][]string
+func dropLeftOut(items []item, entries []Entry, newCache []cacheEntry, left []leftOut) (_ []item, _ []Entry, _ []cacheEntry, goneRels, changedRels []string) {
 	n := 0
 	for i := range items {
-		if left[i] != kept {
-			paths[left[i]] = append(paths[left[i]], items[i].rel)
-			continue
+		switch left[i] {
+		case gone:
+			goneRels = append(goneRels, items[i].rel)
+		case changed:
+			changedRels = append(changedRels, items[i].rel)
+		default:
+			items[n], entries[n], newCache[n] = items[i], entries[i], newCache[i]
+			n++
 		}
-		items[n], entries[n], newCache[n] = items[i], entries[i], newCache[i]
-		n++
 	}
-	return items[:n], entries[:n], newCache[:n], paths[gone], paths[changed]
+	return items[:n], entries[:n], newCache[:n], goneRels, changedRels
 }
 
 // encryptFile seals the file at abs into obj, in parts of limit compressed

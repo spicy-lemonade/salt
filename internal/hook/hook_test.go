@@ -76,6 +76,17 @@ func TestInstalledIsPerHook(t *testing.T) {
 	if Installed(other, PrePush) {
 		t.Fatal("a pre-commit script counts as the pre-push hook")
 	}
+	// A pre-commit hook of the person's own that runs only the pre-push
+	// check does not run salt check.
+	own := filepath.Join(t.TempDir(), "pre-commit")
+	os.WriteFile(own, []byte("#!/bin/sh\nsalt check --pre-push\n"), 0o755)
+	if Installed(own, PreCommit) {
+		t.Fatal("salt check --pre-push counts as salt check")
+	}
+	os.WriteFile(own, []byte("#!/bin/sh\nnpm test && salt check\n"), 0o755)
+	if !Installed(own, PreCommit) {
+		t.Fatal("a hook of the person's own running salt check is not counted")
+	}
 }
 
 // A named pipe where the hook goes, which only a process on this machine can

@@ -4,7 +4,6 @@
 package app
 
 import (
-	"bufio"
 	"context"
 	"crypto/ed25519"
 	"errors"
@@ -217,11 +216,17 @@ func (a *App) lockRepo(root string) (unlock func(), err error) {
 	if err != nil {
 		return nil, err
 	}
-	var p string
-	if shared := sharedGitDir(real); shared != "" {
-		p = filepath.Join(shared, "salt", "lock")
-	} else if p, err = a.stateFile(root, "lock", ""); err != nil {
-		return nil, err
+	// A .git salt cannot follow is refused, as locking elsewhere would let
+	// another worktree hold a lock of its own.
+	shared, err := sharedGitDir(real)
+	if err != nil {
+		return nil, fmt.Errorf("%s: cannot tell which git folder it uses, so salt cannot lock it: %w", a.short(root), err)
+	}
+	p := filepath.Join(shared, "salt", "lock")
+	if shared == "" {
+		if p, err = a.stateFile(root, "lock", ""); err != nil {
+			return nil, err
+		}
 	}
 	unlock, err = guard.Lock(p)
 	if errors.Is(err, guard.ErrLocked) {
@@ -254,44 +259,54 @@ const maxGitFile = 4 << 10
 
 // sharedGitDir returns the git folder that the repository whose real path is
 // root shares with all its worktrees, or "" when root has no .git. That is
-// its .git folder, unless .git is a file, as in a linked worktree, which
-// names the worktree's own git folder ("gitdir: PATH"). That folder's
-// commondir file, if it has one, then names the shared folder. Each path
-// may be relative to the folder it is named in. These are the files git
-// itself reads.
-func sharedGitDir(root string) string {
+// its .git folder, followed if it is a symlink, as stateFile follows it,
+// unless .git is a file, as in a linked worktree, which names the
+// worktree's own git folder ("gitdir: PATH"). That folder's commondir file,
+// if it has one, then names the shared folder. Each path may be relative to
+// the folder it is named in. These are the files git itself reads. A .git
+// file or commondir that cannot be read is an error.
+func sharedGitDir(root string) (string, error) {
 	dotGit := filepath.Join(root, ".git")
-	fi, err := os.Lstat(dotGit)
+	fi, err := os.Stat(dotGit)
 	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", nil
 	case err != nil:
-		return ""
+		return "", err
 	case fi.IsDir():
-		return dotGit
+		return dotGit, nil
 	}
-	named := func(dir, file, prefix string) string {
+	named := func(dir, file, prefix string) (string, error) {
 		f, _, err := regular.Open(os.OpenFile, file)
 		if err != nil {
-			return ""
+			return "", err
 		}
 		defer f.Close()
 		b, err := io.ReadAll(io.LimitReader(f, maxGitFile))
+		if err != nil {
+			return "", err
+		}
 		p, ok := strings.CutPrefix(strings.TrimSpace(string(b)), prefix)
-		if err != nil || !ok || p == "" {
-			return ""
+		if !ok || p == "" {
+			return "", fmt.Errorf("%s does not name a folder", file)
 		}
 		if !filepath.IsAbs(p) {
 			p = filepath.Join(dir, p)
 		}
-		return filepath.Clean(p)
+		return filepath.Clean(p), nil
 	}
-	gitDir := named(root, dotGit, "gitdir: ")
-	if gitDir == "" {
-		return ""
+	gitDir, err := named(root, dotGit, "gitdir: ")
+	if err != nil {
+		return "", err
 	}
-	if common := named(gitDir, filepath.Join(gitDir, "commondir"), ""); common != "" {
-		return common
+	if fi, err := os.Stat(gitDir); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("%s names %s, which is not a folder", dotGit, gitDir)
 	}
-	return gitDir
+	common, err := named(gitDir, filepath.Join(gitDir, "commondir"), "")
+	if errors.Is(err, fs.ErrNotExist) {
+		return gitDir, nil
+	}
+	return common, err
 }
 
 // openToSeal opens the salt repository at path for sealing. It refuses one
@@ -305,6 +320,7 @@ func (a *App) openToSeal(path string) (*repo.Repo, ed25519.PrivateKey, error) {
 	if err := a.checkTrusted(r); err != nil {
 		return nil, nil, err
 	}
+	a.recordRecovery(r)
 	signer, _, err := a.signingKey(r)
 	if errors.Is(err, errNoSigningKey) {
 		return nil, nil, fmt.Errorf("this machine has no key to sign backups to %s. salt now signs every backup, so restore can tell if someone planted files in it. Run `salt trust %q` once to set it up",
@@ -429,24 +445,8 @@ var ErrReported = errors.New("problems reported")
 // line "LOCAL-REF LOCAL-ID REMOTE-REF REMOTE-ID". A deletion sends nothing.
 // Anything else stops the push.
 func (a *App) CheckPush(repoRoot, remote string, refs io.Reader) error {
-	var tips, have []string
-	sc := bufio.NewScanner(refs)
-	for sc.Scan() {
-		f := strings.Fields(sc.Text())
-		if len(f) == 0 {
-			continue
-		}
-		if len(f) != 4 || !isObjectID(f[1]) || !isObjectID(f[3]) {
-			return fmt.Errorf("salt check could not read what git is pushing, refusing the push: %.80q", sc.Text())
-		}
-		if !isZeroID(f[1]) {
-			tips = append(tips, f[1])
-		}
-		if !isZeroID(f[3]) {
-			have = append(have, f[3])
-		}
-	}
-	if err := sc.Err(); err != nil {
+	tips, have, err := check.PushRefs(refs)
+	if err != nil {
 		return fmt.Errorf("salt check could not read what git is pushing, refusing the push: %w", err)
 	}
 	if len(tips) == 0 {
@@ -462,19 +462,6 @@ func (a *App) CheckPush(repoRoot, remote string, refs io.Reader) error {
 	}
 	return nil
 }
-
-// isObjectID reports whether s is a git object ID: 40 hex digits, or 64 in a
-// SHA-256 repository.
-func isObjectID(s string) bool {
-	if len(s) != 40 && len(s) != 64 {
-		return false
-	}
-	return strings.Trim(s, "0123456789abcdef") == ""
-}
-
-// isZeroID reports whether the object ID s is all zeros, which git uses for
-// a ref that does not exist.
-func isZeroID(s string) bool { return strings.Trim(s, "0") == "" }
 
 // Check refuses plaintext staged in the repository at repoRoot.
 func (a *App) Check(repoRoot string) error {
@@ -500,7 +487,7 @@ func (a *App) InstallHook(repoRoot string) (installed []string, err error) {
 	for _, h := range hook.All {
 		p, err := a.Git.HookPath(repoRoot, h.Name)
 		if err != nil {
-			return installed, err
+			return installed, errors.Join(append(foreign, err)...)
 		}
 		err = hook.Install(p, h)
 		switch {
@@ -508,7 +495,7 @@ func (a *App) InstallHook(repoRoot string) (installed []string, err error) {
 			foreign = append(foreign, fmt.Errorf("a %s %w at %s; add `%s` to it so plaintext %s are refused",
 				h.Name, err, a.short(p), h.Runs, h.Refuses))
 		case err != nil:
-			return installed, err
+			return installed, errors.Join(append(foreign, err)...)
 		default:
 			installed = append(installed, p)
 		}

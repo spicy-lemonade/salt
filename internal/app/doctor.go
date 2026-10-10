@@ -230,9 +230,8 @@ func (a *App) doctorStorage(r *report, root string) {
 
 func (a *App) doctorHook(r *report, root string) {
 	for _, h := range hook.All {
-		// The pre-push hook is newer, so a repo set up before it is warned.
 		missing := fail
-		if h != hook.PreCommit {
+		if h.WarnIfMissing {
 			missing = warn
 		}
 		p, err := a.Git.HookPath(root, h.Name)
