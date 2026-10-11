@@ -14,35 +14,36 @@ const (
 	maxIndexToken      = 64
 )
 
-// tokenLimitReader refuses a JSON stream as soon as one string runs past
-// maxString raw bytes, or one number or literal runs past maxOther bytes.
-// encoding/json builds each whole token before salt can check its length, and
-// may quote it in full in an error, so the limit has to apply to the bytes on
-// the way in. It also refuses a value nested groupDepth deep, such as one
-// entry of the index, that holds more than maxGroupValues values at any
-// depth, and a stream whose values at groupDepth or deeper number more than
-// maxValues in all. Values are counted by the commas between them:
-// encoding/json builds a whole array, such as an entry's parts, before salt
-// can count it.
-type tokenLimitReader struct {
-	r              io.Reader
-	maxString      int
-	maxOther       int
-	groupDepth     int
-	maxGroupValues int
-	maxValues      int
-	inString       bool
-	escaped        bool
-	n              int // raw bytes in the current string, quotes excluded
-	run            int // bytes in the current number or literal
-	depth          int // objects and arrays open
-	values         int // commas in the current group
-	total          int // commas in every group so far
-	err            error
+// tokenLimits are the limits a tokenLimitReader applies to the index.
+type tokenLimits struct {
+	String int // raw bytes in one string
+	Other  int // bytes in one number or literal
+	Depth  int // how deeply the values counted sit, such as in one entry
+	Values int // values at Depth or deeper, in all
 }
 
-func newTokenLimitReader(r io.Reader, maxString, maxOther, groupDepth, maxGroupValues, maxValues int) *tokenLimitReader {
-	return &tokenLimitReader{r: r, maxString: maxString, maxOther: maxOther, groupDepth: groupDepth, maxGroupValues: maxGroupValues, maxValues: maxValues}
+// tokenLimitReader refuses a JSON stream as soon as one string runs past
+// String raw bytes, or one number or literal runs past Other bytes.
+// encoding/json builds each whole token before salt can check its length, and
+// may quote it in full in an error, so the limit has to apply to the bytes on
+// the way in. It also refuses the stream once the values Depth deep or deeper,
+// those in the index's entries, number more than Values in all. They are
+// counted by the commas between them: encoding/json builds a whole array, such
+// as an entry's parts, before salt can count it.
+type tokenLimitReader struct {
+	r        io.Reader
+	lim      tokenLimits
+	inString bool
+	escaped  bool
+	n        int // raw bytes in the current string, quotes excluded
+	run      int // bytes in the current number or literal
+	depth    int // objects and arrays open
+	values   int // commas Depth deep or deeper so far
+	err      error
+}
+
+func newTokenLimitReader(r io.Reader, lim tokenLimits) *tokenLimitReader {
+	return &tokenLimitReader{r: r, lim: lim}
 }
 
 func (s *tokenLimitReader) Read(p []byte) (int, error) {
@@ -60,20 +61,12 @@ func (s *tokenLimitReader) Read(p []byte) (int, error) {
 				s.run = 0
 			case '}', ']':
 				s.depth--
-				if s.depth < s.groupDepth {
-					s.values = 0
-				}
 				s.run = 0
 			case ',':
-				if s.depth >= s.groupDepth {
+				if s.depth >= s.lim.Depth {
 					s.values++
-					s.total++
-					if s.values >= s.maxGroupValues {
-						s.err = fmt.Errorf("more than %d values in one entry", s.maxGroupValues)
-						return i, s.err
-					}
-					if s.total >= s.maxValues {
-						s.err = fmt.Errorf("more than %d values in its entries", s.maxValues)
+					if s.values >= s.lim.Values {
+						s.err = fmt.Errorf("more than %d values in its entries", s.lim.Values)
 						return i, s.err
 					}
 				}
@@ -82,8 +75,8 @@ func (s *tokenLimitReader) Read(p []byte) (int, error) {
 				s.run = 0
 			default:
 				s.run++
-				if s.run > s.maxOther {
-					s.err = fmt.Errorf("value longer than %d bytes", s.maxOther)
+				if s.run > s.lim.Other {
+					s.err = fmt.Errorf("value longer than %d bytes", s.lim.Other)
 					return i, s.err
 				}
 			}
@@ -99,8 +92,8 @@ func (s *tokenLimitReader) Read(p []byte) (int, error) {
 			continue
 		}
 		s.n++
-		if s.n > s.maxString {
-			s.err = fmt.Errorf("string longer than %d bytes", s.maxString)
+		if s.n > s.lim.String {
+			s.err = fmt.Errorf("string longer than %d bytes", s.lim.String)
 			return i, s.err
 		}
 	}

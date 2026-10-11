@@ -231,6 +231,8 @@ func TestBackupGitFailures(t *testing.T) {
 			"the backup was committed, but dropping old backups failed, so it was not pushed: boom", []string{"stage", "commit salt backup", "lease", "prune"}, true},
 		"head": {func(g *fakeGit) { g.headErr = boom },
 			"salt could not read it to check what it pushes, so old backups were not dropped and it was not pushed: boom", []string{"stage", "commit salt backup", "lease"}, false},
+		"head at push": {func(g *fakeGit) { g.headErr, g.headOK = boom, 1 },
+			"the backup was committed but not pushed: boom", []string{"stage", "commit salt backup", "lease", "prune"}, true},
 		"plaintext pushed": {func(g *fakeGit) { g.pushedFound = []check.Violation{{Path: "notes.txt", Reason: "not encrypted"}} },
 			"problems reported", []string{"stage", "commit salt backup", "lease"}, false},
 		"push check": {func(g *fakeGit) { g.pushedErr = boom },
@@ -267,9 +269,6 @@ func TestBackupChecksWhatItPushes(t *testing.T) {
 	}{
 		{"origin has the branch", tip, []string{tip}},
 		{"origin has no branch", "", nil},
-		// Lease's commit comes from origin, so one that is not a commit ID
-		// leaves the whole history checked.
-		{"lease not a commit", "HEAD", nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			e, _, presets := backupEnv(t)

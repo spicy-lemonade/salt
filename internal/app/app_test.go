@@ -111,6 +111,8 @@ type fakeGit struct {
 	// head is what Head returns, h1 when empty.
 	head    string
 	headErr error
+	// headOK is how many calls to Head succeed before headErr is returned.
+	headOK, headCalls int
 	// onStage and onCommit run during Stage and Commit; onCommit's error
 	// is Commit's.
 	onStage  func()
@@ -187,10 +189,15 @@ func (f *fakeGit) Commit(_ context.Context, _, msg string) error {
 }
 
 func (f *fakeGit) Head(string) (string, error) {
-	if f.head == "" {
-		return "h1", f.headErr
+	f.headCalls++
+	err := f.headErr
+	if f.headCalls <= f.headOK {
+		err = nil
 	}
-	return f.head, f.headErr
+	if f.head == "" {
+		return "h1", err
+	}
+	return f.head, err
 }
 
 func (f *fakeGit) Lease(ctx context.Context, _ string, known []string) (string, error) {

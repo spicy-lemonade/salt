@@ -1252,8 +1252,8 @@ func TestIndexBombs(t *testing.T) {
 			}
 			bw.WriteString(`]}]}`)
 			bw.Flush()
-		}, fmt.Sprintf("more than %d values in one entry", maxEntryObjects+entryFields)},
-		// The same, spread over entries each under the limit for one.
+		}, fmt.Sprintf("more than %d values in its entries", indexLimits.Values)},
+		// The same, spread over entries each under maxEntryObjects.
 		{"one-byte parts in many entries", func(w io.Writer) {
 			bw := bufio.NewWriter(w)
 			bw.WriteString(`{"version":2,"entries":[`)
@@ -1269,7 +1269,7 @@ func TestIndexBombs(t *testing.T) {
 			}
 			bw.WriteString(`]}`)
 			bw.Flush()
-		}, fmt.Sprintf("more than %d values in its entries", maxIndexValues)},
+		}, fmt.Sprintf("more than %d values in its entries", indexLimits.Values)},
 		{"huge value where the list should be", func(w io.Writer) {
 			bw := bufio.NewWriter(w)
 			bw.WriteString(`{"version":1,"entries":"`)

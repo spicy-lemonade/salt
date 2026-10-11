@@ -75,26 +75,19 @@ const (
 var MaxIndexEntries = 100_000
 
 // maxEntryObjects is the most objects one file's entry can name. A chunk
-// name takes about 50 bytes of the index, so maxIndexSize already stops a
-// real backup well short of it, at roughly 700,000 chunks (about 2.7 TiB at
-// avgChunk). It only refuses a crafted index, such as one of one-byte part
-// names, which encoding/json would build into a slice of millions of strings
-// before the signature is checked. It is a variable so tests can lower it.
+// name takes 48 bytes of the index, so maxIndexSize already stops a real
+// backup well short of it, at roughly 700,000 chunks (about 2.7 TiB at
+// avgChunk). It is a variable so tests can lower it.
 var maxEntryObjects = 1 << 20
 
-// entryDepth is how deeply one entry sits in the index: inside the index
-// object and its list of entries. entryFields is more than the fields an
-// entry has, so tokenLimitReader counts its parts and leaves validEntry to
-// refuse an entry with too many. maxIndexValues bounds the values in all
-// entries together, so a crafted index cannot spread its parts over many
-// entries instead. Every value in a real entry takes over 10 bytes of the
-// index, and a part 48, so maxIndexSize keeps a real index well under a
-// million of them.
-const (
-	entryDepth     = 3
-	entryFields    = 16
-	maxIndexValues = 1 << 21
-)
+// indexLimits are the limits on the index as it is read. Values counts the
+// values in all entries together, which sit 3 deep, inside the index object
+// and its list of entries. Without it, a crafted index of one-byte part
+// names would be built into slices of millions of strings before the
+// signature is checked. A real entry has at most 8 fields, each over 10
+// bytes of the index, and a part takes 48, so maxIndexSize and
+// MaxIndexEntries keep a real index under about 1.6 million values.
+var indexLimits = tokenLimits{String: maxIndexJSONString, Other: maxIndexToken, Depth: 3, Values: 1 << 21}
 
 // objects returns every object holding e's ciphertext, in order.
 func (e Entry) objects() []string {
@@ -243,8 +236,8 @@ func writeIndex(root string, b []byte, recipients []age.Recipient) error {
 // signed by the signing key of one of ids, as opt allows. A key added to the
 // repo since this machine approved it can decrypt the index but, if
 // opt.SignedBy lists the approved keys, not sign it. It decodes one entry at
-// a time, and refuses an entry with too many values before decoding it, so
-// memory stays bounded however the index was crafted.
+// a time, and refuses an index with too many values in its entries before
+// decoding them, so memory stays bounded however the index was crafted.
 func ReadIndex(root string, ids []age.Identity, opt SignatureOptions) (*Index, error) {
 	rt, err := os.OpenRoot(root)
 	if err != nil {
@@ -258,7 +251,7 @@ func ReadIndex(root string, ids []age.Identity, opt SignatureOptions) (*Index, e
 	defer closeFn()
 	lr := &io.LimitedReader{R: r, N: maxIndexSize + 1}
 	d := newIndexDigest()
-	ix, err := decodeIndex(json.NewDecoder(newTokenLimitReader(lr, maxIndexJSONString, maxIndexToken, entryDepth, maxEntryObjects+entryFields, maxIndexValues)), d)
+	ix, err := decodeIndex(json.NewDecoder(newTokenLimitReader(lr, indexLimits)), d)
 	if lr.N <= 0 {
 		return nil, fmt.Errorf("index is larger than %d bytes", maxIndexSize)
 	}
@@ -370,6 +363,14 @@ func validEntry(e *Entry) error {
 		}
 		return nil
 	}
+	// Counted first, so a crafted entry is refused before its parts are
+	// copied and cleaned.
+	if len(e.Parts) >= maxEntryObjects {
+		return fmt.Errorf("%s is in more than %d objects", clip(p), maxEntryObjects)
+	}
+	if e.Size >= 0 && int64(len(e.Parts)) > e.Size/minObjectPlaintext() {
+		return fmt.Errorf("%s is in more objects than its size allows", clip(p))
+	}
 	for _, obj := range e.objects() {
 		if _, err := repo.CleanPath(obj); err != nil {
 			return fmt.Errorf("object for %s: unsafe path %s", clip(p), clipQuoted(obj))
@@ -380,12 +381,6 @@ func validEntry(e *Entry) error {
 	}
 	if e.Size < 0 {
 		return fmt.Errorf("size for %s is negative", clip(p))
-	}
-	if len(e.Parts) >= maxEntryObjects {
-		return fmt.Errorf("%s is in more than %d objects", clip(p), maxEntryObjects)
-	}
-	if int64(len(e.Parts)) > e.Size/minObjectPlaintext() {
-		return fmt.Errorf("%s is in more objects than its size allows", clip(p))
 	}
 	return nil
 }

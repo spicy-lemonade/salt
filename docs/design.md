@@ -459,12 +459,12 @@ against someone who can push to it:
   `.salt/recipients.txt` is named by its line number, not quoted.
 - **Tampered index.** The index is read one entry at a time, capped at 100,000
   entries and 32 MB, so a crafted index can't use much memory. The values in
-  one entry, such as a file's list of chunks, are counted as the index is
-  read, before the entry is decoded, and the index is refused past about a
-  million in one entry or two million in all. A real backup never comes near
-  either, since 32 MB holds well under a million real values. An entry also
-  names no more objects than its size could fill. `salt verify` lists at most
-  50 problems, with long paths shortened.
+  its entries, such as each file's list of chunks, are counted as the index
+  is read, before they are decoded, and the index is refused past about two
+  million. A real backup stays under about 1.6 million, since 100,000
+  entries and 32 MB leave no room for more. An entry also names no more
+  objects than its size could fill, and at most about a million. `salt
+  verify` lists at most 50 problems, with long paths shortened.
 - **Terminal codes.** Someone who can push chooses file names, attribute
   values and the index's paths, and a remote or database server chooses what
   git and `pg_dump` print. A control character among them, such as ESC, could
@@ -850,7 +850,9 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
    committed by hand with `--no-verify`, stops the backup with the hook's
    report, before old backups are dropped or anything is pushed. Prune keeps
    the files of every backup it copies, so it adds nothing the check has
-   not seen;
+   not seen. The check runs before prune, so it also stops at such a file
+   in a backup old enough that prune would have dropped it. `salt prune`
+   drops those backups, and the next `salt backup` pushes;
 6. warns when the push would send more than 1 GiB, or when a file added
    more than 500 MiB of new encrypted data, naming the file (see "Large
    files"). The push still goes ahead. Ctrl-C or SIGTERM while the push is
@@ -940,7 +942,11 @@ code reads them all, so adding a tool means adding one file:
   `id_ed25519`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, and the
   `.ssh` and `.aws` folders. `never` adds the tool's own. Names are compared
   in lower case, since macOS and Windows usually ignore case, so `.ENV` is
-  left out with `.env`. `never` patterns are written in lower case too.
+  left out with `.env`. `never` patterns are written in lower case too. A
+  file or folder left out only by salt's own list, such as a slide deck
+  called `talk.key`, is named in a message each time, as other files left
+  out are, so it never drops out of the backup unseen. One a preset's
+  `never` names is expected there, and is left out quietly.
 - `skip` lists name patterns of files and folders this preset never backs
   up, such as caches, logs and downloaded models. Another preset that
   reaches the same folder may still back them up (see below). `.DS_Store`

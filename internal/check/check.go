@@ -76,7 +76,7 @@ func PushRefs(r io.Reader) (tips, have []string, err error) {
 		if len(f) == 0 {
 			continue
 		}
-		if len(f) != 4 || !IsObjectID(f[1]) || !IsObjectID(f[3]) {
+		if len(f) != 4 || !isObjectID(f[1]) || !isObjectID(f[3]) {
 			return nil, nil, fmt.Errorf("unexpected line %.80q", sc.Text())
 		}
 		if !isZeroID(f[1]) {
@@ -89,9 +89,9 @@ func PushRefs(r io.Reader) (tips, have []string, err error) {
 	return tips, have, sc.Err()
 }
 
-// IsObjectID reports whether s is a git object ID: 40 hex digits, or 64 in a
+// isObjectID reports whether s is a git object ID: 40 hex digits, or 64 in a
 // SHA-256 repository.
-func IsObjectID(s string) bool {
+func isObjectID(s string) bool {
 	if len(s) != 40 && len(s) != 64 {
 		return false
 	}

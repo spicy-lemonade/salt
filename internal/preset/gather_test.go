@@ -453,6 +453,39 @@ func TestGatherNeverBaseline(t *testing.T) {
 	}
 }
 
+// A name only defaultNever leaves out is reported, so a file such as a
+// talk.key never drops out of the backup without a word. A name a preset's
+// own never list gives is expected there, and one a preset skips is not
+// backed up anyway, so neither is reported. A folder is reported once.
+func TestGatherReportsDefaultNever(t *testing.T) {
+	home := t.TempDir()
+	p, err := Parse("t", []byte(`{"name": "t", "about": "test",
+		"paths": [{"from": "~/tool", "to": "tool"}],
+		"skip": ["cache"], "never": ["*.env"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"notes.md", "app.env", "talk.KEY", ".ssh/config", ".ssh/id_rsa", "cache/x.pem"} {
+		write(t, filepath.Join(home, "tool", name), name)
+	}
+	f, err := envOf(home, nil).Gather([]*Preset{p}, t.TempDir(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files, _ := rels(f); !slices.Equal(files, []string{"tool/notes.md"}) {
+		t.Errorf("files = %v", files)
+	}
+	want := []string{"tool/.ssh: " + named, "tool/talk.KEY: " + named}
+	if got := leftOut(f, home); !slices.Equal(got, want) {
+		t.Errorf("left out %q, want %q", got, want)
+	}
+	for _, l := range f.LeftOut {
+		if l.Secret {
+			t.Errorf("%s is reported as holding a secret setting", l.Path)
+		}
+	}
+}
+
 // A file checked for secrets carries the SHA-256 of the contents checked, so
 // seal leaves it out if it changes before it is read. Other files carry none.
 func TestGatherRecordsWhatWasChecked(t *testing.T) {
@@ -1547,9 +1580,10 @@ func TestSecretInTaggedValues(t *testing.T) {
 
 // JSON5 reads an escape in a name not quoted or in single quotes, and a
 // space that is not ASCII after a name, where YAML reads them as part of the
-// name. So such a name inside {} keeps the file out, since it could hide a
-// secret's setting. A name in double quotes is read the same by both, and
-// one outside {} is YAML.
+// name. In double quotes, YAML reads \a, \e, \N, \_, \L and \P as other
+// characters, where JSON5 reads the letter alone. So such a name inside {}
+// keeps the file out, since it could hide a secret's setting. Other names in
+// double quotes are read the same by both, and one outside {} is YAML.
 func TestSecretInOddNames(t *testing.T) {
 	sec := Secret{Keys: defaultSecretKeys}
 	const odd = "a name with an escape or an unusual space stops it being checked for secrets"
@@ -1567,7 +1601,14 @@ func TestSecretInOddNames(t *testing.T) {
 		{`{'apiKey': "x"}`, "its setting apiKey holds a secret"},
 		{`{"api\x4bey": "x"}`, "its setting apiKey holds a secret"},
 		{`{"a:b": 1}`, ""},
-		{`{"C:\\path": 1, "café": 2, "a\u00a0b": 3}`, ""},
+		{`{"p\assword": "sk-live"}`, odd},
+		{`{"tok\en": "sk-live"}`, odd},
+		{`{"api\_key": "sk-live"}`, odd},
+		{`{"api\Nkey": "sk-live"}`, odd},
+		{`{"api\Lkey": "sk-live"}`, odd},
+		{`{"api\Pkey": "sk-live"}`, odd},
+		{`{"a\u00a0b": 3}`, odd},
+		{`{"C:\\path": 1, "café": 2, "a\x41b": 3}`, ""},
 		{`{'a b': 1, model: "gpt", "name": "x"}`, ""},
 		{"café: 1\nC:\\path: 2\n", ""},
 	} {

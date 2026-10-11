@@ -38,6 +38,7 @@ const (
 	commented = "a comment in it stops it being checked for secrets"
 	noSpace   = "a name with no space after its colon stops it being checked for secrets"
 	oddName   = "a name with an escape or an unusual space stops it being checked for secrets"
+	named     = "its name marks it as holding secrets"
 )
 
 // sidecars are the files SQLite keeps beside a database while it is in use.
@@ -157,7 +158,7 @@ func (e Env) Gather(presets []*Preset, repo string, show func(string) string) (*
 		return nil, err
 	}
 	presets = slices.SortedFunc(slices.Values(presets), func(a, b *Preset) int { return strings.Compare(a.Name, b.Name) })
-	w := &walker{f: &Found{by: map[*Preset][]string{}}, spots: map[string]*spot{}, show: show, never: slices.Clone(defaultNever)}
+	w := &walker{f: &Found{by: map[*Preset][]string{}}, spots: map[string]*spot{}, show: show}
 	var spots []*spot
 	lookedIn := map[*Preset][]string{}
 	for _, p := range presets {
@@ -354,8 +355,8 @@ type walker struct {
 	// secrets holds every preset's secrets rules, each with
 	// defaultSecretKeys added to its keys.
 	secrets []Secret
-	// never holds defaultNever and every preset's Never patterns, matched
-	// against names in lower case.
+	// never holds every preset's Never patterns, matched against names in
+	// lower case. defaultNever is matched after them.
 	never []string
 	show  func(string) string
 }
@@ -403,34 +404,42 @@ func (w *walker) walk(s *spot, by []*Preset) (gone bool, err error) {
 		if listedHook != nil {
 			listedHook(walked)
 		}
-		// What any preset never backs up, such as a file of secrets, is left
-		// out wherever it is, the place itself included. Case is ignored, as
-		// many file systems ignore it, so .ENV is left out with .env.
-		if _, ok := w.spots[walked]; (ok && walked != real) || matchAny(w.never, strings.ToLower(d.Name())) {
+		skip := func() error {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
+		if _, ok := w.spots[walked]; ok && walked != real {
+			return skip()
+		}
 		here := by
 		if walked != real {
 			here = slices.DeleteFunc(slices.Clone(reach[filepath.Dir(walked)]), func(p *Preset) bool { return skips(p, d.Name()) })
 			if len(here) == 0 {
-				if d.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
+				return skip()
 			}
-		}
-		if d.IsDir() {
-			reach[walked] = here
-			return nil
 		}
 		sub, err := filepath.Rel(real, walked)
 		if err != nil {
 			return err
 		}
 		at, to := filepath.Join(pl.Abs, sub), path.Join(pl.Rel, filepath.ToSlash(sub))
+		// What any preset never backs up, such as a file of secrets, is left
+		// out wherever it is, the place itself included. Case is ignored, as
+		// many file systems ignore it, so .ENV is left out with .env. A preset
+		// that names it expects it there, so only a name salt leaves out on
+		// its own, such as a talk.key, is reported.
+		if name := strings.ToLower(d.Name()); matchAny(w.never, name) {
+			return skip()
+		} else if matchAny(defaultNever, name) {
+			w.f.LeftOut = append(w.f.LeftOut, LeftOut{Path: at, Why: named})
+			return skip()
+		}
+		if d.IsDir() {
+			reach[walked] = here
+			return nil
+		}
 		if !d.Type().IsRegular() {
 			w.f.Skipped = append(w.f.Skipped, w.show(at))
 			return nil
@@ -648,12 +657,16 @@ func secretKeys(n *yaml.Node, sec Secret) (text, number, unread string) {
 // YAML: one not quoted that holds a backslash, which JSON5 reads as an
 // escape, or a character that is not ASCII or is a space other than " ",
 // which JSON5 can take for a space around the name; or one in single quotes
-// that holds a backslash, which only JSON5 reads as an escape. A name in
-// double quotes is read the same by both.
+// that holds a backslash, which only JSON5 reads as an escape. In double
+// quotes, YAML reads \a, \e, \N, \_, \L and \P as a control character,
+// U+00A0, U+2028 or U+2029, where JSON5 reads the letter alone, so a name
+// that YAML read as holding one of them is odd too.
 func isOddName(k *yaml.Node) bool {
 	switch {
 	case k.Style&yaml.DoubleQuotedStyle != 0:
-		return false
+		return strings.ContainsFunc(k.Value, func(r rune) bool {
+			return unicode.IsControl(r) || r == '\u00a0' || r == '\u2028' || r == '\u2029'
+		})
 	case k.Style&yaml.SingleQuotedStyle != 0:
 		return strings.Contains(k.Value, `\`)
 	}

@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/preset"
 	"github.com/spicy-lemonade/salt/internal/private"
 	"github.com/spicy-lemonade/salt/internal/seal"
@@ -165,15 +164,15 @@ func (a *App) Backup(o BackupOptions) error {
 
 // checkBackupPush refuses plaintext in the commits pushing the repo at root
 // sends to origin, whose branch is at lease: those HEAD holds and lease does
-// not. No remote is named, so commits a fetch brought in are checked too,
-// and a lease that is not a commit ID leaves the whole history checked.
+// not. No remote is named, so commits a fetch brought in are checked too.
+// With no lease, as before the first push, the whole history is checked.
 func (a *App) checkBackupPush(root, lease string) error {
 	head, err := a.Git.Head(root)
 	if err != nil {
 		return fmt.Errorf("the backup was committed, but salt could not read it to check what it pushes, so old backups were not dropped and it was not pushed: %w", err)
 	}
 	var have []string
-	if check.IsObjectID(lease) {
+	if lease != "" {
 		have = []string{lease}
 	}
 	return a.checkPushed(root, []string{head}, have, "")
