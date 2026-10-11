@@ -3,6 +3,7 @@ package app
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/escape"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
+	"golang.org/x/term"
 )
 
 // fakeTerminal makes isTerminal report on for every file until the test
@@ -748,5 +750,83 @@ func TestKeychainUnreadableIsNamed(t *testing.T) {
 	e.app.Verify(e.root, false)
 	if out := e.ui.out.String(); !strings.Contains(out, "No key for this backup is saved on this machine"+why+".\n") {
 		t.Errorf("verify, at a terminal:\n%s", out)
+	}
+}
+
+// A question stops as soon as the Terminal's Context is cancelled, as by
+// Ctrl-C, without waiting for an answer, and every later one stops at once.
+func TestTerminalQuestionStopsWhenCancelled(t *testing.T) {
+	fakeTerminal(t, false)
+	pr, pw := io.Pipe() // nothing is ever typed
+	t.Cleanup(func() { pw.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	var out bytes.Buffer
+	term := &Terminal{in: bufio.NewReader(pr), out: &out, raw: &out, Context: ctx}
+	time.AfterFunc(20*time.Millisecond, cancel)
+	if _, err := term.ReadLine("? "); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReadLine once cancelled: %v", err)
+	}
+	if _, err := term.ReadSecret("pw: "); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReadSecret after cancelling: %v", err)
+	}
+
+	// An answer given in time is returned as without a Context.
+	term = &Terminal{in: bufio.NewReader(strings.NewReader("yes\n")), out: &out, raw: &out, Context: context.Background()}
+	if s, err := term.ReadLine("? "); err != nil || s != "yes" {
+		t.Fatalf("ReadLine = %q, %v", s, err)
+	}
+}
+
+// A secret read at a terminal that is stopped tells the terminal to show what
+// is typed again, as the read left waiting never does. One answered puts the
+// terminal back itself.
+func TestTerminalSecretStoppedRestoresEcho(t *testing.T) {
+	fakeTerminal(t, true)
+	typed := make(chan string)
+	t.Cleanup(func() { close(typed) })
+	state := &term.State{}
+	var restored *term.State
+	origRead, origState, origRestore := readPassword, termState, termRestore
+	t.Cleanup(func() { readPassword, termState, termRestore = origRead, origState, origRestore })
+	readPassword = func(int) ([]byte, error) { return []byte(<-typed), nil }
+	termState = func(int) (*term.State, error) { return state, nil }
+	termRestore = func(_ int, s *term.State) error { restored = s; return nil }
+
+	var out bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	tm := &Terminal{out: &out, raw: &out, Context: ctx}
+	go func() { typed <- "hunter2 hunter2" }()
+	if s, err := tm.ReadSecret("Passphrase: "); err != nil || s != "hunter2 hunter2" || restored != nil {
+		t.Fatalf("ReadSecret = %q, %v, restored %v", s, err, restored)
+	}
+	time.AfterFunc(20*time.Millisecond, cancel)
+	if _, err := tm.ReadSecret("Passphrase: "); !errors.Is(err, context.Canceled) || restored != state {
+		t.Fatalf("ReadSecret once cancelled = %v, restored %v, want the state read before", err, restored)
+	}
+
+	termState = func(int) (*term.State, error) { return nil, errors.New("not a tty") }
+	if _, err := (&Terminal{out: &out, raw: &out}).ReadSecret("Passphrase: "); err == nil || err.Error() != "not a tty" {
+		t.Fatalf("ReadSecret without the terminal's state: %v", err)
+	}
+}
+
+// Ctrl-C while restore asks for the recovery phrase stops the restore,
+// saying nothing was changed, rather than reporting a failed question.
+func TestRestoreStoppedAtTheKeyQuestion(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	e.app.Store = &keys.MemStore{}
+	ctx, cancel := context.WithCancel(context.Background())
+	e.ui.answer = func(string, string) (string, error) {
+		cancel()
+		return "", context.Canceled
+	}
+	dest := filepath.Join(t.TempDir(), "r")
+	err := e.app.Restore(RestoreOptions{Repo: e.root, To: dest, Context: ctx})
+	if !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "was not changed") {
+		t.Fatalf("Restore = %v, want ErrInterrupted", err)
+	}
+	if _, err := os.Stat(dest); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("destination: %v", err)
 	}
 }

@@ -358,9 +358,13 @@ func run(cmd string, args []string) error {
 			return usageError{"restore needs --to DIR"}
 		}
 		// Ctrl-C or SIGTERM stops the restore and removes the partly
-		// restored files.
+		// restored files. It also stops a question about the key, which
+		// would otherwise wait for its answer, with the signal caught.
 		ctx, stop := interruptible()
 		defer stop()
+		if t, ok := a.UI.(*app.Terminal); ok {
+			t.Context = ctx
+		}
 		return a.Restore(app.RestoreOptions{Repo: pos[0], To: *to, Paths: pos[1:], Force: *force, AllowUnsigned: *unsigned, Context: ctx})
 	case "recovery":
 		if len(args) == 0 {

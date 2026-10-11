@@ -110,6 +110,11 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 		}
 	}
 	ids, err := a.identities(r)
+	// Ctrl-C while salt asks for the recovery phrase or passphrase stops the
+	// question (see Terminal.Context).
+	if err != nil && ctx.Err() != nil {
+		return fmt.Errorf("restore %w: %s was not changed", ErrInterrupted, a.short(o.To))
+	}
 	if err != nil {
 		return err
 	}
