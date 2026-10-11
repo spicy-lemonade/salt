@@ -387,9 +387,10 @@ func validEntry(e *Entry) error {
 
 // minObjectPlaintext is the least plaintext any object of a file but its last
 // holds. A chunk holds at least minChunk bytes. A part holds oneObjectLimit
-// bytes of ciphertext, cut from one zstd stream, which is never more than a
-// fraction of a percent larger than the plaintext it holds, so half
-// oneObjectLimit leaves plenty to spare. Parts from older salts are 45 MiB.
+// bytes of compressed data, before age encrypts it, cut from one zstd
+// stream, which is never more than a fraction of a percent larger than the
+// plaintext it holds, so half oneObjectLimit leaves plenty to spare. Parts
+// from older salts are 45 MiB.
 func minObjectPlaintext() int64 {
 	return max(1, min(int64(minChunk), oneObjectLimit)/2)
 }

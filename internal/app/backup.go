@@ -268,10 +268,11 @@ const maxKnownPushes = 100
 
 // pushRecord returns where salt remembers the commit it last pushed from the
 // repo at root and every one it has tried to push since (the state file
-// pushed.json, see stateFile), and those commits. A push that reached origin, but whose answer was
-// lost when the connection dropped, then still counts as this machine's on
-// the next run, even after prune rewrote the branch. A damaged record is set
-// aside, and only a commit the branch holds then counts.
+// pushed.json, see stateFile), and those commits. A push that reached
+// origin, but whose answer was lost when the connection dropped, then still
+// counts as this machine's on the next run, even after prune rewrote the
+// branch. A damaged record is ignored, so only a commit the branch holds
+// then counts, and the next push replaces it.
 func (a *App) pushRecord(root string) (path string, known []string, err error) {
 	path, err = a.stateFile(root, "pushed", ".json")
 	if err != nil {

@@ -128,8 +128,8 @@ func (l *problemList) flush() {
 // StorageProblems asks git whether it would store every file salt wrote in
 // the repository at dir exactly as written. It reports files git ignores,
 // and ciphertext and settingsFiles with attributes that would change them,
-// whether the file is tracked already or not yet added. At most MaxStorageProblems files are
-// described; total counts them all.
+// whether the file is tracked already or not yet added. At most
+// MaxStorageProblems files are described; total counts them all.
 func StorageProblems(dir string) (problems []StorageProblem, total int, err error) {
 	var l problemList
 	ignored, err := gitx.IgnoredPaths(dir, saltPaths...)

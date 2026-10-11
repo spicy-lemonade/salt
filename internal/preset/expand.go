@@ -91,11 +91,11 @@ func (e Env) getenv(name string) string {
 	return e.Getenv(name)
 }
 
-// Find returns every place on this machine that the preset path x names and that
-// exists. Its parts holding a * are matched against folders, never against
-// what a variable holds, so a path holding * is taken as it is. Following a
-// place's symlinks tells both that it exists and where it really is, in one
-// step, so it cannot be deleted in between.
+// Find returns every place on this machine that the preset path x names and
+// that exists. Its parts holding a * are matched against folders, never
+// against what a variable holds, so a path holding * is taken as it is.
+// Following a place's symlinks tells both that it exists and where it really
+// is, in one step, so it cannot be deleted in between.
 func (e Env) Find(x Path) ([]Place, error) {
 	runs, pats := splitStars(x.From)
 	first, ok := e.expand(runs[0])
