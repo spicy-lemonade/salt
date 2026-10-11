@@ -62,7 +62,6 @@ func (l restoreLog) add(tmp string) error {
 	if err := private.Write(l.record(tmp), []byte(tmp)); err != nil {
 		return err
 	}
-	exists := func(d string) bool { _, err := os.Lstat(d); return err == nil }
 	records, _ := l.records()
 	for p, d := range records {
 		if !exists(d) {
@@ -146,7 +145,7 @@ func (l restoreLog) leftovers() ([]string, error) {
 	older, olderErr := l.loadOlder()
 	var out []string
 	for _, d := range slices.Concat(slices.Collect(maps.Values(records)), older) {
-		if _, err := os.Lstat(d); err == nil {
+		if exists(d) {
 			out = append(out, d)
 		}
 	}
@@ -185,4 +184,11 @@ func (a *App) doctorRestores(r *report) {
 	for _, d := range dirs {
 		r.add(warn, "%s was left by a restore that did not finish and may hold decrypted files; delete it once you have checked it", a.short(d))
 	}
+}
+
+// exists reports whether something is at path p, without following a
+// symlink there.
+func exists(p string) bool {
+	_, err := os.Lstat(p)
+	return err == nil
 }

@@ -2,7 +2,6 @@ package seal
 
 import (
 	"bytes"
-	"cmp"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -413,10 +412,10 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	next.IndexSHA, next.IndexSize, next.IndexModTime = ixSHA, ixPart.CipherSize, ixPart.ModTime
 
 	// The cache is saved even if the clean-up fails, as the index it names
-	// is written.
+	// is written. Either failing is reported.
 	removed, err := removeStale(rt, keep, opt.Prune)
 	res.Removed = removed
-	return res, cmp.Or(err, next.save(cPath))
+	return res, errors.Join(err, next.save(cPath))
 }
 
 // leftOut is why a file was left out of the backup, if it was.
