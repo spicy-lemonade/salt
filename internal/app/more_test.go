@@ -20,6 +20,7 @@ import (
 	"github.com/spicy-lemonade/salt/internal/escape"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
+	"github.com/spicy-lemonade/salt/internal/seal"
 	"golang.org/x/term"
 )
 
@@ -711,6 +712,26 @@ func TestVerifyReportsUnreferenced(t *testing.T) {
 	}
 	if !strings.Contains(e.ui.out.String(), "stray.age is not in the index") {
 		t.Fatalf("output = %q", e.ui.out.String())
+	}
+
+	// Many such files, as a seal that failed part way can leave, are listed
+	// up to MaxProblems, in path order, and counted.
+	for i := range 60 {
+		p := filepath.Join(e.root, repo.ObjectsDir, "zy", fmt.Sprintf("s%02d.age", i))
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte("age-encryption.org/v1\n"), 0o644)
+	}
+	e.ui.out.Reset()
+	if err := e.app.Verify(e.root, false); err != nil {
+		t.Fatal(err)
+	}
+	out := e.ui.out.String()
+	if n := strings.Count(out, "is not in the index (the next"); n != seal.MaxProblems {
+		t.Fatalf("%d files listed, want %d:\n%s", n, seal.MaxProblems, out)
+	}
+	if !strings.Contains(out, "objects/zy/s49.age is not") || strings.Contains(out, "s50.age") || strings.Contains(out, "zz/stray.age") ||
+		!strings.Contains(out, "  ! … and 11 more files not in the index\n") {
+		t.Fatalf("not the first %d by path, then a count:\n%s", seal.MaxProblems, out)
 	}
 	if err := e.app.Verify(t.TempDir(), false); !errors.Is(err, repo.ErrNotInitialised) {
 		t.Fatalf("verify non-repo: %v", err)

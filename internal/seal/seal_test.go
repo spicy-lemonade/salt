@@ -537,7 +537,7 @@ func TestVerify(t *testing.T) {
 	if !strings.Contains(joined, "is missing") || !strings.Contains(joined, "cannot be decrypted") {
 		t.Fatalf("problems = %v", res.Problems)
 	}
-	if len(res.Unreferenced) != 1 || res.Unreferenced[0] != "objects/zz/stray.age" {
+	if len(res.Unreferenced) != 1 || res.UnreferencedCount != 1 || res.Unreferenced[0] != "objects/zz/stray.age" {
 		t.Fatalf("unreferenced = %v", res.Unreferenced)
 	}
 

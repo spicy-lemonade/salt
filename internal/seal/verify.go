@@ -40,14 +40,17 @@ type VerifyResult struct {
 	// same on every run. ProblemCount counts them all.
 	Problems     []string
 	ProblemCount int
-	// Unreferenced are ciphertext files the index does not mention. They do
-	// not affect a restore; the next `salt seal` removes them.
-	Unreferenced []string
+	// Unreferenced are ciphertext files the index does not mention: the
+	// first MaxProblems of them, in path order. They do not affect a
+	// restore; the next `salt seal` removes them. UnreferencedCount counts
+	// them all, as a seal that failed part way can leave many.
+	Unreferenced      []string
+	UnreferencedCount int
 }
 
-// MaxProblems is how many problems Verify describes in full. A tampered
-// index can name 100,000 missing files, and listing them all would flood the
-// terminal or cron mail.
+// MaxProblems is how many problems, and how many files the index does not
+// mention, Verify describes in full. A tampered index can name 100,000
+// missing files, and listing them all would flood the terminal or cron mail.
 const MaxProblems = 50
 
 // Verify proves every file in the backup can be restored: it decrypts each
@@ -116,7 +119,10 @@ func Verify(root string, ids []age.Identity, opt VerifyOptions) (*VerifyResult, 
 				return nil
 			}
 			if !referenced[rel] {
-				res.Unreferenced = append(res.Unreferenced, rel)
+				res.UnreferencedCount++
+				if len(res.Unreferenced) < MaxProblems {
+					res.Unreferenced = append(res.Unreferenced, rel)
+				}
 			}
 			return nil
 		})

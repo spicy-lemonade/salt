@@ -390,6 +390,9 @@ func (a *App) Verify(repoRoot string, allowUnsigned bool) error {
 	for _, u := range res.Unreferenced {
 		a.UI.Printf("  ! %s is not in the index (the next `salt seal` removes it)\n", escape.Name(u))
 	}
+	if more := res.UnreferencedCount - len(res.Unreferenced); more > 0 {
+		a.UI.Printf("  ! … and %d more files not in the index\n", more)
+	}
 	if res.ProblemCount > 0 {
 		a.UI.Printf("✗ %d of %d files cannot be restored:\n", res.ProblemCount, res.Files)
 		for _, p := range res.Problems {
