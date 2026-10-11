@@ -15,8 +15,8 @@ import (
 	"time"
 )
 
-// ErrInterrupted means the person stopped a restore or a seal (Ctrl-C or
-// SIGTERM) and the files it had written were removed.
+// ErrInterrupted means the person stopped a command (Ctrl-C or SIGTERM), or
+// a question it asked, and the files it had written were removed.
 var ErrInterrupted = errors.New("interrupted")
 
 // restoreLog records the temporary folders of restores in progress, one

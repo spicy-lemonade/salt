@@ -164,14 +164,17 @@ type usageError struct{ msg string }
 
 func (u usageError) Error() string { return u.msg }
 
-func newApp() (*app.App, error) {
+// newApp builds salt's App, and the Terminal it talks to the person through,
+// for a command that stops its questions when Ctrl-C is caught to set
+// Terminal.Context.
+func newApp() (*app.App, *app.Terminal, error) {
 	cache, err := seal.DefaultCacheDir()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cfg, err := os.UserConfigDir()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Without a home folder, paths are simply shown in full.
 	home, _ := os.UserHomeDir()
@@ -203,7 +206,7 @@ func newApp() (*app.App, error) {
 		Now:       time.Now,
 		Version:   version,
 		Home:      home,
-	}, nil
+	}, ui, nil
 }
 
 func storeName() string {
@@ -225,7 +228,7 @@ func run(cmd string, args []string) error {
 		fmt.Print(usage)
 		return nil
 	}
-	a, err := newApp()
+	a, ui, err := newApp()
 	if err != nil {
 		return err
 	}
@@ -358,13 +361,12 @@ func run(cmd string, args []string) error {
 			return usageError{"restore needs --to DIR"}
 		}
 		// Ctrl-C or SIGTERM stops the restore and removes the partly
-		// restored files. It also stops a question about the key, which
-		// would otherwise wait for its answer, with the signal caught.
+		// restored files. It also stops the question for the recovery
+		// phrase, which would otherwise wait for its answer, with the signal
+		// caught.
 		ctx, stop := interruptible()
 		defer stop()
-		if t, ok := a.UI.(*app.Terminal); ok {
-			t.Context = ctx
-		}
+		ui.Context = ctx
 		return a.Restore(app.RestoreOptions{Repo: pos[0], To: *to, Paths: pos[1:], Force: *force, AllowUnsigned: *unsigned, Context: ctx})
 	case "recovery":
 		if len(args) == 0 {

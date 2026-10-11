@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"filippo.io/age"
@@ -798,36 +799,100 @@ func TestTerminalQuestionStopsWhenCancelled(t *testing.T) {
 	}
 }
 
-// A secret read at a terminal that is stopped tells the terminal to show what
-// is typed again, as the read left waiting never does. One answered puts the
-// terminal back itself.
-func TestTerminalSecretStoppedRestoresEcho(t *testing.T) {
+// fakeRaw stands in for term's raw mode for one test, and records the state
+// each restore puts back, so a secret is read without a terminal.
+func fakeRaw(t *testing.T, makeErr error) (state *term.State, restored *[]*term.State) {
 	fakeTerminal(t, true)
-	typed := make(chan string)
-	t.Cleanup(func() { close(typed) })
-	state := &term.State{}
-	var restored *term.State
-	origRead, origState, origRestore := readPassword, termState, termRestore
-	t.Cleanup(func() { readPassword, termState, termRestore = origRead, origState, origRestore })
-	readPassword = func(int) ([]byte, error) { return []byte(<-typed), nil }
-	termState = func(int) (*term.State, error) { return state, nil }
-	termRestore = func(_ int, s *term.State) error { restored = s; return nil }
+	state, restored = &term.State{}, &[]*term.State{}
+	origRaw, origRestore := makeRaw, termRestore
+	t.Cleanup(func() { makeRaw, termRestore = origRaw, origRestore })
+	makeRaw = func(int) (*term.State, error) { return state, makeErr }
+	termRestore = func(_ int, s *term.State) error { *restored = append(*restored, s); return nil }
+	return state, restored
+}
 
-	var out bytes.Buffer
-	ctx, cancel := context.WithCancel(context.Background())
-	tm := &Terminal{out: &out, raw: &out, Context: ctx}
-	go func() { typed <- "hunter2 hunter2" }()
-	if s, err := tm.ReadSecret("Passphrase: "); err != nil || s != "hunter2 hunter2" || restored != nil {
-		t.Fatalf("ReadSecret = %q, %v, restored %v", s, err, restored)
-	}
-	time.AfterFunc(20*time.Millisecond, cancel)
-	if _, err := tm.ReadSecret("Passphrase: "); !errors.Is(err, context.Canceled) || restored != state {
-		t.Fatalf("ReadSecret once cancelled = %v, restored %v, want the state read before", err, restored)
+// A secret is read with the terminal in raw mode, keys and all, and the
+// terminal is put back however the read ends. Ctrl-C arrives as a key, so it
+// stops the question at once, whatever the command does with signals.
+func TestTerminalReadsSecretInRawMode(t *testing.T) {
+	state, restored := fakeRaw(t, nil)
+	for _, tt := range []struct {
+		typed, want string
+		err         error
+	}{
+		{typed: "pass word\r", want: "pass word"},
+		{typed: "pass\nnext", want: "pass"},
+		{typed: "abc\x7fd\r", want: "abd"},
+		{typed: "abc\bd\r", want: "abd"},
+		{typed: "xé\x7f\r", want: "x"},
+		{typed: "\x7f\x7fa\r", want: "a"},
+		{typed: "abc\x15de\r", want: "de"},
+		{typed: "a\x01\x1bb\r", want: "ab"},
+		{typed: "a\x04b\r", want: "ab"},
+		{typed: "no newline", want: "no newline"},
+		{typed: "ab\x03cd\r", err: ErrInterrupted},
+		{typed: "\x04", err: io.EOF},
+		{typed: "", err: io.EOF},
+	} {
+		*restored = nil
+		var out bytes.Buffer
+		tm := &Terminal{in: bufio.NewReader(strings.NewReader(tt.typed)), out: &out, raw: &out}
+		got, err := tm.ReadSecret("Passphrase: ")
+		if got != tt.want || !errors.Is(err, tt.err) || (tt.err == nil && err != nil) {
+			t.Errorf("ReadSecret(%q) = %q, %v; want %q, %v", tt.typed, got, err, tt.want, tt.err)
+		}
+		if len(*restored) != 1 || (*restored)[0] != state {
+			t.Errorf("ReadSecret(%q) put the terminal back %d times, want once, as it was", tt.typed, len(*restored))
+		}
+		if out.String() != "Passphrase: \n" {
+			t.Errorf("ReadSecret(%q) printed %q, want only the prompt and a newline", tt.typed, out.String())
+		}
 	}
 
-	termState = func(int) (*term.State, error) { return nil, errors.New("not a tty") }
-	if _, err := (&Terminal{out: &out, raw: &out}).ReadSecret("Passphrase: "); err == nil || err.Error() != "not a tty" {
-		t.Fatalf("ReadSecret without the terminal's state: %v", err)
+	// A read that fails part way also puts the terminal back.
+	*restored = nil
+	tm := &Terminal{in: bufio.NewReader(io.MultiReader(strings.NewReader("ab"), iotest.ErrReader(errors.New("gone")))), out: io.Discard, raw: io.Discard}
+	if _, err := tm.ReadSecret("Passphrase: "); err == nil || err.Error() != "gone" || len(*restored) != 1 {
+		t.Fatalf("ReadSecret with a failing read = %v, restored %d times", err, len(*restored))
+	}
+}
+
+// A terminal that cannot be put in raw mode is reported, and left alone.
+func TestTerminalSecretWithoutRawMode(t *testing.T) {
+	_, restored := fakeRaw(t, errors.New("not a tty"))
+	tm := &Terminal{in: bufio.NewReader(strings.NewReader("pw\n")), out: io.Discard, raw: io.Discard}
+	if _, err := tm.ReadSecret("Passphrase: "); err == nil || err.Error() != "not a tty" || len(*restored) != 0 {
+		t.Fatalf("ReadSecret = %v, restored %d times", err, len(*restored))
+	}
+}
+
+// Ctrl-C at a passphrase question stops init before anything is saved, and
+// stops recovery test, each saying it was interrupted.
+func TestCtrlCAtPassphraseQuestion(t *testing.T) {
+	e := newEnv(t)
+	e.ui.answer = func(string, string) (string, error) { return "", ErrInterrupted }
+	err := e.app.Init(InitOptions{Repo: e.root, Recovery: repo.RecoveryPassphrase})
+	if !errors.Is(err, ErrInterrupted) || err.Error() != "init interrupted: nothing was saved" {
+		t.Fatalf("Init = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(e.root, repo.Dir)); !errors.Is(err, fs.ErrNotExist) || e.store.Len() != 0 {
+		t.Fatalf("init saved something: %v, %d keys", err, e.store.Len())
+	}
+
+	pf := filepath.Join(t.TempDir(), "pass")
+	os.WriteFile(pf, []byte("correct horse battery staple\n"), 0o600)
+	if err := e.app.Init(InitOptions{Repo: e.root, Recovery: repo.RecoveryPassphrase, PassphraseFile: pf}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.app.RecoveryTest(e.root); !errors.Is(err, ErrInterrupted) || err.Error() != "recovery test interrupted" {
+		t.Fatalf("RecoveryTest = %v", err)
+	}
+
+	// Restore says it was interrupted too, though no signal cancelled it.
+	e.app.Store = &keys.MemStore{}
+	dest := filepath.Join(t.TempDir(), "r")
+	if err := e.app.Restore(RestoreOptions{Repo: e.root, To: dest, Context: context.Background()}); !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "was not changed") {
+		t.Fatalf("Restore = %v", err)
 	}
 }
 

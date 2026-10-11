@@ -405,9 +405,14 @@ func TestNewAppShowsKeyDirAsHomePath(t *testing.T) {
 	if !strings.HasPrefix(want, "~") {
 		t.Fatalf("config dir %q is not inside the test home", cfg)
 	}
-	a, err := newApp()
+	a, ui, err := newApp()
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The Terminal given back is the one the App talks through, so a
+	// command can give it a Context.
+	if a.UI != app.UI(ui) {
+		t.Error("newApp gave back a Terminal the App does not use")
 	}
 	if a.StoreName != "private key file under "+want {
 		t.Errorf("StoreName = %q", a.StoreName)
@@ -421,7 +426,7 @@ func TestNewAppShowsKeyDirAsHomePath(t *testing.T) {
 	stderr := os.Stderr
 	os.Stderr = errFile // newApp's terminal writes here
 	t.Cleanup(func() { os.Stderr = stderr })
-	if a, err = newApp(); err != nil {
+	if a, _, err = newApp(); err != nil {
 		t.Fatal(err)
 	}
 	fs, ok := a.Store.(keys.FallbackStore)
@@ -441,7 +446,7 @@ func TestNewAppWithoutHome(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	if _, err := newApp(); err == nil {
+	if _, _, err := newApp(); err == nil {
 		t.Fatal("newApp without a home folder succeeded")
 	}
 }

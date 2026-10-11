@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/spicy-lemonade/salt/internal/escape"
 	"golang.org/x/term"
@@ -34,22 +35,22 @@ type Terminal struct {
 	// out escapes control characters, since messages can quote names from
 	// the backup repo; raw is the same stream unescaped, for Clear's codes.
 	out, raw io.Writer
-	// Context, if set, stops a question waiting for an answer as soon as it
+	// Context, if set, stops ReadLine waiting for an answer as soon as it
 	// is cancelled, as by Ctrl-C in a command that catches it, which would
-	// otherwise notice only once the question was answered. A question
-	// asked once it is cancelled returns its error at once.
+	// otherwise notice only once the question was answered. A line asked
+	// for once it is cancelled returns its error at once. ReadSecret needs
+	// none, as Ctrl-C reaches it as a key (see readHidden).
 	Context context.Context
 }
 
 // isTerminal reports whether fd is a terminal. Tests replace it, so they
-// behave the same whether or not they run in a terminal. readPassword,
-// termState and termRestore are term's own, which tests replace so that a
-// secret is read without a terminal.
+// behave the same whether or not they run in a terminal. makeRaw and
+// termRestore are term's own, which tests replace so that a secret is read
+// without a terminal.
 var (
-	isTerminal   = term.IsTerminal
-	readPassword = term.ReadPassword
-	termState    = term.GetState
-	termRestore  = term.Restore
+	isTerminal  = term.IsTerminal
+	makeRaw     = term.MakeRaw
+	termRestore = term.Restore
 )
 
 func NewTerminal() *Terminal {
@@ -66,7 +67,7 @@ func (t *Terminal) ReadLine(prompt string) (string, error) {
 			return "", err
 		}
 		return strings.TrimRight(s, "\r\n"), nil
-	}, nil)
+	})
 }
 
 func (t *Terminal) ReadSecret(prompt string) (string, error) {
@@ -74,28 +75,72 @@ func (t *Terminal) ReadSecret(prompt string) (string, error) {
 	if !isTerminal(fd) {
 		return t.ReadLine(prompt)
 	}
-	// The terminal stops showing what is typed while the secret is read. If
-	// the question is stopped, it is told to show it again, since the read
-	// itself is left waiting and never puts it back.
-	state, err := termState(fd)
-	if err != nil {
-		return "", err
-	}
 	fmt.Fprint(t.out, prompt)
-	read := readPassword
-	s, err := t.wait(func() (string, error) {
-		b, err := read(fd)
-		return string(b), err
-	}, func() { termRestore(fd, state) })
+	s, err := t.readHidden(fd)
 	fmt.Fprintln(t.out)
 	return s, err
 }
 
+// Keys readHidden acts on.
+const (
+	ctrlC     = 3
+	ctrlD     = 4
+	backspace = 8
+	ctrlU     = 21
+	del       = 127
+)
+
+// readHidden reads a line from the terminal fd without showing it. The
+// terminal is in raw mode meanwhile, so Ctrl-C arrives as a key rather than
+// a signal, and stops the question at once with ErrInterrupted, whether or
+// not the command catches signals, and the terminal is always put back as
+// it was. term.ReadPassword leaves signals on, so Ctrl-C at it ends salt
+// with the terminal still hiding what is typed, or is caught and ignored.
+// Backspace removes the last character, Ctrl-U the whole line, and Ctrl-D
+// on an empty line ends the input. Other control keys are ignored.
+func (t *Terminal) readHidden(fd int) (string, error) {
+	state, err := makeRaw(fd)
+	if err != nil {
+		return "", err
+	}
+	defer termRestore(fd, state)
+	var line []byte
+	for {
+		c, err := t.in.ReadByte()
+		switch {
+		case errors.Is(err, io.EOF) && len(line) > 0:
+			return string(line), nil
+		case err != nil:
+			return "", err
+		}
+		switch c {
+		case '\r', '\n':
+			return string(line), nil
+		case ctrlC:
+			return "", ErrInterrupted
+		case ctrlD:
+			if len(line) == 0 {
+				return "", io.EOF
+			}
+		case backspace, del:
+			_, n := utf8.DecodeLastRune(line)
+			line = line[:len(line)-n]
+		case ctrlU:
+			line = line[:0]
+		default:
+			// Every byte of a character beyond ASCII is 0x80 or more.
+			if c >= ' ' {
+				line = append(line, c)
+			}
+		}
+	}
+}
+
 // wait returns what read, which waits for the person, returns, or Context's
-// error as soon as it is cancelled, after calling stopped, if set. read is
-// then left waiting, as the command is stopping, and Context's error is
-// returned from then on, so nothing else reads from the terminal.
-func (t *Terminal) wait(read func() (string, error), stopped func()) (string, error) {
+// error as soon as it is cancelled. read is then left waiting, as the
+// command is stopping, and Context's error is returned from then on, so
+// nothing else reads from the terminal.
+func (t *Terminal) wait(read func() (string, error)) (string, error) {
 	if t.Context == nil {
 		return read()
 	}
@@ -115,9 +160,6 @@ func (t *Terminal) wait(read func() (string, error), stopped func()) (string, er
 	case a := <-got:
 		return a.s, a.err
 	case <-t.Context.Done():
-		if stopped != nil {
-			stopped()
-		}
 		return "", t.Context.Err()
 	}
 }

@@ -107,6 +107,9 @@ func (a *App) Init(o InitOptions) error {
 		secret = keys.PhraseSecret(entropy)
 	case repo.RecoveryPassphrase:
 		p, err := a.newPassphrase(o.PassphraseFile)
+		if errors.Is(err, ErrInterrupted) {
+			return fmt.Errorf("init %w: nothing was saved", ErrInterrupted)
+		}
 		if err != nil {
 			return err
 		}

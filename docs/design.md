@@ -497,9 +497,11 @@ against someone who can push to it:
   refused, since they would stop salt reading them from another copy of the
   repo.
 - **Interrupted restores.** A restore decrypts into a temporary folder next to
-  the destination. Ctrl-C or SIGTERM removes it, and also stops a question
-  about the recovery phrase or passphrase at once, showing what is typed
-  again. A restore killed outright can't clean up, so the folder is recorded
+  the destination. Ctrl-C or SIGTERM removes it, and also stops the
+  question for the recovery phrase at once. A passphrase is read with the
+  terminal in raw mode, so Ctrl-C reaches it as a key, in any command: the
+  question stops at once and the terminal shows what is typed again. A
+  restore killed outright can't clean up, so the folder is recorded
   while the restore runs, in a file of its own so restores running at once
   never lose each other's record, and `salt doctor` and the next
   `salt restore` report any left behind.
