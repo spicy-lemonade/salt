@@ -237,7 +237,7 @@ func TestDamagedSecret(t *testing.T) {
 		t.Fatalf("KeyringStore.Get of a damaged secret = %v", err)
 	}
 	file := FileStore{Dir: t.TempDir()}
-	os.WriteFile(file.path("age1x"), []byte("not json"), 0o600)
+	os.WriteFile(file.Path("age1x"), []byte("not json"), 0o600)
 	if _, err := file.Get("age1x"); !errors.Is(err, ErrDamaged) || strings.Contains(err.Error(), "'o'") {
 		t.Fatalf("FileStore.Get of a damaged secret = %v", err)
 	}
@@ -320,7 +320,7 @@ func TestFileStoreErrors(t *testing.T) {
 		t.Error("Set into a file path succeeded")
 	}
 	good := FileStore{Dir: dir}
-	os.WriteFile(good.path("age1bad"), []byte("{"), 0o600)
+	os.WriteFile(good.Path("age1bad"), []byte("{"), 0o600)
 	if _, err := good.Get("age1bad"); err == nil {
 		t.Error("Get of a corrupt file succeeded")
 	}

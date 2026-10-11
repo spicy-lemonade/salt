@@ -132,15 +132,13 @@ func (KeyringStore) Delete(recipient string) error {
 // machines without a keychain (headless Linux).
 type FileStore struct{ Dir string }
 
-func (f FileStore) path(recipient string) string {
+// Path is the file that holds, or would hold, the secret for recipient.
+func (f FileStore) Path(recipient string) string {
 	return filepath.Join(f.Dir, strings.ToLower(recipient)+".json")
 }
 
-// Path is the file that holds, or would hold, the secret for recipient.
-func (f FileStore) Path(recipient string) string { return f.path(recipient) }
-
 func (f FileStore) Get(recipient string) (Secret, error) {
-	b, err := os.ReadFile(f.path(recipient))
+	b, err := os.ReadFile(f.Path(recipient))
 	if errors.Is(err, os.ErrNotExist) {
 		return Secret{}, ErrNotFound
 	}
@@ -155,11 +153,11 @@ func (f FileStore) Set(recipient string, s Secret) error {
 	if err != nil {
 		return err
 	}
-	return private.Write(f.path(recipient), b)
+	return private.Write(f.Path(recipient), b)
 }
 
 func (f FileStore) Delete(recipient string) error {
-	err := os.Remove(f.path(recipient))
+	err := os.Remove(f.Path(recipient))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -275,7 +273,7 @@ func (f FallbackStore) Location(recipient string) string {
 		return ""
 	}
 	if fs, ok := f.Secondary.(FileStore); ok {
-		return fs.path(recipient)
+		return fs.Path(recipient)
 	}
 	return ""
 }
