@@ -3,6 +3,10 @@
 [![CI](https://github.com/spicy-lemonade/salt/actions/workflows/ci.yml/badge.svg)](https://github.com/spicy-lemonade/salt/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![codecov](https://codecov.io/gh/spicy-lemonade/salt/graph/badge.svg)](https://codecov.io/gh/spicy-lemonade/salt)
+![Beta](https://img.shields.io/badge/status-beta-orange)
+![Testers Wanted](https://img.shields.io/badge/testers-wanted-blue)
+
+> ⚠️ This project is in early beta. Expect bugs and breaking changes. Feedback and testing contributions are welcome!
 
 Salt encrypts your agent's files and database memories before they leave your machine.
 
@@ -56,124 +60,50 @@ Commit and push as normal. The repo always matches your files, with their last-m
 
 ## 🗄️ Databases
 
-Copying a database while the agent writes to it can give a broken copy, so Salt makes a safe copy itself, even while the agent is running.
+Copying a database while the agent writes to it can give a broken copy, so Salt makes a safe copy of a SQLite or Postgres database itself, even while the agent is running.
 
 ```bash
 salt seal --sqlite ~/agent/memory.db ~/agent-files ~/my-backup-repo
 salt seal --postgres-env DB_CONNECTION_URI ~/agent-files ~/my-backup-repo
 ```
 
-`--postgres-env` reads the database address from an environment variable, so the password never appears on the command line. A SQLite database is backed up under its file name, and a Postgres database under its name plus `.sql`. If two share a name, put `--name` before one, such as `--name agent2/state.db --sqlite ~/agent2/state.db`. The [design doc](docs/design.md#databases) explains the options and [how to restore a Postgres database](docs/design.md#restoring-a-postgres-database).
+The [design doc](docs/design.md#databases) explains the options, [how databases are named](docs/design.md#database-names) and [how to restore a Postgres database](docs/design.md#restoring-a-postgres-database).
 
 ## ⏰ Daily backups
 
-To back up every day, run Salt from a small script. Change the paths to match your setup. If Salt has a preset for your agent, [one command](#-one-command-backups) does all of this instead.
-
-```bash
-#!/bin/bash
-set -euo pipefail
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-
-REPO="$HOME/my-backup-repo"
-STAGE=$(mktemp -d)
-trap 'rm -rf "$STAGE"' EXIT
-
-# Gather the files you want to back up
-mkdir -p "$STAGE/memories"
-cp -p ~/agent/SOUL.md ~/agent/config.yaml "$STAGE/"
-cp -p ~/agent/memories/*.md "$STAGE/memories/"
-cp -Rp ~/agent/skills "$STAGE/"
-
-# Lock the files and a safe copy of the database into the repo. If anything
-# changed, commit, drop old backups and push.
-salt seal --prune --sqlite ~/agent/memory.db "$STAGE" "$REPO"
-cd "$REPO"
-git add -A
-if ! git diff --cached --quiet; then
-  git commit -m "Backup $(date '+%Y-%m-%d')"
-  salt prune "$REPO"
-  git push --force-with-lease
-fi
-```
-
-Save it as `~/backup.sh`, then run `crontab -e` and add this line to run it every day at 6am.
-
-```
-0 6 * * * /bin/bash ~/backup.sh >> ~/backup.log 2>&1
-```
-
-Make sure `git push` works without asking for a password. Running `gh auth setup-git` once does this. Salt only prints messages when something goes wrong.
+To back up every day, run `salt seal` from a small script on a schedule such as cron. The [design doc](docs/design.md#daily-backups) has an example script and cron line. If Salt has a preset for your agent, [one command](#-one-command-backups) does all of this instead.
 
 ## ⚡ One-command backups
 
-If Salt has a preset for your agent's memory, one command does the whole daily backup. Salt finds the files and databases, makes a safe copy of each database, locks everything into your repo, commits, drops old backups and pushes. `salt help` lists the presets.
+If Salt has a preset for your agent's memory, one command does the whole daily backup. Salt finds the files and databases, locks them into your repo, commits, drops old backups and pushes.
 
 ```bash
 salt backup --preset NAME ~/my-backup-repo
 ```
 
-Run `crontab -e` and add this line to run it every day at 6am. Use the path that `which salt` prints, since cron doesn't search Homebrew's folder.
-
-```
-0 6 * * * /opt/homebrew/bin/salt backup --preset NAME "$HOME/my-backup-repo" >> "$HOME/backup.log" 2>&1
-```
-
-- Your repo then holds only what the presets find, so give `salt backup` a repo of its own. Repeat `--preset` for each tool you use. A preset for a memory tool that works with any agent, such as `mnemosyne`, `honcho`, `hindsight` or `openviking`, finds its data on its own or inside an agent's folder, so give it alone or beside your agent's preset.
-- A settings file holding an API key or other secret is left out, and Salt names it. Keep secrets in environment variables instead.
-- `--keep-days N` keeps the last N days with a change. The default is 5. Every backup from the latest of those days is kept, and only the last backup of each earlier day.
-- `git push` to `origin` must work without a password prompt. Running `gh auth setup-git` once does this.
-
-### Presets
-
-| Preset | What it backs up |
-|---|---|
-| `hermes` | [Hermes](https://github.com/NousResearch/hermes-agent) memory (`MEMORY.md` and `USER.md`), persona, settings, skills and databases, in Hermes and each of its profiles. Its `.env` and login files are left out |
-| `hindsight` | Self-hosted [Hindsight](https://github.com/vectorize-io/hindsight) memory, dumped from its Postgres database (the one `HINDSIGHT_API_DATABASE_URL` names, or Hindsight's own embedded one on port 5432), and the Hindsight settings of each agent that uses it, on their own or inside Hermes and its profiles. Needs `pg_dump`, version 18 or newer for the embedded database. Settings holding an API key or token are left out |
-| `holographic` | The database of Hermes's [Holographic memory provider](https://github.com/NousResearch/hermes-agent/tree/main/plugins/memory/holographic) (`memory_store.db`), in Hermes and each of its profiles. Add it to `hermes` to back up the rest of Hermes too. It covers the default path only |
-| `honcho` | Self-hosted [Honcho](https://github.com/plastic-labs/honcho) memory, dumped from its Postgres database (the one `DB_CONNECTION_URI` names, or Honcho's default), and its settings on their own or inside Hermes and its profiles. Needs `pg_dump`. Settings holding an API key or token are left out |
-| `openclaw` | [OpenClaw](https://github.com/openclaw/openclaw) memory, persona and skills in each agent's workspace, its wiki and LanceDB memory, shared and learned skills, and `openclaw.json`, in OpenClaw and each of its profiles. Its databases hold its logins, so they are left out, and with them its sessions and scheduled jobs. Settings holding an API key or token are left out |
-| `openviking` | Self-hosted [OpenViking](https://github.com/volcengine/OpenViking) memory, resources, skills and snapshot history from its workspace (`~/.openviking/data`), with its settings and each agent's, on its own or inside Hermes and its profiles. Its vector index is left out, so run `ov reindex viking://` after restoring. Tags set with `set_tags`, the ranking of older events and how often each memory was used are kept only in that index, so they are lost. Back up when OpenViking isn't saving snapshots, or its snapshot history can be saved broken. Settings and user lists holding an API key are left out |
-| `mnemosyne` | [Mnemosyne](https://github.com/mnemosyne-oss/mnemosyne) memory, on its own or inside Hermes and its profiles |
-
-Each preset is a small JSON file in [`internal/preset/presets`](internal/preset/presets), and the [design doc](docs/design.md#presets) explains the format and what each one backs up. To add one, copy an existing file, change the paths and open a pull request. If a tool's folders are set by environment variables, set them in the cron line too, since cron doesn't see your shell's variables.
-
-To get your memory back, [restore into a new folder](#-getting-your-files-back), stop the agent, then copy each folder back to where it came from.
+The presets are `hermes`, `hindsight`, `holographic`, `honcho`, `mnemosyne`, `openclaw` and `openviking`. Your repo then holds only what the presets find, so give `salt backup` a repo of its own. The design doc explains [how to run it every day](docs/design.md#running-it-every-day) and [what each preset backs up](docs/design.md#presets).
 
 ## 🧹 Keeping only recent backups
 
-Every change adds the whole changed file to your repo again, or for a file over 16 MiB the parts of it that changed, since encrypted files can't be compressed against older versions. Over months a busy repo gets slow to clone and push. `salt prune` keeps only recent backups.
+Encrypted files can't be compressed against older versions, so a busy repo grows over time. `salt prune` keeps only the backups from the last 5 days on which anything changed.
 
 ```bash
 salt prune ~/my-backup-repo                  # keep the last 5 days with a change
 salt prune --keep-days 10 ~/my-backup-repo   # keep 10 instead
 ```
 
-**"5 days" means 5 days on which anything in the repo changed, not 5 calendar days.** Days are counted for the whole repo, never per file, and a day with no changes is skipped. Every backup from the latest day with a change is kept, and only the last backup of each earlier day, so backing up every hour doesn't multiply what your repo holds. The latest backup is always kept, so the current version of every file is too. Pruning rewrites your git history, so push with `git push --force-with-lease` afterwards. The [design doc](docs/design.md#keeping-only-recent-backups) has worked examples, and a way to keep a database for longer.
+Pruning rewrites your git history, so push with `git push --force-with-lease` afterwards. The [design doc](docs/design.md#keeping-only-recent-backups) explains what "5 days" means, with worked examples.
 
 ## 🔑 Getting your files back
 
-When you set up Salt, you pick how to recover your key if you lose your laptop.
-
-- **12 recovery words** (recommended). The words are your key, and nothing is stored in your repo. Write them down in at least two places, one of them offline.
-- **A passphrase** you choose. Make it strong and keep it in a password manager like Bitwarden.
-
-Your key is saved on the laptop where you set up Salt, so restoring there takes one command.
+Salt restores into a new folder and never overwrites anything. On the laptop where you set up Salt, give it your backup repo. On a new laptop, give it the repo's URL and your 12 words or passphrase.
 
 ```bash
 salt restore ~/my-backup-repo --to ~/restored-files
-```
-
-On a new laptop, install Salt and restore straight from your backup repo's URL. Salt downloads only the latest backup, still encrypted, and removes the download afterwards. It asks for your 12 words or passphrase, then offers to save the key.
-
-```bash
 salt restore https://github.com/you/my-backup-repo.git --to ~/restored-files
 ```
 
-SSH URLs work too. Don't put a token in the URL, since other programs on your laptop can see it.
-
-Salt restores into a new folder and never overwrites anything, so you can check the files before copying them back.
-
-To back up from a new laptop, clone your backup repo and run `salt trust my-backup-repo` once. Salt asks for your 12 words or passphrase if it needs them.
+The [design doc](docs/design.md#getting-your-files-back) covers your recovery options and backing up from a new laptop.
 
 ## 🩺 Checking everything works
 
@@ -186,29 +116,11 @@ Anyone can lock a file with your public key, so Salt signs every backup. `salt r
 
 ## 👋 Uninstall
 
-To uninstall Salt, run these two commands. The second is optional and makes Homebrew forget the Salt tap.
-
 ```bash
 brew uninstall spicy-lemonade/tap/salt
-brew untap spicy-lemonade/tap
 ```
 
-This leaves your key and settings on your machine. Before removing them too, make sure you still have your recovery phrase or passphrase. Without it, your backups can never be unlocked again.
-
-```bash
-# macOS: remove the key from the Keychain (run it again for each extra key if you have more than one)
-security delete-generic-password -s salt
-
-# Linux: remove the key from the system keyring
-secret-tool clear service salt
-
-# Remove approved keys, the key file (if you used SALT_KEYSTORE=file) and the cache
-rm -rf ~/Library/Application\ Support/salt ~/Library/Caches/salt   # macOS
-rm -rf ~/.config/salt ~/.cache/salt                                # Linux
-
-# In each backup repo, remove the checks. Otherwise every commit and push will be refused
-rm ~/my-backup-repo/.git/hooks/pre-commit ~/my-backup-repo/.git/hooks/pre-push
-```
+This leaves your key, settings and the checks in your backup repos in place. The [design doc](docs/design.md#uninstall) shows how to remove them too.
 
 ## 🔧 Notes
 

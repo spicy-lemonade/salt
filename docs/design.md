@@ -38,6 +38,50 @@ After committing, the script runs `salt prune "$REPO"` to drop old backups
 from the history, then pushes with `git push --force-with-lease` (see
 "Keeping only recent backups").
 
+## Daily backups
+
+To back up every day without a preset, run salt from a small script. Change
+the paths to match the setup. If salt has a preset for the agent,
+`salt backup` does all of this instead (see "One-command backup").
+
+```bash
+#!/bin/bash
+set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+REPO="$HOME/my-backup-repo"
+STAGE=$(mktemp -d)
+trap 'rm -rf "$STAGE"' EXIT
+
+# Gather the files you want to back up
+mkdir -p "$STAGE/memories"
+cp -p ~/agent/SOUL.md ~/agent/config.yaml "$STAGE/"
+cp -p ~/agent/memories/*.md "$STAGE/memories/"
+cp -Rp ~/agent/skills "$STAGE/"
+
+# Lock the files and a safe copy of the database into the repo. If anything
+# changed, commit, drop old backups and push.
+salt seal --prune --sqlite ~/agent/memory.db "$STAGE" "$REPO"
+cd "$REPO"
+git add -A
+if ! git diff --cached --quiet; then
+  git commit -m "Backup $(date '+%Y-%m-%d')"
+  salt prune "$REPO"
+  git push --force-with-lease
+fi
+```
+
+Save it as `~/backup.sh`, then run `crontab -e` and add this line to run it
+every day at 6am.
+
+```
+0 6 * * * /bin/bash ~/backup.sh >> ~/backup.log 2>&1
+```
+
+`git push` must work without asking for a password. Running
+`gh auth setup-git` once does this. Salt only prints messages when something
+goes wrong.
+
 ## Backup repo layout
 
 | Path | Contents |
@@ -111,6 +155,32 @@ Write these down, in order.
 Anybody with these words can decrypt and read your backups.
 If you lose them and this laptop, your backups cannot be recovered.
 ```
+
+## Getting your files back
+
+The key is saved on the laptop where salt was set up, so restoring there
+takes one command. Salt restores into a new folder and never overwrites
+anything, so the files can be checked before they are copied back.
+
+```bash
+salt restore ~/my-backup-repo --to ~/restored-files
+```
+
+On a new laptop, install salt and restore straight from the backup repo's
+URL. Salt downloads only the latest backup, still encrypted, and removes the
+download afterwards. It asks for the 12 words or passphrase (see "Keys and
+recovery"), then offers to save the key.
+
+```bash
+salt restore https://github.com/you/my-backup-repo.git --to ~/restored-files
+```
+
+SSH URLs work too. Don't put a token in the URL, since other programs on the
+laptop can see it.
+
+To back up from a new laptop, clone the backup repo and run
+`salt trust my-backup-repo` once. Salt asks for the 12 words or passphrase if
+it needs them.
 
 ## Restore and checks
 
@@ -884,11 +954,47 @@ pushed by the next run. Ctrl-C or SIGTERM stops a database copy, the commit
 or the push, and the backup stops before its next step, so old backups are
 never dropped after one.
 
+### Running it every day
+
+Run `crontab -e` and add this line to run it every day at 6am. Use the path
+that `which salt` prints, since cron doesn't search Homebrew's folder.
+
+```
+0 6 * * * /opt/homebrew/bin/salt backup --preset NAME "$HOME/my-backup-repo" >> "$HOME/backup.log" 2>&1
+```
+
+- The repo then holds only what the presets find, so give `salt backup` a
+  repo of its own. Repeat `--preset` for each tool in use. A preset for a
+  memory tool that works with any agent, such as `mnemosyne`, `honcho`,
+  `hindsight` or `openviking`, finds its data on its own or inside an
+  agent's folder, so give it alone or beside the agent's preset.
+- A settings file holding an API key or other secret is left out, and salt
+  names it. Keep secrets in environment variables instead.
+- `--keep-days N` keeps the last N days with a change. The default is 5.
+  Every backup from the latest of those days is kept, and only the last
+  backup of each earlier day (see "Keeping only recent backups").
+- `git push` to `origin` must work without a password prompt. Running
+  `gh auth setup-git` once does this.
+
 ### Presets
 
 A preset says where one tool keeps the files needed to restore its memory.
+Salt has these presets.
+
+| Preset | What it backs up |
+|---|---|
+| `hermes` | [Hermes](https://github.com/NousResearch/hermes-agent) memory (`MEMORY.md` and `USER.md`), persona, settings, skills and databases, in Hermes and each of its profiles. Its `.env` and login files are left out |
+| `hindsight` | Self-hosted [Hindsight](https://github.com/vectorize-io/hindsight) memory, dumped from its Postgres database (the one `HINDSIGHT_API_DATABASE_URL` names, or Hindsight's own embedded one on port 5432), and the Hindsight settings of each agent that uses it, on their own or inside Hermes and its profiles. Needs `pg_dump`, version 18 or newer for the embedded database. Settings holding an API key or token are left out |
+| `holographic` | The database of Hermes's [Holographic memory provider](https://github.com/NousResearch/hermes-agent/tree/main/plugins/memory/holographic) (`memory_store.db`), in Hermes and each of its profiles. Add it to `hermes` to back up the rest of Hermes too. It covers the default path only |
+| `honcho` | Self-hosted [Honcho](https://github.com/plastic-labs/honcho) memory, dumped from its Postgres database (the one `DB_CONNECTION_URI` names, or Honcho's default), and its settings on their own or inside Hermes and its profiles. Needs `pg_dump`. Settings holding an API key or token are left out |
+| `openclaw` | [OpenClaw](https://github.com/openclaw/openclaw) memory, persona and skills in each agent's workspace, its wiki and LanceDB memory, shared and learned skills, and `openclaw.json`, in OpenClaw and each of its profiles. Its databases hold its logins, so they are left out, and with them its sessions and scheduled jobs. Settings holding an API key or token are left out |
+| `openviking` | Self-hosted [OpenViking](https://github.com/volcengine/OpenViking) memory, resources, skills and snapshot history from its workspace (`~/.openviking/data`), with its settings and each agent's, on its own or inside Hermes and its profiles. Its vector index is left out, so run `ov reindex viking://` after restoring. Tags set with `set_tags`, the ranking of older events and how often each memory was used are kept only in that index, so they are lost. Back up when OpenViking isn't saving snapshots, or its snapshot history can be saved broken. Settings and user lists holding an API key are left out |
+| `mnemosyne` | [Mnemosyne](https://github.com/mnemosyne-oss/mnemosyne) memory, on its own or inside Hermes and its profiles |
+
 Each is a JSON file in `internal/preset/presets`, built into salt. The same
-code reads them all, so adding a tool means adding one file:
+code reads them all, so adding a tool means adding one file. To add one, copy
+an existing file, change the paths and open a pull request. A preset looks
+like this:
 
 ```json
 {
@@ -1512,6 +1618,35 @@ agent uses must be set in the cron line too, such as
 `HERMES_HOME=/srv/hermes /opt/homebrew/bin/salt backup --preset mnemosyne REPO`.
 To get the memory back, restore into a new folder, stop the agent, and copy
 each folder back to where it came from, such as `hermes/` to `~/.hermes/`.
+
+## Uninstall
+
+To uninstall salt, run these two commands. The second is optional and makes
+Homebrew forget the salt tap.
+
+```bash
+brew uninstall spicy-lemonade/tap/salt
+brew untap spicy-lemonade/tap
+```
+
+This leaves the key and settings on the machine. Before removing them too,
+make sure the recovery phrase or passphrase is still at hand. Without it,
+the backups can never be unlocked again.
+
+```bash
+# macOS: remove the key from the Keychain (run it again for each extra key if you have more than one)
+security delete-generic-password -s salt
+
+# Linux: remove the key from the system keyring
+secret-tool clear service salt
+
+# Remove approved keys, the key file (if you used SALT_KEYSTORE=file) and the cache
+rm -rf ~/Library/Application\ Support/salt ~/Library/Caches/salt   # macOS
+rm -rf ~/.config/salt ~/.cache/salt                                # Linux
+
+# In each backup repo, remove the checks. Otherwise every commit and push will be refused
+rm ~/my-backup-repo/.git/hooks/pre-commit ~/my-backup-repo/.git/hooks/pre-push
+```
 
 ## Out of scope
 
