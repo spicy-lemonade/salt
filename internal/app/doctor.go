@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -160,9 +161,11 @@ func (a *App) doctorKeys(r *report, rp *repo.Repo) {
 		}
 	}
 
+	note := ""
 	for _, rcpt := range rp.RecipientStrings {
 		_, err := a.storedIdentity(rcpt)
 		if errors.Is(err, keys.ErrNotFound) {
+			note = cmp.Or(note, keychainNote(err))
 			continue
 		}
 		if errors.Is(err, errDamagedKey) {
@@ -182,8 +185,8 @@ func (a *App) doctorKeys(r *report, rp *repo.Repo) {
 		r.add(ok, "key for this backup is saved in %s", where)
 		return
 	}
-	r.add(warn, "no key for this backup on this machine: backups still work (they only need the public key), but restoring will ask for your %s",
-		recoveryNoun(rp))
+	r.add(warn, "no key for this backup on this machine%s: backups still work (they only need the public key), but restoring will ask for your %s",
+		note, recoveryNoun(rp))
 }
 
 func (a *App) doctorTrust(r *report, rp *repo.Repo) {

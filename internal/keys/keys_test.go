@@ -201,6 +201,27 @@ func TestFallbackStore(t *testing.T) {
 	}
 }
 
+// A key in neither store, when the keychain could not be read, is still not
+// found, but the error says the keychain could not be read and why. A key
+// missing from a keychain that was read is plainly not found.
+func TestFallbackStoreKeychainError(t *testing.T) {
+	fs := FallbackStore{Primary: brokenStore{}, Secondary: &MemStore{}}
+	_, err := fs.Get("age1x")
+	var kc *KeychainError
+	if !errors.Is(err, ErrNotFound) || !errors.As(err, &kc) || !strings.Contains(err.Error(), "the system keychain could not be read (no keychain)") {
+		t.Fatalf("Get with a broken keychain = %v, want ErrNotFound naming the keychain's error", err)
+	}
+	ok := FallbackStore{Primary: &MemStore{}, Secondary: &MemStore{}}
+	if _, err := ok.Get("age1x"); err != ErrNotFound {
+		t.Fatalf("Get missing from both = %v, want ErrNotFound itself", err)
+	}
+	// A secondary that fails for another reason is reported as it is.
+	bad := FallbackStore{Primary: brokenStore{}, Secondary: brokenStore{}}
+	if _, err := bad.Get("age1x"); errors.Is(err, ErrNotFound) || err == nil {
+		t.Fatalf("Get with both broken = %v, want the fallback's own error", err)
+	}
+}
+
 type brokenStore struct{}
 
 func (brokenStore) Get(string) (Secret, error) { return Secret{}, errors.New("no keychain") }

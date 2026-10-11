@@ -191,13 +191,34 @@ type FallbackStore struct {
 	Warn func(error)
 }
 
+// Get returns the secret from Primary, or else from Secondary. A secret in
+// neither, when Primary could not be read, is a KeychainError, so the
+// message can say the key may be in Primary.
 func (f FallbackStore) Get(recipient string) (Secret, error) {
 	s, err := f.Primary.Get(recipient)
 	if err == nil {
 		return s, nil
 	}
-	return f.Secondary.Get(recipient)
+	s, err2 := f.Secondary.Get(recipient)
+	if errors.Is(err2, ErrNotFound) && !errors.Is(err, ErrNotFound) {
+		return Secret{}, &KeychainError{Err: err}
+	}
+	return s, err2
 }
+
+// KeychainError means a key is not in the fallback file, and the keychain
+// could not be read, as when it is locked or access to it was refused, so
+// the key may be there. It counts as ErrNotFound, so a machine with no
+// keychain at all works as one whose keychain lacks the key.
+type KeychainError struct{ Err error }
+
+func (e *KeychainError) Error() string {
+	return fmt.Sprintf("%v, and the system keychain could not be read (%v)", ErrNotFound, e.Err)
+}
+
+func (e *KeychainError) Is(target error) bool { return target == ErrNotFound }
+
+func (e *KeychainError) Unwrap() error { return e.Err }
 
 func (f FallbackStore) Set(recipient string, s Secret) error {
 	err := f.Primary.Set(recipient, s)

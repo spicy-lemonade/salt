@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -42,9 +43,11 @@ func (a *App) RecoveryShow(repoRoot string) error {
 	if !a.UI.Interactive() {
 		return ErrNotInteractive
 	}
+	note := ""
 	for _, rcpt := range r.RecipientStrings {
 		s, err := a.Store.Get(rcpt)
 		if errors.Is(err, keys.ErrNotFound) {
+			note = cmp.Or(note, keychainNote(err))
 			continue
 		}
 		if err != nil {
@@ -68,7 +71,7 @@ func (a *App) RecoveryShow(repoRoot string) error {
 		a.UI.Clear()
 		return nil
 	}
-	return fmt.Errorf("no recovery phrase for this backup is saved on this machine (%s)", a.StoreName)
+	return fmt.Errorf("no recovery phrase for this backup is saved on this machine (%s)%s", a.StoreName, note)
 }
 
 // RestoreOptions configures Restore.
@@ -135,9 +138,11 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 // for the recovery phrase or passphrase (then offering to save the key).
 func (a *App) identities(r *repo.Repo) ([]age.Identity, error) {
 	var ids []age.Identity
+	note := ""
 	for _, rcpt := range r.RecipientStrings {
 		id, err := a.storedIdentity(rcpt)
 		if errors.Is(err, keys.ErrNotFound) || errors.Is(err, errDamagedKey) {
+			note = cmp.Or(note, keychainNote(err))
 			continue
 		}
 		if err != nil {
@@ -149,9 +154,9 @@ func (a *App) identities(r *repo.Repo) ([]age.Identity, error) {
 		return ids, nil
 	}
 	if !a.UI.Interactive() {
-		return nil, fmt.Errorf("no key for this backup is saved on this machine; run this in a terminal to enter your %s", recoveryNoun(r))
+		return nil, fmt.Errorf("no key for this backup is saved on this machine%s; run this in a terminal to enter your %s", note, recoveryNoun(r))
 	}
-	a.UI.Printf("No key for this backup is saved on this machine.\n")
+	a.UI.Printf("No key for this backup is saved on this machine%s.\n", note)
 	id, secret, err := a.promptIdentity(r)
 	if err != nil {
 		return nil, err
@@ -186,6 +191,17 @@ func (a *App) storedIdentity(rcpt string) (*age.X25519Identity, error) {
 		return nil, errDamagedKey
 	}
 	return id, nil
+}
+
+// keychainNote says, for an error from the key store, that the system
+// keychain could not be read, so the key may be saved there after all (see
+// keys.KeychainError). It is "" for any other error.
+func keychainNote(err error) string {
+	var kc *keys.KeychainError
+	if errors.As(err, &kc) {
+		return fmt.Sprintf(", and the system keychain could not be read (%v)", kc.Err)
+	}
+	return ""
 }
 
 // promptIdentity asks for the recovery phrase or passphrase and checks the

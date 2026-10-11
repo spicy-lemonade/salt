@@ -714,3 +714,39 @@ func TestVerifyReportsUnreferenced(t *testing.T) {
 		t.Fatalf("verify non-repo: %v", err)
 	}
 }
+
+// A key missing because the keychain could not be read, as when it is
+// locked, is named that way wherever salt says the key is missing, not only
+// as missing.
+func TestKeychainUnreadableIsNamed(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	e.app.Store = keys.FallbackStore{Primary: brokenStore{}, Secondary: &keys.MemStore{}}
+	const why = ", and the system keychain could not be read (locked)"
+
+	e.app.Doctor(e.root)
+	if out := e.ui.out.String(); !strings.Contains(out, "no key for this backup on this machine"+why+": backups still work") {
+		t.Errorf("doctor:\n%s", out)
+	}
+	e.ui.out.Reset()
+	if err := e.app.Trust(e.root, true); err != nil {
+		t.Fatalf("Trust: %v", err)
+	}
+	if out := e.ui.out.String(); !strings.Contains(out, "⚠ NOT on this machine"+why+"\n") {
+		t.Errorf("trust:\n%s", out)
+	}
+	if err := e.app.RecoveryShow(e.root); err == nil || !strings.Contains(err.Error(), "(test store)"+why) {
+		t.Errorf("recovery show: %v", err)
+	}
+	e.ui.interactive = false
+	if err := e.app.Verify(e.root, false); err == nil || !strings.Contains(err.Error(), "no key for this backup is saved on this machine"+why+"; run this in a terminal") {
+		t.Errorf("verify: %v", err)
+	}
+	e.ui.interactive = true
+	e.ui.out.Reset()
+	e.ui.answer = func(string, string) (string, error) { return "", io.EOF }
+	e.app.Verify(e.root, false)
+	if out := e.ui.out.String(); !strings.Contains(out, "No key for this backup is saved on this machine"+why+".\n") {
+		t.Errorf("verify, at a terminal:\n%s", out)
+	}
+}

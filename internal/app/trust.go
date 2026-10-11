@@ -106,7 +106,7 @@ func (a *App) Trust(repoRoot string, yes bool) error {
 		mark := "  (your key on this machine)"
 		switch _, err := a.storedIdentity(rcpt); {
 		case errors.Is(err, keys.ErrNotFound):
-			mark = "  ⚠ NOT on this machine"
+			mark = "  ⚠ NOT on this machine" + keychainNote(err)
 			unknown++
 		case errors.Is(err, errDamagedKey):
 			mark = "  ⚠ " + errDamagedKey.Error()
