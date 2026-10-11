@@ -13,6 +13,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -147,6 +148,10 @@ func objectHeads(dir string, names, specs []string, n int, fn func(name string, 
 	return nil
 }
 
+// noObject ends each line `git cat-file --batch` prints for an object it did
+// not find, which has nothing after it.
+var noObject = []string{" missing", " ambiguous", " submodule"}
+
 // readBatch reads `git cat-file --batch` output for one object for each of
 // names, in order, and calls fn with the name and the object's first n
 // bytes. An object that is missing, or is not a blob, such as the commit a
@@ -162,8 +167,11 @@ func readBatch(r io.Reader, names []string, n int, fn func(name string, head []b
 		if err != nil {
 			return fmt.Errorf("git cat-file: %w", err)
 		}
-		// An object not found is one line, with nothing after it.
-		if l := strings.TrimSuffix(line, "\n"); strings.HasSuffix(l, " missing") || strings.HasSuffix(l, " ambiguous") {
+		// An object not found is one line, with nothing after it: "missing",
+		// "ambiguous", or, from newer git, "<oid> submodule" for a
+		// submodule entry whose commit is not in the repo. A found object's
+		// line ends in its size, so it never ends in one of these.
+		if l := strings.TrimSuffix(line, "\n"); slices.ContainsFunc(noObject, func(s string) bool { return strings.HasSuffix(l, s) }) {
 			fn(name, nil, false)
 			continue
 		}

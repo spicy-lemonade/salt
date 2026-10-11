@@ -109,6 +109,7 @@ func TestReadBatch(t *testing.T) {
 		":0:gone missing\n" +
 		":0:two words missing\n" +
 		"abcd ambiguous\n" +
+		"1111111111111111111111111111111111111111 submodule\n" +
 		"2222 commit " + fmt.Sprint(len(commit)) + "\n" + commit + "\n" +
 		"3333 blob " + fmt.Sprint(len(big)) + "\n" + big + "\n" +
 		"4444 blob 0\n\n" +
@@ -118,11 +119,11 @@ func TestReadBatch(t *testing.T) {
 		ok         bool
 	}
 	var seen []got
-	names := []string{"a", "gone", "two words", "short", "sub", "big", "empty", "after"}
+	names := []string{"a", "gone", "two words", "short", "far sub", "sub", "big", "empty", "after"}
 	err := readBatch(strings.NewReader(out), names, 8, func(name string, head []byte, ok bool) {
 		seen = append(seen, got{name, string(head), ok})
 	})
-	want := []got{{"a", "abc", true}, {"gone", "", false}, {"two words", "", false}, {"short", "", false},
+	want := []got{{"a", "abc", true}, {"gone", "", false}, {"two words", "", false}, {"short", "", false}, {"far sub", "", false},
 		{"sub", "", false}, {"big", "age-encr", true}, {"empty", "", true}, {"after", "xyz", true}}
 	if err != nil || !slices.Equal(seen, want) {
 		t.Fatalf("readBatch = %v, %+v; want %+v", err, seen, want)
