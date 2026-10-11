@@ -1041,8 +1041,7 @@ func (c *countingStore) Get(rcpt string) (keys.Secret, error) {
 }
 
 // savedKeys looks up each key only when the loop reaches it, so a loop that
-// stops at the first key found looks up no more, and the keychain note is
-// set from those it looked up.
+// stops at the first key found looks up no more.
 func TestSavedKeysLooksUpOnlyWhatIsReached(t *testing.T) {
 	e := newEnv(t)
 	store := &countingStore{MemStore: &keys.MemStore{}}
@@ -1051,18 +1050,17 @@ func TestSavedKeysLooksUpOnlyWhatIsReached(t *testing.T) {
 	store.Set(id.Recipient().String(), keys.IdentitySecret(id))
 	other, _ := age.GenerateX25519Identity()
 	rcpts := []string{id.Recipient().String(), other.Recipient().String(), "age1unused"}
-	var note string
-	for k := range e.app.savedKeys(rcpts, &note) {
+	for k := range e.app.savedKeys(rcpts) {
 		if k.err != nil || k.id.Recipient().String() != rcpts[0] {
 			t.Fatalf("first key = %+v", k)
 		}
 		break
 	}
-	if store.gets != 1 || note != "" {
-		t.Fatalf("looked up %d keys, note %q; want 1 and none", store.gets, note)
+	if store.gets != 1 {
+		t.Fatalf("looked up %d keys, want 1", store.gets)
 	}
 	n := 0
-	for range e.app.savedKeys(rcpts, &note) {
+	for range e.app.savedKeys(rcpts) {
 		n++
 	}
 	if n != 3 || store.gets != 4 {

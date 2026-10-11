@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -160,9 +161,10 @@ func (a *App) doctorKeys(r *report, rp *repo.Repo) {
 		}
 	}
 
-	var note string
-	for k := range a.savedKeys(rp.RecipientStrings, &note) {
+	note := ""
+	for k := range a.savedKeys(rp.RecipientStrings) {
 		if errors.Is(k.err, keys.ErrNotFound) {
+			note = cmp.Or(note, keychainNote(k.err))
 			continue
 		}
 		if errors.Is(k.err, errDamagedKey) {

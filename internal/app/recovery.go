@@ -44,10 +44,11 @@ func (a *App) RecoveryShow(repoRoot string) error {
 	if !a.UI.Interactive() {
 		return ErrNotInteractive
 	}
-	var note string
+	note := ""
 	damaged := false
-	for k := range a.savedKeys(r.RecipientStrings, &note) {
+	for k := range a.savedKeys(r.RecipientStrings) {
 		if errors.Is(k.err, keys.ErrNotFound) {
+			note = cmp.Or(note, keychainNote(k.err))
 			continue
 		}
 		if errors.Is(k.err, errDamagedKey) {
@@ -153,9 +154,10 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 // for the recovery phrase or passphrase (then offering to save the key).
 func (a *App) identities(r *repo.Repo) ([]age.Identity, error) {
 	var ids []age.Identity
-	var note string
-	for k := range a.savedKeys(r.RecipientStrings, &note) {
+	note := ""
+	for k := range a.savedKeys(r.RecipientStrings) {
 		if errors.Is(k.err, keys.ErrNotFound) || errors.Is(k.err, errDamagedKey) {
+			note = cmp.Or(note, keychainNote(k.err))
 			continue
 		}
 		if k.err != nil {
@@ -227,14 +229,13 @@ type savedKey struct {
 
 // savedKeys yields what this machine holds for each of the public keys
 // rcpts, in order. Each is looked up only when the loop reaches it, so a
-// loop that stops at the first key found looks up no more. Along the way,
-// *note becomes a note for a message saying a key is missing: that the
-// system keychain could not be read, when it could not (see keychainNote).
-func (a *App) savedKeys(rcpts []string, note *string) iter.Seq[savedKey] {
+// loop that stops at the first key found looks up no more. A key not found
+// may be in a keychain that could not be read, which keychainNote(k.err)
+// says.
+func (a *App) savedKeys(rcpts []string) iter.Seq[savedKey] {
 	return func(yield func(savedKey) bool) {
 		for _, rcpt := range rcpts {
 			s, id, err := a.storedKey(rcpt)
-			*note = cmp.Or(*note, keychainNote(err))
 			if !yield(savedKey{rcpt: rcpt, secret: s, id: id, err: err}) {
 				return
 			}
