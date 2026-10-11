@@ -250,3 +250,22 @@ func TestFindUnreadableFolder(t *testing.T) {
 		t.Fatal("Find checked a path in an unreadable folder")
 	}
 }
+
+// A file where a preset expects a folder holds nothing to back up, so it is
+// not found, as a missing folder is, rather than stopping the backup.
+func TestFindFileWhereFolderExpected(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "tool"), []byte("not a folder"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := envOf(home, nil)
+	for _, x := range []Path{
+		{From: "~/tool/data", To: "d"},
+		{From: "~/tool/*", To: "d/*"},
+		{From: "~/tool/p-*/data", To: "d/*"},
+	} {
+		if got, err := e.Find(x); err != nil || got != nil {
+			t.Errorf("Find(%s) = %v, %v, want nothing found", x.From, got, err)
+		}
+	}
+}

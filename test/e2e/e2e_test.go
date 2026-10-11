@@ -8,6 +8,7 @@
 package e2e
 
 import (
+	"crypto/rand"
 	"errors"
 	"os"
 	"os/exec"
@@ -339,6 +340,47 @@ func TestGitEdgeCases(t *testing.T) {
 		}
 	}
 
+	// git that cannot read the repo is reported, never taken for a repo
+	// with no commits whose last commit is clean.
+	head := filepath.Join(repoDir, ".git", "HEAD")
+	saved, err := os.ReadFile(head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, head, "not a ref\n")
+	out, _ = e.run(base, "salt", "doctor", repoDir)
+	for _, want := range []string{"could not inspect the last commit", "could not read the last commit"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor when git cannot read the repo missing %q:\n%s", want, out)
+		}
+	}
+	for _, wrong := range []string{"no commits yet", "last commit contains no unencrypted files"} {
+		if strings.Contains(out, wrong) {
+			t.Errorf("doctor when git cannot read the repo says %q:\n%s", wrong, out)
+		}
+	}
+	write(t, head, string(saved))
+
+	// When git cat-file stops part way, as on a damaged object, its own
+	// message is shown, not only that its output ended.
+	// Random bytes do not compress, so cutting the object short leaves git
+	// a whole header and only part of the contents.
+	noise := make([]byte, 300<<10)
+	rand.Read(noise)
+	write(t, filepath.Join(repoDir, "damaged.age"), "age-encryption.org/v1\n"+string(noise))
+	e.must(repoDir, "git", "add", "damaged.age")
+	id := strings.TrimSpace(e.must(repoDir, "git", "rev-parse", ":0:damaged.age"))
+	object := filepath.Join(repoDir, ".git", "objects", id[:2], id[2:])
+	os.Chmod(object, 0o644)
+	if err := os.Truncate(object, 100<<10); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := e.run(repoDir, "salt", "check"); code != 1 || !strings.Contains(out, "git cat-file: ") || !strings.Contains(out, id) {
+		t.Errorf("check with a damaged object: exit %d, want git's message naming %s\n%s", code, id, out)
+	}
+	e.must(repoDir, "git", "update-index", "--force-remove", "damaged.age")
+	os.Remove(filepath.Join(repoDir, "damaged.age"))
+
 	// A file name with a newline, and a submodule entry, are both refused.
 	write(t, filepath.Join(repoDir, "odd\nname.md"), "x")
 	e.must(repoDir, "git", "add", "odd\nname.md")
@@ -347,6 +389,22 @@ func TestGitEdgeCases(t *testing.T) {
 	out, code := e.run(repoDir, "salt", "check")
 	if code != 1 || !strings.Contains(out, "2 staged file(s)") || !strings.Contains(out, "not a regular file") {
 		t.Fatalf("check with odd entries: exit %d\n%s", code, out)
+	}
+	e.must(repoDir, "git", "update-index", "--force-remove", "odd\nname.md", "sub")
+
+	// A submodule entry naming a commit that is in the repo: git prints the
+	// commit's text, which must not be read as the lines about the files
+	// after it, even when its message looks like one for a file that is
+	// encrypted.
+	tree := strings.TrimSpace(e.must(repoDir, "git", "mktree"))
+	commit := strings.TrimSpace(e.must(repoDir, "git", "-c", "user.name=t", "-c", "user.email=t@t",
+		"commit-tree", tree, "-m", "x", "-m", "x blob 22\nage-encryption.org/v1"))
+	e.must(repoDir, "git", "update-index", "--add", "--cacheinfo", "160000,"+commit+",a-sub")
+	write(t, filepath.Join(repoDir, "b-plain.md"), "plaintext")
+	e.must(repoDir, "git", "add", "b-plain.md")
+	out, code = e.run(repoDir, "salt", "check")
+	if code != 1 || !strings.Contains(out, "2 staged file(s)") || !strings.Contains(out, "a-sub: not a regular file") || !strings.Contains(out, "b-plain.md: not encrypted") {
+		t.Fatalf("check with a submodule entry naming a commit here: exit %d\n%s", code, out)
 	}
 }
 

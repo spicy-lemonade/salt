@@ -722,8 +722,9 @@ func TestBackupPlaceGoneBeforeSealed(t *testing.T) {
 }
 
 // warnMissing names a place inside another that is found, one around
-// another that is found, and only the outer one when both are missing. A place still found, or with something
-// in this backup, is not named, nor is a path no preset names.
+// another that is found, and only the outer one when both are missing. A
+// place still found, or with something in this backup, is not named, nor is
+// a path no preset names.
 func TestWarnMissingNestedPlaces(t *testing.T) {
 	p, err := preset.Parse("t", []byte(`{"name": "t", "paths": [
 		{"from": "~/outer", "to": "outer"},

@@ -146,9 +146,24 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	if len(opt.Signer) != ed25519.PrivateKeySize {
 		return nil, errors.New("seal: no signing key")
 	}
+	// The source's symlinks are followed once, here, so the check below and
+	// the walk always see the same folder (see walkSource). The folders are
+	// compared both as given and as real, so a source given as a symlink
+	// inside the repo is refused even when it leads outside, as seal --prune
+	// would remove it. Messages name the folders as given.
+	var realSrc string
 	if src != "" {
-		if err := CheckDisjoint(src, r.Root, opt.Show); err != nil {
+		var absSrc string
+		var err error
+		if absSrc, realSrc, err = realPath(src); err != nil {
 			return nil, err
+		}
+		absRoot, realRoot, err := realPath(r.Root)
+		if err != nil {
+			return nil, err
+		}
+		if overlap(absSrc, absRoot) || overlap(realSrc, realRoot) {
+			return nil, disjointError(absSrc, absRoot, opt.Show)
 		}
 	}
 	if err := CheckNoSymlinks(r.Root); err != nil {
@@ -162,7 +177,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	var items []item
 	var err error
 	if src != "" {
-		if items, err = walkSource(src, exclude, res, opt.Show); err != nil {
+		if items, err = walkSource(src, realSrc, exclude, res, opt.Show); err != nil {
 			return nil, err
 		}
 	}
@@ -366,39 +381,43 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		}
 	}
 
+	// A failure from here on also keeps what the files wrote, as one while
+	// sealing them does: next records it, with the index as it is until it
+	// is written. Losing this save only costs that reuse.
+	next.IndexSHA, next.IndexSize, next.IndexModTime = c.IndexSHA, c.IndexSize, c.IndexModTime
+	fail := func(err error) (*Result, error) {
+		next.save(cPath)
+		return nil, err
+	}
 	if entriesHook != nil {
 		entries = entriesHook(entries)
 	}
 	if err := checkIndexEntries(entries); err != nil {
-		return nil, err
+		return fail(err)
 	}
 	ix := &Index{Version: version, Entries: entries}
 	ix.sign(opt.Signer)
-	b, ixSHA, err := ix.marshal()
-	if err != nil {
-		return nil, err
-	}
+	b, ixSHA := ix.marshal()
 	if len(b) > maxIndexSize {
-		return nil, fmt.Errorf("the index would be %d bytes; salt supports at most %d", len(b), maxIndexSize)
+		return fail(fmt.Errorf("the index would be %d bytes; salt supports at most %d", len(b), maxIndexSize))
 	}
-	next.IndexSHA = ixSHA
 	ixPart, ok := partIntact(rt, cachePart{Object: repo.IndexFile, CipherSize: c.IndexSize, ModTime: c.IndexModTime})
 	if ixSHA != c.IndexSHA || !ok {
 		_, parts, err := encryptTo(rt, repo.IndexFile, bytes.NewReader(b), r.Recipients, 0)
 		if err != nil {
-			return nil, fmt.Errorf("writing index: %w", err)
+			return fail(fmt.Errorf("writing index: %w", err))
 		}
 		ixPart = parts[0]
 		res.IndexNew = true
 	}
-	next.IndexSize, next.IndexModTime = ixPart.CipherSize, ixPart.ModTime
+	// Only now is the index on disk the one next names.
+	next.IndexSHA, next.IndexSize, next.IndexModTime = ixSHA, ixPart.CipherSize, ixPart.ModTime
 
+	// The cache is saved even if the clean-up fails, as the index it names
+	// is written. Either failing is reported.
 	removed, err := removeStale(rt, keep, opt.Prune)
 	res.Removed = removed
-	if err != nil {
-		return res, err
-	}
-	return res, next.save(cPath)
+	return res, errors.Join(err, next.save(cPath))
 }
 
 // leftOut is why a file was left out of the backup, if it was.
@@ -478,6 +497,7 @@ func encryptChunks(rt *os.Root, r *repo.Repo, abs string, gear *gearTable, prev 
 		}
 	}
 	ch := newChunker(f, gear)
+	defer ch.release()
 	whole := sha256.New()
 	seen := map[string]cachePart{}
 	var parts []cachePart
@@ -593,14 +613,20 @@ func partIntact(rt *os.Root, p cachePart) (cachePart, bool) {
 	return p, true
 }
 
-func walkSource(src string, exclude []string, res *Result, fn func(string) string) ([]item, error) {
-	fi, err := os.Stat(src)
+// walkSource lists the files and symlinks in the folder src, which is real
+// with its symlinks followed. filepath.WalkDir does not go into a symlink it
+// is given, so a source folder given as one would be sealed as empty,
+// removing everything sealed before. The folder is walked as real instead,
+// so errors about the files in it name them there.
+func walkSource(src, real string, exclude []string, res *Result, fn func(string) string) ([]item, error) {
+	fi, err := os.Stat(real)
 	if err != nil {
 		return nil, err
 	}
 	if !fi.IsDir() {
 		return nil, fmt.Errorf("%s is not a directory", show(fn, src))
 	}
+	src = real
 	skip := map[string]bool{}
 	for _, e := range exclude {
 		skip[e] = true
@@ -838,6 +864,8 @@ func removeEmptyDirs(rt *os.Root, dir string) {
 
 // CheckDisjoint refuses a source inside the repo or a repo inside the source:
 // either would seal ciphertext into itself or leak plaintext into the repo.
+// The caller gives both with their symlinks followed, as preset.Gather does,
+// so a symlink cannot hide one inside the other.
 func CheckDisjoint(src, root string, fn func(string) string) error {
 	a, err := filepath.Abs(src)
 	if err != nil {
@@ -847,10 +875,29 @@ func CheckDisjoint(src, root string, fn func(string) string) error {
 	if err != nil {
 		return err
 	}
-	if Within(a, b) || Within(b, a) {
-		return fmt.Errorf("source %s and repository %s must not contain each other", show(fn, a), show(fn, b))
+	if overlap(a, b) {
+		return disjointError(a, b, fn)
 	}
 	return nil
+}
+
+// overlap reports whether either of the absolute paths a and b is inside the
+// other, or both are the same.
+func overlap(a, b string) bool { return Within(a, b) || Within(b, a) }
+
+// disjointError is the error for a source src and a repository root that
+// overlap, both absolute.
+func disjointError(src, root string, fn func(string) string) error {
+	return fmt.Errorf("source %s and repository %s must not contain each other", show(fn, src), show(fn, root))
+}
+
+// realPath returns p made absolute, and that with its symlinks followed.
+func realPath(p string) (abs, real string, err error) {
+	if abs, err = filepath.Abs(p); err != nil {
+		return "", "", err
+	}
+	real, err = filepath.EvalSymlinks(abs)
+	return abs, real, err
 }
 
 // Within reports whether the path p is dir or inside it.

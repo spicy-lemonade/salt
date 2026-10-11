@@ -101,13 +101,12 @@ func (e Entry) objects() []string {
 // included. A salt that reads parts reads chunks the same way.
 const partsIndexVersion = 2
 
-func (ix *Index) marshal() ([]byte, string, error) {
-	b, err := json.Marshal(ix)
-	if err != nil {
-		return nil, "", err
-	}
+// marshal returns the index as JSON, and the SHA-256 of that. An Index holds
+// only strings, numbers and lists of strings, so encoding it cannot fail.
+func (ix *Index) marshal() ([]byte, string) {
+	b, _ := json.Marshal(ix)
 	s := sha256.Sum256(b)
-	return b, hex.EncodeToString(s[:]), nil
+	return b, hex.EncodeToString(s[:])
 }
 
 // ErrNotSigned means the index is not signed by a key that comes from the
@@ -387,9 +386,10 @@ func validEntry(e *Entry) error {
 
 // minObjectPlaintext is the least plaintext any object of a file but its last
 // holds. A chunk holds at least minChunk bytes. A part holds oneObjectLimit
-// bytes of ciphertext, cut from one zstd stream, which is never more than a
-// fraction of a percent larger than the plaintext it holds, so half
-// oneObjectLimit leaves plenty to spare. Parts from older salts are 45 MiB.
+// bytes of compressed data, before age encrypts it, cut from one zstd
+// stream, which is never more than a fraction of a percent larger than the
+// plaintext it holds, so half oneObjectLimit leaves plenty to spare. Parts
+// from older salts are 45 MiB.
 func minObjectPlaintext() int64 {
 	return max(1, min(int64(minChunk), oneObjectLimit)/2)
 }

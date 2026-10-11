@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -160,30 +161,31 @@ func (a *App) doctorKeys(r *report, rp *repo.Repo) {
 		}
 	}
 
-	for _, rcpt := range rp.RecipientStrings {
-		_, err := a.storedIdentity(rcpt)
-		if errors.Is(err, keys.ErrNotFound) {
+	note := ""
+	for k := range a.savedKeys(rp.RecipientStrings) {
+		if errors.Is(k.err, keys.ErrNotFound) {
+			note = cmp.Or(note, keychainNote(k.err))
 			continue
 		}
-		if errors.Is(err, errDamagedKey) {
-			r.add(fail, "the key saved for %s in the %s is damaged", shortKey(rcpt), a.StoreName)
+		if errors.Is(k.err, errDamagedKey) {
+			r.add(fail, "the key saved for %s in the %s is damaged", shortKey(k.rcpt), a.StoreName)
 			return
 		}
-		if err != nil {
-			r.add(warn, "could not read the %s: %v", a.StoreName, err)
+		if k.err != nil {
+			r.add(warn, "could not read the %s: %v", a.StoreName, k.err)
 			return
 		}
 		where := "the " + a.StoreName
 		if l, isLocator := a.Store.(interface{ Location(string) string }); isLocator {
-			if loc := l.Location(rcpt); loc != "" {
+			if loc := l.Location(k.rcpt); loc != "" {
 				where = "private file " + a.short(loc)
 			}
 		}
 		r.add(ok, "key for this backup is saved in %s", where)
 		return
 	}
-	r.add(warn, "no key for this backup on this machine: backups still work (they only need the public key), but restoring will ask for your %s",
-		recoveryNoun(rp))
+	r.add(warn, "no key for this backup on this machine%s: backups still work (they only need the public key), but restoring will ask for your %s",
+		note, recoveryNoun(rp))
 }
 
 func (a *App) doctorTrust(r *report, rp *repo.Repo) {
@@ -203,6 +205,8 @@ func (a *App) doctorSigning(r *report, rp *repo.Repo) {
 	switch k, rcpt, err := a.signingKey(rp); {
 	case errors.Is(err, errNoSigningKey):
 		r.add(warn, "this machine has no key to sign backups, so `salt seal` will refuse; run `salt trust %q`", rp.Root)
+	case errors.Is(err, keys.ErrDamaged):
+		r.add(fail, "%v; run `salt trust %q` to replace it", err, rp.Root)
 	case err != nil:
 		r.add(fail, "the signing key saved on this machine cannot be read: %v", err)
 	case a.wrongSigningKey(k, rcpt):
@@ -373,7 +377,7 @@ func (a *App) Verify(repoRoot string, allowUnsigned bool) error {
 	}
 	ids, err := a.identities(rp)
 	if err != nil {
-		return err
+		return stopped(err, "verify", "")
 	}
 	res, err := seal.Verify(rp.Root, ids, seal.VerifyOptions{
 		SignatureOptions: seal.SignatureOptions{AllowUnsigned: allowUnsigned, SignedBy: signedBy},
@@ -386,6 +390,9 @@ func (a *App) Verify(repoRoot string, allowUnsigned bool) error {
 	}
 	for _, u := range res.Unreferenced {
 		a.UI.Printf("  ! %s is not in the index (the next `salt seal` removes it)\n", escape.Name(u))
+	}
+	if more := res.UnreferencedCount - len(res.Unreferenced); more > 0 {
+		a.UI.Printf("  ! … and %d more files not in the index\n", more)
 	}
 	if res.ProblemCount > 0 {
 		a.UI.Printf("✗ %d of %d files cannot be restored:\n", res.ProblemCount, res.Files)

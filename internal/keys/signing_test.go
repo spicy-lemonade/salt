@@ -3,6 +3,8 @@ package keys
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
+	"strings"
 	"testing"
 
 	"filippo.io/age"
@@ -52,8 +54,10 @@ func TestSigningSecret(t *testing.T) {
 		"not hex":      {Kind: KindSigning, Signing: "zz"},
 		"wrong length": {Kind: KindSigning, Signing: "abcd"},
 	} {
-		if _, err := s.SigningKey(); err == nil {
-			t.Errorf("%s: accepted", name)
+		// Damaged, and saying why without quoting what is in it.
+		_, err := s.SigningKey()
+		if !errors.Is(err, ErrDamaged) || strings.Contains(err.Error(), "zz") || strings.Contains(err.Error(), "abcd") {
+			t.Errorf("%s: SigningKey = %v, want ErrDamaged quoting none of it", name, err)
 		}
 	}
 }

@@ -77,10 +77,7 @@ func newFixture(t *testing.T, encryptPaths bool) *fixture {
 func (f *fixture) writeIndex(ix *Index) []byte {
 	f.t.Helper()
 	ix.sign(f.signer)
-	b, _, err := ix.marshal()
-	if err != nil {
-		f.t.Fatal(err)
-	}
+	b, _ := ix.marshal()
 	if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
 		f.t.Fatal(err)
 	}
@@ -324,6 +321,57 @@ func TestSealRefusesOverlap(t *testing.T) {
 	}
 }
 
+// A source folder given as a symlink is sealed where it leads. Walking the
+// symlink itself would find nothing, and seal would then remove every file
+// sealed before.
+func TestSealSymlinkedSource(t *testing.T) {
+	f := newFixture(t, true)
+	first := f.seal(true)
+	link := filepath.Join(t.TempDir(), "current")
+	if err := os.Symlink(f.src, link); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Seal(link, f.repo, Options{CacheDir: f.cache, Signer: f.signer, Prune: true})
+	if err != nil {
+		t.Fatalf("Seal through a symlink: %v", err)
+	}
+	if res.Files != first.Files || res.Symlinks != first.Symlinks || res.Reused != first.Files || len(res.Removed) != 0 {
+		t.Fatalf("through a symlink: %+v, want the %d files and %d symlinks sealed before, all unchanged", res, first.Files, first.Symlinks)
+	}
+	dest := filepath.Join(t.TempDir(), "r")
+	if _, err := Restore(f.root, f.ids(), dest, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dest, "notes", "facts.md")); err != nil || string(b) != "secret memory\n" {
+		t.Fatalf("restored notes/facts.md = %q, %v", b, err)
+	}
+}
+
+// A source given as a symlink into the repo, or to a folder holding the repo,
+// is refused, as the folder it leads to would be.
+func TestSealRefusesSymlinkedOverlap(t *testing.T) {
+	f := newFixture(t, true)
+	inside := filepath.Join(f.root, "inside")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	for name, at := range map[string]struct{ link, target string }{
+		"into the repo":               {filepath.Join(t.TempDir(), "link"), inside},
+		"around the repo":             {filepath.Join(t.TempDir(), "link"), filepath.Dir(f.root)},
+		"in the repo, leading out of": {filepath.Join(f.root, "link"), outside},
+	} {
+		link, target := at.link, at.target
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Seal(link, f.repo, Options{CacheDir: f.cache, Signer: f.signer})
+		if err == nil || !strings.Contains(err.Error(), "must not contain each other") || !strings.Contains(err.Error(), "source "+link+" ") {
+			t.Errorf("%s: Seal = %v, want it refused, naming %s as given", name, err, link)
+		}
+	}
+}
+
 func TestRestoreSafety(t *testing.T) {
 	f := newFixture(t, true)
 	f.seal(false)
@@ -390,7 +438,7 @@ func TestReadIndexRejectsUnsafePaths(t *testing.T) {
 	for _, bad := range []string{"../escape", "/etc/passwd", "a/../../b"} {
 		f := newFixture(t, true)
 		ix := &Index{Version: repo.FormatVersion, Entries: []Entry{{Path: bad, Object: "objects/aa/bb.age"}}}
-		b, _, _ := ix.marshal()
+		b, _ := ix.marshal()
 		if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
 			t.Fatal(err)
 		}
@@ -479,6 +527,10 @@ func TestVerify(t *testing.T) {
 	stray := filepath.Join(f.root, "objects", "zz", "stray.age")
 	os.MkdirAll(filepath.Dir(stray), 0o755)
 	os.WriteFile(stray, []byte("age-encryption.org/v1\n"), 0o644)
+	// One in files/ too, which comes first in path order.
+	strayFile := filepath.Join(f.root, "files", "stray.age")
+	os.MkdirAll(filepath.Dir(strayFile), 0o755)
+	os.WriteFile(strayFile, []byte("age-encryption.org/v1\n"), 0o644)
 
 	res, err = Verify(f.root, f.ids(), VerifyOptions{Workers: 0})
 	if err != nil {
@@ -491,8 +543,8 @@ func TestVerify(t *testing.T) {
 	if !strings.Contains(joined, "is missing") || !strings.Contains(joined, "cannot be decrypted") {
 		t.Fatalf("problems = %v", res.Problems)
 	}
-	if len(res.Unreferenced) != 1 || res.Unreferenced[0] != "objects/zz/stray.age" {
-		t.Fatalf("unreferenced = %v", res.Unreferenced)
+	if !slices.Equal(res.Unreferenced, []string{"files/stray.age", "objects/zz/stray.age"}) || res.UnreferencedCount != 2 {
+		t.Fatalf("unreferenced = %v, want both, in path order", res.Unreferenced)
 	}
 
 	other, _ := age.GenerateX25519Identity()
@@ -1576,5 +1628,15 @@ func TestMaxCipher(t *testing.T) {
 	}
 	if got := maxCipher(math.MaxInt64-1, 1); got != math.MaxInt64 {
 		t.Errorf("maxCipher near the top = %d, want no limit", got)
+	}
+}
+
+// A repository folder that is no longer there stops the seal before
+// anything is read.
+func TestSealRepoFolderGone(t *testing.T) {
+	f := newFixture(t, true)
+	f.repo.Root = filepath.Join(t.TempDir(), "gone")
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Seal into a missing repo folder = %v", err)
 	}
 }

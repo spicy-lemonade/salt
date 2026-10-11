@@ -10,7 +10,8 @@ and OpenViking, before it is backed up to Git.
   that is not encrypted, except a short list of public files. The pre-push
   hook `salt check --pre-push` blocks a push of commits holding one, such as
   a merge, a rebase or a commit made with `--no-verify`, which the
-  pre-commit hook never sees.
+  pre-commit hook never sees. A source folder given as a symlink is sealed
+  where it leads, and refused if that is inside the repo or holds it.
 - **Encrypting never needs the decryption key.** Sealing uses the public key
   and a signing key that can sign but not decrypt. Only restoring needs the
   private key.
@@ -95,8 +96,10 @@ goes wrong.
 ## Keys and recovery
 
 The private key is kept in the OS keychain. `SALT_KEYSTORE=file` uses a
-private file instead, for machines without a keychain. At `salt init` the user
-picks how to recover the key if the laptop is lost:
+private file instead, for machines without a keychain. When the keychain
+cannot be read, as when it is locked, salt says so wherever it says a key is
+missing, since the key may be there. At `salt init` the user picks how to
+recover the key if the laptop is lost:
 
 - **Recovery phrase (recommended):** 12 words that are the key. Nothing
   secret is stored in the repo. Setup shows the words, hides them, and asks for
@@ -225,7 +228,9 @@ it needs them.
   check applies to `index.age`. With `--allow-unsigned` the sizes come from
   whoever wrote the index, so they limit nothing.
 - `salt verify` decrypts everything without writing it to disk, and reports
-  any file that cannot be restored. It needs the key.
+  any file that cannot be restored. It names at most 50 such files, and at
+  most 50 encrypted files the index does not name, and counts the rest. It
+  needs the key.
 - `salt doctor` checks the hook, the key, the repo and the last backup. It
   needs no key.
 
@@ -562,9 +567,16 @@ against someone who can push to it:
   refused, since they would stop salt reading them from another copy of the
   repo.
 - **Interrupted restores.** A restore decrypts into a temporary folder next to
-  the destination. Ctrl-C or SIGTERM removes it. A restore killed outright
-  can't clean up, so the folder is recorded while the restore runs, and
-  `salt doctor` and the next `salt restore` report any left behind.
+  the destination. Ctrl-C or SIGTERM removes it, and also stops the
+  question for the recovery phrase at once. A passphrase is read with the
+  terminal in raw mode, so Ctrl-C reaches it as a key, in any command: the
+  question stops at once and the terminal shows what is typed again. Salt
+  acts on the keys the terminal would have, such as Backspace and Ctrl-W. In
+  a restore, SIGTERM stops the question too. A
+  restore killed outright can't clean up, so the folder is recorded
+  while the restore runs, in a file of its own so restores running at once
+  never lose each other's record, and `salt doctor` and the next
+  `salt restore` report any left behind.
 - **Planted files.** Anyone can encrypt a file to the public key, so someone
   who can push could replace `index.age` and add objects of their own, which
   would decrypt like real ones. Seal signs the index with the signing key

@@ -5,7 +5,6 @@ import (
 	"crypto/hkdf"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 
 	"filippo.io/age"
@@ -38,17 +37,16 @@ func SigningSecret(k ed25519.PrivateKey) Secret {
 	return Secret{Kind: KindSigning, Signing: hex.EncodeToString(k.Seed())}
 }
 
-// SigningKey returns the signing key the secret holds.
+// SigningKey returns the signing key the secret holds. A secret that does
+// not hold one is ErrDamaged. Why is said without quoting any of it, as it
+// may be part of the key.
 func (s Secret) SigningKey() (ed25519.PrivateKey, error) {
 	if s.Kind != KindSigning {
-		return nil, fmt.Errorf("not a signing key (kind %q)", s.Kind)
+		return nil, fmt.Errorf("%w: it is not a signing key", ErrDamaged)
 	}
 	seed, err := hex.DecodeString(s.Signing)
-	if err != nil {
-		return nil, err
-	}
-	if len(seed) != ed25519.SeedSize {
-		return nil, errors.New("signing key has the wrong length")
+	if err != nil || len(seed) != ed25519.SeedSize {
+		return nil, fmt.Errorf("%w: it is not %d bytes in hex", ErrDamaged, ed25519.SeedSize)
 	}
 	return ed25519.NewKeyFromSeed(seed), nil
 }

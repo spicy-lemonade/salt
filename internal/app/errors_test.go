@@ -202,9 +202,14 @@ func TestRecoveryAndRestoreFailures(t *testing.T) {
 		t.Error("Restore succeeded with a damaged secret")
 	}
 
-	// A passphrase-kind secret in a phrase repo can't be shown as a phrase.
+	// The repo's own key, saved as a passphrase-kind secret in a phrase
+	// repo, can't be shown as a phrase.
 	idOnly := &keys.MemStore{}
-	id, _ := keys.IdentityFromEntropy(make([]byte, 16))
+	entropy, err := keys.DecodePhrase(keys.SplitPhrase(phrase))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := keys.IdentityFromEntropy(entropy)
 	idOnly.Set(r.RecipientStrings[0], keys.IdentitySecret(id))
 	e.app.Store = idOnly
 	e.ui.answer = func(p, out string) (string, error) { return "y", nil }

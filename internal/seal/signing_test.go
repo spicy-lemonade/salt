@@ -34,10 +34,7 @@ func (f *fixture) plant(edit func(*Index)) {
 		{Path: "facts.md", Object: obj, SHA256: sha, Size: int64(len(planted)), Mode: 0o644},
 	}}
 	edit(ix)
-	b, _, err := ix.marshal()
-	if err != nil {
-		f.t.Fatal(err)
-	}
+	b, _ := ix.marshal()
 	if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
 		f.t.Fatal(err)
 	}
@@ -214,10 +211,7 @@ func TestSignatureCoversEntryOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	ix.Entries[0], ix.Entries[1] = ix.Entries[1], ix.Entries[0]
-	b, _, err := ix.marshal()
-	if err != nil {
-		t.Fatal(err)
-	}
+	b, _ := ix.marshal()
 	if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
 		t.Fatal(err)
 	}

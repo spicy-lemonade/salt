@@ -48,15 +48,18 @@ func fileSHA(t *testing.T, path string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// A file over GitHub's limit is sealed in chunks that are each far under it,
-// passes the real hook, is pushed, and restores identically from a fresh
-// clone. A small file stays one object.
+// A file several chunks long is sealed in chunks that are each far under
+// GitHub's limit, passes the real hook, is pushed, and restores identically
+// from a fresh clone. A small file stays one object. Every file over 16 MiB
+// is sealed this way, however large, so 40 MiB shows it as well as a file
+// over GitHub's 100 MB would, in less time.
 func TestSealChunksAFileOverTheLimit(t *testing.T) {
 	e := newEnv(t)
 	b := newBackupRepo(t, e)
 	big := filepath.Join(b.src, "memory.db")
 	os.MkdirAll(b.src, 0o755)
-	want := writeNoise(t, big, 105<<20)
+	const size = 40 << 20
+	want := writeNoise(t, big, size)
 	edited := time.Date(2026, 9, 1, 6, 0, 0, 0, time.UTC)
 	if err := os.Chtimes(big, time.Time{}, edited); err != nil {
 		t.Fatal(err)
@@ -90,8 +93,10 @@ func TestSealChunksAFileOverTheLimit(t *testing.T) {
 			objects++
 		}
 	}
-	if objects < 105/16+2 {
-		t.Errorf("pushed %d objects, want at least %d chunks and 1 small file", objects, 105/16+1)
+	// Chunks are at most 16 MiB, so there are at least size/16 MiB of them,
+	// rounded up.
+	if chunks := (size + 16<<20 - 1) / (16 << 20); objects < chunks+1 {
+		t.Errorf("pushed %d objects, want at least %d chunks and 1 small file", objects, chunks)
 	}
 
 	if out := e.must(b.base, "salt", "verify", b.dir); !strings.Contains(out, "All 2 files") {

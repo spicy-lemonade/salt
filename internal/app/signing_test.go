@@ -152,16 +152,37 @@ func TestTrustSetsUpSigningFromThePhrase(t *testing.T) {
 func TestSigningKeyStoreErrors(t *testing.T) {
 	e := newEnv(t)
 	healthyRepo(t, e)
-	os.WriteFile(signingFile(t, e), []byte("not json"), 0o600)
-	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); err == nil || !strings.Contains(err.Error(), "reading the signing key") {
+	// A damaged signing key is named as the key that signs backups, by its
+	// file, and the message says how to replace it, without quoting any of
+	// what is in it.
+	damaged := signingFile(t, e)
+	os.WriteFile(damaged, []byte("Xnot json"), 0o600)
+	err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root})
+	if err == nil || !errors.Is(err, keys.ErrDamaged) || !strings.Contains(err.Error(), "the key in "+damaged+" that signs backups for") ||
+		!strings.Contains(err.Error(), "salt trust") || strings.Contains(err.Error(), "'X'") {
 		t.Fatalf("seal with a damaged signing key: %v", err)
 	}
-	if err := e.app.Trust(e.root, true); err == nil {
-		t.Fatal("trust with a damaged signing key succeeded")
-	}
 	e.app.Doctor(e.root)
-	if !strings.Contains(e.ui.out.String(), "✗ the signing key saved on this machine cannot be read") {
-		t.Fatalf("doctor with a damaged signing key:\n%s", e.ui.out.String())
+	if out := e.ui.out.String(); !strings.Contains(out, "✗ the key in "+damaged+" that signs backups for") || !strings.Contains(out, "run `salt trust") {
+		t.Fatalf("doctor with a damaged signing key:\n%s", out)
+	}
+	// One that cannot be read at all, as a folder in its place, is named
+	// the same way, once.
+	os.Remove(damaged)
+	os.Mkdir(damaged, 0o700)
+	err = e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root})
+	if err == nil || !strings.HasPrefix(err.Error(), "the key in "+damaged+" that signs backups for") || strings.Contains(err.Error(), "signing key") {
+		t.Fatalf("seal with an unreadable signing key: %v", err)
+	}
+	os.Remove(damaged)
+	os.WriteFile(damaged, []byte("Xnot json"), 0o600)
+
+	// Trust replaces a damaged one, so the next seal signs again.
+	if err := e.app.Trust(e.root, true); err != nil {
+		t.Fatalf("trust with a damaged signing key: %v", err)
+	}
+	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); err != nil {
+		t.Fatalf("seal after trust replaced the damaged signing key: %v", err)
 	}
 
 	// A signing store that cannot be made (here, a link to a missing folder)
@@ -319,5 +340,44 @@ func TestTrustMarksADamagedKey(t *testing.T) {
 	e.app.identities(r)
 	if !strings.Contains(e.ui.out.String(), "No key for this backup is saved on this machine") {
 		t.Fatalf("identities used a damaged key:\n%s", e.ui.out.String())
+	}
+}
+
+// A damaged signing key for one recipient does not stop a good one for a
+// later recipient being used. With recipients A then B, A's signing key
+// damaged and only B's key on this machine, trust saves a signing key for B,
+// and every seal after signs with it, rather than stopping at A's.
+func TestDamagedSigningKeyForAnotherRecipient(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	a := signingFile(t, e) // the first recipient's
+	os.WriteFile(a, []byte("not json"), 0o600)
+
+	b, _ := age.GenerateX25519Identity()
+	recipients := filepath.Join(e.root, repo.RecipientsFile)
+	old, err := os.ReadFile(recipients)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recipients, append(old, []byte(b.Recipient().String()+"\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := &keys.MemStore{}
+	store.Set(b.Recipient().String(), keys.IdentitySecret(b))
+	e.app.Store = store
+
+	if err := e.app.Trust(e.root, true); err != nil {
+		t.Fatalf("trust: %v\n%s", err, e.ui.out.String())
+	}
+	for i := range 2 {
+		if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); err != nil {
+			t.Fatalf("seal %d after trust: %v", i+1, err)
+		}
+	}
+	// With no signing key that can be used, the first one's failure is what
+	// is said, as before.
+	os.Remove(filepath.Join(e.app.SignDir, b.Recipient().String()+".json"))
+	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); !errors.Is(err, keys.ErrDamaged) || !strings.Contains(err.Error(), "the key in "+a) {
+		t.Fatalf("seal with only a damaged signing key: %v", err)
 	}
 }

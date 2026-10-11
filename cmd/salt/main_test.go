@@ -134,6 +134,40 @@ func TestParse(t *testing.T) {
 	}
 }
 
+// Every argument after "--" is positional, even one that starts with "-",
+// but a "--" that is an option's value does not end the options.
+func TestParseAfterDashes(t *testing.T) {
+	tests := []struct {
+		args      []string
+		pos, to   string
+		force     bool
+		wantError bool
+	}{
+		{args: []string{"repo", "--to", "d", "--", "-a", "-b", "--force"}, pos: "repo,-a,-b,--force", to: "d"},
+		{args: []string{"--force", "--", "--", "x"}, pos: "--,x", force: true},
+		{args: []string{"--to", "--", "repo", "--force"}, pos: "repo", to: "--", force: true},
+		{args: []string{"--to=--", "--", "-x"}, pos: "-x", to: "--"},
+		{args: []string{"-force", "--", "-x"}, pos: "-x", force: true},
+		{args: []string{"--nope", "--", "x"}, wantError: true},
+		{args: []string{"a", "--"}, pos: "a"},
+	}
+	for _, tt := range tests {
+		fs := newFlags("x")
+		force := fs.Bool("force", false, "")
+		to := fs.String("to", "", "")
+		pos, err := parse(fs, tt.args, 0, -1)
+		if tt.wantError {
+			if err == nil {
+				t.Errorf("parse(%q) = %q, want an error", tt.args, pos)
+			}
+			continue
+		}
+		if err != nil || strings.Join(pos, ",") != tt.pos || *to != tt.to || *force != tt.force {
+			t.Errorf("parse(%q) = %q, %v, to=%q force=%v; want %q, to=%q force=%v", tt.args, pos, err, *to, *force, tt.pos, tt.to, tt.force)
+		}
+	}
+}
+
 func TestOrDotAndStoreName(t *testing.T) {
 	if orDot(nil) != "." || orDot([]string{"r"}) != "r" {
 		t.Fatal("orDot")

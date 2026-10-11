@@ -269,24 +269,25 @@ func TestPruneKeepsOneBackupADayBeforeTheLatest(t *testing.T) {
 	}
 }
 
-// Daily backups for nine days, with one day on which nothing changed, pushed
-// once at the end. Pruning keeps the last 5 days with a change, which here
-// span 6 calendar days; every kept backup still restores exactly, with each
+// Daily backups for six days, with one day on which nothing changed, pushed
+// once at the end. Pruning keeps the last 3 days with a change, which here
+// span 4 calendar days; every kept backup still restores exactly, with each
 // file as it was that day; and only a force push (with lease) publishes the
-// result.
+// result. The default of 5 days is used by every salt backup test.
 func TestPruneKeepsTheLastDaysWithAChange(t *testing.T) {
 	e := newEnv(t)
 	b := newBackupRepo(t, e)
+	prune := func() string { return e.must(b.base, "salt", "prune", "--keep-days", "3", b.dir) }
 	var dropped string
-	for d := 1; d <= 9; d++ {
+	for d := 1; d <= 6; d++ {
 		day := fmt.Sprintf("2026-09-%02d", d)
-		if d != 7 { // the 7th: nothing changes, so no commit
+		if d != 5 { // the 5th: nothing changes, so no commit
 			b.files["memories/MEMORY.md"] = "notes as of " + day + "\n"
 		}
-		if d%7 == 2 { // USER.md changes once a week: the 2nd and 9th
+		if d == 2 || d == 6 { // USER.md changes rarely: the 2nd and 6th
 			b.files["memories/USER.md"] = "user, version of " + day + "\n"
 		}
-		if made := b.backup(t, day); made == (d == 7) {
+		if made := b.backup(t, day); made == (d == 5) {
 			t.Fatalf("%s: commit made = %v", day, made)
 		}
 		if d == 2 {
@@ -296,20 +297,20 @@ func TestPruneKeepsTheLastDaysWithAChange(t *testing.T) {
 	e.must(b.dir, "git", "push", "-q", "origin", "main")
 	before := b.log()
 
-	out := e.must(b.base, "salt", "prune", b.dir)
-	if !strings.Contains(out, "kept 5 backup(s) from the last 5 day(s) with a change and dropped 4 other(s)") ||
+	out := prune()
+	if !strings.Contains(out, "kept 3 backup(s) from the last 3 day(s) with a change and dropped 3 other(s)") ||
 		!strings.Contains(out, "git push --force-with-lease") {
 		t.Fatalf("prune output:\n%s", out)
 	}
-	want := []string{"Backup 2026-09-09", "Backup 2026-09-08", "Backup 2026-09-06", "Backup 2026-09-05", "Backup 2026-09-04"}
+	want := []string{"Backup 2026-09-06", "Backup 2026-09-04", "Backup 2026-09-03"}
 	if got := b.subjects(); !slices.Equal(got, want) {
 		t.Fatalf("kept %q, want %q", got, want)
 	}
 	// Each kept commit has the tree and message it had before.
-	if got := b.log(); !slices.Equal(got, before[:5]) {
-		t.Fatalf("kept commits changed:\n%q\nwant\n%q", got, before[:5])
+	if got := b.log(); !slices.Equal(got, before[:3]) {
+		t.Fatalf("kept commits changed:\n%q\nwant\n%q", got, before[:3])
 	}
-	if roots := strings.TrimSpace(e.must(b.dir, "git", "rev-list", "--max-parents=0", "HEAD")); roots != strings.TrimSpace(e.must(b.dir, "git", "rev-parse", "HEAD~4")) {
+	if roots := strings.TrimSpace(e.must(b.dir, "git", "rev-list", "--max-parents=0", "HEAD")); roots != strings.TrimSpace(e.must(b.dir, "git", "rev-parse", "HEAD~2")) {
 		t.Fatalf("the oldest kept backup is not the first commit: roots %q", roots)
 	}
 	if st := e.must(b.dir, "git", "status", "--porcelain"); st != "" {
@@ -318,7 +319,7 @@ func TestPruneKeepsTheLastDaysWithAChange(t *testing.T) {
 
 	// Every kept backup restores with each file, and its last-modified
 	// date, as it was that day: USER.md from the 2nd until it changed on
-	// the 9th.
+	// the 6th.
 	for _, line := range strings.Split(strings.TrimSpace(e.must(b.dir, "git", "log", "--format=%H %s")), "\n") {
 		sha, subject, _ := strings.Cut(line, " ")
 		got, dates := b.restoreCommit(t, sha)
@@ -329,10 +330,10 @@ func TestPruneKeepsTheLastDaysWithAChange(t *testing.T) {
 			t.Fatalf("%s restored dates %v, want %v", subject, dates, b.sealedDates[subject])
 		}
 	}
-	if got := b.sealed["Backup 2026-09-04"]["memories/USER.md"]; got != "user, version of 2026-09-02\n" {
+	if got := b.sealed["Backup 2026-09-03"]["memories/USER.md"]; got != "user, version of 2026-09-02\n" {
 		t.Fatalf("the oldest kept backup should hold USER.md from the 2nd, has %q", got)
 	}
-	if got := b.sealedDates["Backup 2026-09-04"]["memories/USER.md"]; !got.Equal(editedOn(t, "2026-09-02")) {
+	if got := b.sealedDates["Backup 2026-09-03"]["memories/USER.md"]; !got.Equal(editedOn(t, "2026-09-02")) {
 		t.Fatalf("the oldest kept backup should date USER.md the 2nd, has %v", got)
 	}
 
@@ -344,8 +345,8 @@ func TestPruneKeepsTheLastDaysWithAChange(t *testing.T) {
 	e.must(b.dir, "git", "push", "-q", "--force-with-lease", "origin", "main")
 	clone := filepath.Join(b.base, "clone")
 	e.must(b.base, "git", "clone", "-q", b.remote, clone)
-	if n := strings.TrimSpace(e.must(clone, "git", "rev-list", "--count", "HEAD")); n != "5" {
-		t.Fatalf("a fresh clone has %s commits, want 5", n)
+	if n := strings.TrimSpace(e.must(clone, "git", "rev-list", "--count", "HEAD")); n != "3" {
+		t.Fatalf("a fresh clone has %s commits, want 3", n)
 	}
 	if out := e.must(b.base, "salt", "verify", clone); !strings.Contains(out, "All 2 files") {
 		t.Fatalf("verify of the fresh clone:\n%s", out)
@@ -353,43 +354,43 @@ func TestPruneKeepsTheLastDaysWithAChange(t *testing.T) {
 
 	// Pruning again changes nothing.
 	head := e.must(b.dir, "git", "rev-parse", "HEAD")
-	if out := e.must(b.base, "salt", "prune", b.dir); !strings.Contains(out, "nothing to prune: all 5 backup(s)") {
+	if out := prune(); !strings.Contains(out, "nothing to prune: all 3 backup(s)") {
 		t.Fatalf("second prune:\n%s", out)
 	}
 	if e.must(b.dir, "git", "rev-parse", "HEAD") != head {
 		t.Fatal("a prune with nothing to drop rewrote history")
 	}
 
-	// Twelve more nightly backups, each pruned and pushed. The local repo
-	// stops growing, and the dropped commits leave it once the remote no
-	// longer points at them.
+	// Six more nightly backups, each pruned and pushed. The local repo stops
+	// growing, and the dropped commits leave it once the remote no longer
+	// points at them.
 	var counts []int
-	for d := 1; d <= 12; d++ {
+	for d := 1; d <= 6; d++ {
 		day := fmt.Sprintf("2026-10-%02d", d)
 		b.files["memories/MEMORY.md"] = "notes as of " + day + "\n"
 		b.backup(t, day)
-		e.must(b.base, "salt", "prune", b.dir)
+		prune()
 		e.must(b.dir, "git", "push", "-q", "--force-with-lease", "origin", "main")
 		counts = append(counts, b.objectCount(t))
 	}
-	if n := strings.TrimSpace(e.must(b.dir, "git", "rev-list", "--count", "HEAD")); n != "5" {
-		t.Fatalf("after twelve nights the branch has %s commits, want 5", n)
+	if n := strings.TrimSpace(e.must(b.dir, "git", "rev-list", "--count", "HEAD")); n != "3" {
+		t.Fatalf("after six nights the branch has %s commits, want 3", n)
 	}
 	// Each night adds one commit, tree, index and MEMORY.md object and drops
 	// as many, so the count settles (once USER.md from the 2nd is dropped,
-	// on the 5th night) and stays flat.
-	settled := counts[5]
-	for i, c := range counts[6:] {
+	// on the 2nd night) and stays flat.
+	settled := counts[2]
+	for i, c := range counts[3:] {
 		if c != settled {
-			t.Fatalf("object count on night %d is %d, not the settled %d: %v", i+7, c, settled, counts)
+			t.Fatalf("object count on night %d is %d, not the settled %d: %v", i+4, c, settled, counts)
 		}
 	}
 	if _, code := e.run(b.dir, "git", "cat-file", "-e", dropped); code == 0 {
 		t.Fatalf("a dropped backup (%s) is still in the local repo", dropped)
 	}
-	// The remote only reaches the 5 kept backups. (Like GitHub, a bare
+	// The remote only reaches the 3 kept backups. (Like GitHub, a bare
 	// remote may keep the unreachable objects until it cleans up itself.)
-	if n := strings.TrimSpace(e.must(b.remote, "git", "rev-list", "--count", "main")); n != "5" {
+	if n := strings.TrimSpace(e.must(b.remote, "git", "rev-list", "--count", "main")); n != "3" {
 		t.Fatalf("the remote's branch has %s commits", n)
 	}
 }

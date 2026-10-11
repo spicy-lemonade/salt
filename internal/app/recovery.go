@@ -1,9 +1,11 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"slices"
 	"strings"
 
@@ -24,7 +26,7 @@ func (a *App) RecoveryTest(repoRoot string) error {
 		return ErrNotInteractive
 	}
 	if _, _, err := a.promptIdentity(r); err != nil {
-		return err
+		return stopped(err, "recovery test", "")
 	}
 	a.UI.Printf("✓ Your %s opens this backup.\n", recoveryNoun(r))
 	return nil
@@ -42,15 +44,21 @@ func (a *App) RecoveryShow(repoRoot string) error {
 	if !a.UI.Interactive() {
 		return ErrNotInteractive
 	}
-	for _, rcpt := range r.RecipientStrings {
-		s, err := a.Store.Get(rcpt)
-		if errors.Is(err, keys.ErrNotFound) {
+	note := ""
+	damaged := false
+	for k := range a.savedKeys(r.RecipientStrings) {
+		if errors.Is(k.err, keys.ErrNotFound) {
+			note = cmp.Or(note, keychainNote(k.err))
 			continue
 		}
-		if err != nil {
-			return err
+		if errors.Is(k.err, errDamagedKey) {
+			damaged = true
+			continue
 		}
-		words, err := s.Phrase()
+		if k.err != nil {
+			return k.err
+		}
+		words, err := k.secret.Phrase()
 		if err != nil {
 			continue
 		}
@@ -68,7 +76,10 @@ func (a *App) RecoveryShow(repoRoot string) error {
 		a.UI.Clear()
 		return nil
 	}
-	return fmt.Errorf("no recovery phrase for this backup is saved on this machine (%s)", a.StoreName)
+	if damaged {
+		return fmt.Errorf("the key saved for this backup on this machine (%s) is damaged, so its recovery phrase cannot be shown. Your written-down phrase still opens the backup", a.StoreName)
+	}
+	return fmt.Errorf("no recovery phrase for this backup is saved on this machine (%s)%s", a.StoreName, note)
 }
 
 // RestoreOptions configures Restore.
@@ -91,6 +102,8 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// A question about the key stops when ctx does.
+	a.UI.SetContext(ctx)
 	r, downloaded, done, err := a.openRepo(ctx, o.Repo)
 	if errors.Is(err, errDownloadStopped) {
 		return fmt.Errorf("restore %w: %s was not changed", ErrInterrupted, a.short(o.To))
@@ -108,7 +121,13 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 	}
 	ids, err := a.identities(r)
 	if err != nil {
-		return err
+		// Ctrl-C or SIGTERM while salt asks for the recovery phrase or
+		// passphrase stops the question (see UI.SetContext and
+		// Terminal.readHidden).
+		if ctx.Err() != nil {
+			err = ErrInterrupted
+		}
+		return stopped(err, "restore", fmt.Sprintf(": %s was not changed", a.short(o.To)))
 	}
 	a.warnLeftoverRestores(o.To)
 	res, err := seal.Restore(r.Root, ids, o.To, seal.RestoreOptions{
@@ -135,23 +154,24 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 // for the recovery phrase or passphrase (then offering to save the key).
 func (a *App) identities(r *repo.Repo) ([]age.Identity, error) {
 	var ids []age.Identity
-	for _, rcpt := range r.RecipientStrings {
-		id, err := a.storedIdentity(rcpt)
-		if errors.Is(err, keys.ErrNotFound) || errors.Is(err, errDamagedKey) {
+	note := ""
+	for k := range a.savedKeys(r.RecipientStrings) {
+		if errors.Is(k.err, keys.ErrNotFound) || errors.Is(k.err, errDamagedKey) {
+			note = cmp.Or(note, keychainNote(k.err))
 			continue
 		}
-		if err != nil {
-			return nil, err
+		if k.err != nil {
+			return nil, k.err
 		}
-		ids = append(ids, id)
+		ids = append(ids, k.id)
 	}
 	if len(ids) > 0 {
 		return ids, nil
 	}
 	if !a.UI.Interactive() {
-		return nil, fmt.Errorf("no key for this backup is saved on this machine; run this in a terminal to enter your %s", recoveryNoun(r))
+		return nil, fmt.Errorf("no key for this backup is saved on this machine%s; run this in a terminal to enter your %s", note, recoveryNoun(r))
 	}
-	a.UI.Printf("No key for this backup is saved on this machine.\n")
+	a.UI.Printf("No key for this backup is saved on this machine%s.\n", note)
 	id, secret, err := a.promptIdentity(r)
 	if err != nil {
 		return nil, err
@@ -177,15 +197,61 @@ var errDamagedKey = errors.New("the key saved for it on this machine is damaged"
 // rcpt. It returns keys.ErrNotFound when none is saved, and errDamagedKey
 // unless the one saved really is rcpt's.
 func (a *App) storedIdentity(rcpt string) (*age.X25519Identity, error) {
+	_, id, err := a.storedKey(rcpt)
+	return id, err
+}
+
+// storedKey is storedIdentity, with the secret the key was read from.
+func (a *App) storedKey(rcpt string) (keys.Secret, *age.X25519Identity, error) {
 	s, err := a.Store.Get(rcpt)
+	if errors.Is(err, keys.ErrDamaged) {
+		return keys.Secret{}, nil, errDamagedKey
+	}
 	if err != nil {
-		return nil, err
+		return keys.Secret{}, nil, err
 	}
 	id, err := s.Identity()
 	if err != nil || id.Recipient().String() != rcpt {
-		return nil, errDamagedKey
+		return keys.Secret{}, nil, errDamagedKey
 	}
-	return id, nil
+	return s, id, nil
+}
+
+// savedKey is what this machine holds for one of a repo's public keys.
+type savedKey struct {
+	rcpt   string
+	secret keys.Secret
+	id     *age.X25519Identity
+	// err is nil when id is the key saved for rcpt, and otherwise as
+	// storedKey returns it.
+	err error
+}
+
+// savedKeys yields what this machine holds for each of the public keys
+// rcpts, in order. Each is looked up only when the loop reaches it, so a
+// loop that stops at the first key found looks up no more. A key not found
+// may be in a keychain that could not be read, which keychainNote(k.err)
+// says.
+func (a *App) savedKeys(rcpts []string) iter.Seq[savedKey] {
+	return func(yield func(savedKey) bool) {
+		for _, rcpt := range rcpts {
+			s, id, err := a.storedKey(rcpt)
+			if !yield(savedKey{rcpt: rcpt, secret: s, id: id, err: err}) {
+				return
+			}
+		}
+	}
+}
+
+// keychainNote says, for an error from the key store, that the system
+// keychain could not be read, so the key may be saved there after all (see
+// keys.KeychainError). It is "" for any other error.
+func keychainNote(err error) string {
+	var kc *keys.KeychainError
+	if errors.As(err, &kc) {
+		return kc.Why()
+	}
+	return ""
 }
 
 // promptIdentity asks for the recovery phrase or passphrase and checks the

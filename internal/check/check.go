@@ -124,12 +124,11 @@ func classifyBlobs(dir, rev string, paths []string) ([]Violation, error) {
 
 // collect returns a function that classifies each blob it is given and adds
 // those that must not be committed to out.
-func collect(out *[]Violation) func(p string, head []byte, ok bool) error {
-	return func(p string, head []byte, ok bool) error {
+func collect(out *[]Violation) func(p string, head []byte, ok bool) {
+	return func(p string, head []byte, ok bool) {
 		if v := Classify(p, head, ok); v != nil {
 			*out = append(*out, *v)
 		}
-		return nil
 	}
 }
 

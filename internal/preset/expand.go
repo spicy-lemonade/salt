@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 )
 
 // Env is what a preset's paths are read with. Tests give their own, so they
@@ -90,11 +91,11 @@ func (e Env) getenv(name string) string {
 	return e.Getenv(name)
 }
 
-// Find returns every place on this machine that the preset path x names and that
-// exists. Its parts holding a * are matched against folders, never against
-// what a variable holds, so a path holding * is taken as it is. Following a
-// place's symlinks tells both that it exists and where it really is, in one
-// step, so it cannot be deleted in between.
+// Find returns every place on this machine that the preset path x names and
+// that exists. Its parts holding a * are matched against folders, never
+// against what a variable holds, so a path holding * is taken as it is.
+// Following a place's symlinks tells both that it exists and where it really
+// is, in one step, so it cannot be deleted in between.
 func (e Env) Find(x Path) ([]Place, error) {
 	runs, pats := splitStars(x.From)
 	first, ok := e.expand(runs[0])
@@ -137,7 +138,7 @@ func (e Env) Find(x Path) ([]Place, error) {
 		switch {
 		case err == nil:
 			found = append(found, Place{Abs: pl.abs, Rel: fill(x.To, pl.stars), Real: real})
-		case !errors.Is(err, fs.ErrNotExist):
+		case !missing(err):
 			return nil, err
 		}
 	}
@@ -212,15 +213,24 @@ func matchPart(pat, name string) (star string, ok bool) {
 	return star, true
 }
 
+// missing reports whether err says a path is not there: it does not exist,
+// or a part of it that should be a folder is a file, as when a tool keeps a
+// file where a preset expects its folder. Either way it holds nothing to back
+// up, so it is not found rather than stopping the backup.
+func missing(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
+}
+
 // folder is a folder a part holding a * matched, and the text the * matched.
 type folder struct{ name, star string }
 
 // folders lists the folders in dir that the part pat, which holds a *,
 // matches. Hidden folders are left out, as a shell's * leaves them out,
-// unless pat starts with a dot. A missing dir has none.
+// unless pat starts with a dot. A missing dir, or one that is a file, has
+// none.
 func folders(dir, pat string) ([]folder, error) {
 	entries, err := os.ReadDir(dir)
-	if errors.Is(err, fs.ErrNotExist) {
+	if missing(err) {
 		return nil, nil
 	}
 	if err != nil {

@@ -2,6 +2,8 @@ package gitx
 
 import (
 	"errors"
+	"fmt"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -92,5 +94,76 @@ func TestParseLog(t *testing.T) {
 		if _, err := ParseLog(bad); err == nil {
 			t.Errorf("ParseLog(%q) accepted", bad)
 		}
+	}
+}
+
+// readBatch gives each blob's first bytes, however large the blob, and
+// reports a missing object or one that is not a blob as not a file. It reads
+// the contents of every object git prints, so a commit, as a staged
+// submodule names, is never read as the lines about the objects after it,
+// even one whose message looks like one. It refuses output it cannot read,
+// such as one that ends part way.
+func TestReadBatch(t *testing.T) {
+	big := "age-encryption.org/v1\n" + strings.Repeat("x", 100<<10)
+	commit := "tree 1234\n\nx blob 22\nage-encryption.org/v1\n"
+	out := "1111 blob 3\nabc\n" +
+		":0:gone missing\n" +
+		":0:two words missing\n" +
+		"abcd ambiguous\n" +
+		"1111111111111111111111111111111111111111 submodule\n" +
+		"2222 commit " + fmt.Sprint(len(commit)) + "\n" + commit + "\n" +
+		"3333 blob " + fmt.Sprint(len(big)) + "\n" + big + "\n" +
+		"4444 blob 0\n\n" +
+		"5555 blob 3\nxyz\n"
+	type got struct {
+		name, head string
+		ok         bool
+	}
+	var seen []got
+	names := []string{"a", "gone", "two words", "short", "far sub", "sub", "big", "empty", "after"}
+	err := readBatch(strings.NewReader(out), names, 8, func(name string, head []byte, ok bool) {
+		seen = append(seen, got{name, string(head), ok})
+	})
+	want := []got{{"a", "abc", true}, {"gone", "", false}, {"two words", "", false}, {"short", "", false}, {"far sub", "", false},
+		{"sub", "", false}, {"big", "age-encr", true}, {"empty", "", true}, {"after", "xyz", true}}
+	if err != nil || !slices.Equal(seen, want) {
+		t.Fatalf("readBatch = %v, %+v; want %+v", err, seen, want)
+	}
+
+	for name, out := range map[string]string{
+		"no header":          "",
+		"bad size":           "1111 blob many\n",
+		"negative size":      "1111 blob -1\n",
+		"too many fields":    "1111 blob 3 4\n",
+		"ends in the blob":   "1111 blob 10\nabc",
+		"ends in the commit": "2222 commit 10\n",
+	} {
+		err := readBatch(strings.NewReader(out), []string{"a"}, 8, func(string, []byte, bool) {})
+		if err == nil || !strings.HasPrefix(err.Error(), "git cat-file: ") {
+			t.Errorf("%s: readBatch = %v, want an error from reading git cat-file", name, err)
+		}
+	}
+}
+
+// readBatch reads every object through one buffer, so it allocates only a
+// few bytes for each object, not a buffer of up to 32 KiB.
+func TestReadBatchAllocations(t *testing.T) {
+	const objects = 200
+	var out strings.Builder
+	names := make([]string, objects)
+	for i := range names {
+		names[i] = fmt.Sprint(i)
+		out.WriteString("1111 blob 100000\n" + strings.Repeat("x", 100000) + "\n")
+	}
+	text := out.String()
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if err := readBatch(strings.NewReader(text), names, 8, func(string, []byte, bool) {}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	if perObject := (after.TotalAlloc - before.TotalAlloc - 32<<10) / objects; perObject > 1<<10 {
+		t.Fatalf("readBatch allocated %d bytes for each object", perObject)
 	}
 }

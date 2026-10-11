@@ -33,11 +33,11 @@ type Hook struct {
 }
 
 // script returns a hook that runs the salt command runs, refusing one (such
-// as "commit") when salt cannot be found. many is one in the plural. It calls salt by name, never
-// by the path of the running binary: in a test that path is the test
-// binary, which is how the first attempt recursed. Cron jobs run with a
-// minimal PATH, so Homebrew's locations are appended. If salt cannot be
-// found, it fails closed.
+// as "commit") when salt cannot be found. many is one in the plural. It
+// calls salt by name, never by the path of the running binary: in a test
+// that path is the test binary, which is how the first attempt recursed.
+// Cron jobs run with a minimal PATH, so Homebrew's locations are appended.
+// If salt cannot be found, it fails closed.
 func script(one, many, runs string) string {
 	return `#!/bin/sh
 ` + Marker + `: refuses ` + many + ` that contain unencrypted files.

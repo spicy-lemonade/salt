@@ -108,7 +108,7 @@ func (a *App) Init(o InitOptions) error {
 	case repo.RecoveryPassphrase:
 		p, err := a.newPassphrase(o.PassphraseFile)
 		if err != nil {
-			return err
+			return stopped(err, "init", ": nothing was saved")
 		}
 		if id, err = age.GenerateX25519Identity(); err != nil {
 			return err

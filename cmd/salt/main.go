@@ -447,8 +447,10 @@ func newFlags(name string) *flag.FlagSet {
 }
 
 // parse accepts flags before, between and after positional arguments and
-// checks the positional count (max < 0 means unlimited).
+// checks the positional count (max < 0 means unlimited). Every argument
+// after "--" is positional, even one starting with "-".
 func parse(fs *flag.FlagSet, args []string, minN, maxN int) ([]string, error) {
+	args, after := splitDashes(fs, args)
 	var pos []string
 	for {
 		if err := fs.Parse(args); err != nil {
@@ -460,10 +462,36 @@ func parse(fs *flag.FlagSet, args []string, minN, maxN int) ([]string, error) {
 		pos = append(pos, fs.Arg(0))
 		args = fs.Args()[1:]
 	}
+	pos = append(pos, after...)
 	if len(pos) < minN || (maxN >= 0 && len(pos) > maxN) {
 		return nil, usageError{fmt.Sprintf("%s: wrong number of arguments", fs.Name())}
 	}
 	return pos, nil
+}
+
+// splitDashes splits args at the first "--" that ends the options, and
+// returns the arguments before it and those after it. A "--" that is the
+// value of an option before it, as in --to --, does not end them, just as
+// flag reads it. Parsing again after flag stops at "--" would read the
+// arguments after it as options.
+func splitDashes(fs *flag.FlagSet, args []string) (before, after []string) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			return args[:i], args[i+1:]
+		}
+		if len(a) < 2 || a[0] != '-' || strings.Contains(a, "=") {
+			continue
+		}
+		f := fs.Lookup(strings.TrimPrefix(a[1:], "-"))
+		if f == nil {
+			continue // flag reports it
+		}
+		if b, ok := f.Value.(interface{ IsBoolFlag() bool }); !ok || !b.IsBoolFlag() {
+			i++ // the next argument is its value
+		}
+	}
+	return args, nil
 }
 
 func orDot(pos []string) string {

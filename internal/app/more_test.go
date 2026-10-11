@@ -3,6 +3,7 @@ package app
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"filippo.io/age"
@@ -19,6 +21,8 @@ import (
 	"github.com/spicy-lemonade/salt/internal/escape"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/repo"
+	"github.com/spicy-lemonade/salt/internal/seal"
+	"golang.org/x/term"
 )
 
 // fakeTerminal makes isTerminal report on for every file until the test
@@ -423,6 +427,19 @@ func TestRecoveryShowBranches(t *testing.T) {
 	if err := e.app.RecoveryShow(e.root); err == nil || !strings.Contains(err.Error(), "no recovery phrase") {
 		t.Fatalf("no key: %v", err)
 	}
+	// A phrase saved for the repo's key that is not that key's phrase is
+	// never shown, as it would not open the backup, and is called damaged.
+	r, err := repo.Open(e.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _ := keys.NewEntropy()
+	e.app.Store.Set(r.RecipientStrings[0], keys.PhraseSecret(other))
+	e.ui.answer = func(p, out string) (string, error) { return "y", nil }
+	e.ui.out.Reset()
+	if err := e.app.RecoveryShow(e.root); err == nil || !strings.Contains(err.Error(), "the key saved for this backup on this machine (test store) is damaged") || strings.Contains(e.ui.out.String(), " 1. ") {
+		t.Fatalf("another key's phrase: %v\n%s", err, e.ui.out.String())
+	}
 	if err := e.app.RecoveryShow(t.TempDir()); !errors.Is(err, repo.ErrNotInitialised) {
 		t.Fatalf("not a repo: %v", err)
 	}
@@ -710,7 +727,343 @@ func TestVerifyReportsUnreferenced(t *testing.T) {
 	if !strings.Contains(e.ui.out.String(), "stray.age is not in the index") {
 		t.Fatalf("output = %q", e.ui.out.String())
 	}
+
+	// Many such files, as a seal that failed part way can leave, are listed
+	// up to MaxProblems, in path order, and counted.
+	for i := range 60 {
+		p := filepath.Join(e.root, repo.ObjectsDir, "zy", fmt.Sprintf("s%02d.age", i))
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte("age-encryption.org/v1\n"), 0o644)
+	}
+	e.ui.out.Reset()
+	if err := e.app.Verify(e.root, false); err != nil {
+		t.Fatal(err)
+	}
+	out := e.ui.out.String()
+	if n := strings.Count(out, "is not in the index (the next"); n != seal.MaxProblems {
+		t.Fatalf("%d files listed, want %d:\n%s", n, seal.MaxProblems, out)
+	}
+	if !strings.Contains(out, "objects/zy/s49.age is not") || strings.Contains(out, "s50.age") || strings.Contains(out, "zz/stray.age") ||
+		!strings.Contains(out, "  ! … and 11 more files not in the index\n") {
+		t.Fatalf("not the first %d by path, then a count:\n%s", seal.MaxProblems, out)
+	}
 	if err := e.app.Verify(t.TempDir(), false); !errors.Is(err, repo.ErrNotInitialised) {
 		t.Fatalf("verify non-repo: %v", err)
+	}
+}
+
+// A key missing because the keychain could not be read, as when it is
+// locked, is named that way wherever salt says the key is missing, not only
+// as missing.
+func TestKeychainUnreadableIsNamed(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	e.app.Store = keys.FallbackStore{Primary: brokenStore{}, Secondary: &keys.MemStore{}}
+	const why = ", and the system keychain could not be read (locked)"
+
+	e.app.Doctor(e.root)
+	if out := e.ui.out.String(); !strings.Contains(out, "no key for this backup on this machine"+why+": backups still work") {
+		t.Errorf("doctor:\n%s", out)
+	}
+	e.ui.out.Reset()
+	if err := e.app.Trust(e.root, true); err != nil {
+		t.Fatalf("Trust: %v", err)
+	}
+	if out := e.ui.out.String(); !strings.Contains(out, "⚠ NOT on this machine"+why+"\n") {
+		t.Errorf("trust:\n%s", out)
+	}
+	if err := e.app.RecoveryShow(e.root); err == nil || !strings.Contains(err.Error(), "(test store)"+why) {
+		t.Errorf("recovery show: %v", err)
+	}
+	e.ui.interactive = false
+	if err := e.app.Verify(e.root, false); err == nil || !strings.Contains(err.Error(), "no key for this backup is saved on this machine"+why+"; run this in a terminal") {
+		t.Errorf("verify: %v", err)
+	}
+	e.ui.interactive = true
+	e.ui.out.Reset()
+	e.ui.answer = func(string, string) (string, error) { return "", io.EOF }
+	e.app.Verify(e.root, false)
+	if out := e.ui.out.String(); !strings.Contains(out, "No key for this backup is saved on this machine"+why+".\n") {
+		t.Errorf("verify, at a terminal:\n%s", out)
+	}
+}
+
+// A question stops as soon as the Terminal's Context is cancelled, as by
+// Ctrl-C, without waiting for an answer, and every later one stops at once.
+func TestTerminalQuestionStopsWhenCancelled(t *testing.T) {
+	fakeTerminal(t, false)
+	pr, pw := io.Pipe() // nothing is ever typed
+	t.Cleanup(func() { pw.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	var out bytes.Buffer
+	term := &Terminal{in: bufio.NewReader(pr), out: &out, raw: &out}
+	term.SetContext(ctx)
+	time.AfterFunc(20*time.Millisecond, cancel)
+	if _, err := term.ReadLine("? "); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReadLine once cancelled: %v", err)
+	}
+	if _, err := term.ReadSecret("pw: "); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReadSecret after cancelling: %v", err)
+	}
+	if _, err := term.ReadLine("? "); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReadLine after cancelling: %v", err)
+	}
+
+	// An answer given in time is returned as without a Context.
+	term = &Terminal{in: bufio.NewReader(strings.NewReader("yes\n")), out: &out, raw: &out, ctx: context.Background()}
+	if s, err := term.ReadLine("? "); err != nil || s != "yes" {
+		t.Fatalf("ReadLine = %q, %v", s, err)
+	}
+}
+
+// fakeRaw stands in for term's raw mode for one test, and records the state
+// each restore puts back, so a secret is read without a terminal.
+func fakeRaw(t *testing.T, makeErr error) (state *term.State, restored *[]*term.State) {
+	fakeTerminal(t, true)
+	state, restored = &term.State{}, &[]*term.State{}
+	origRaw, origRestore := makeRaw, termRestore
+	t.Cleanup(func() { makeRaw, termRestore = origRaw, origRestore })
+	makeRaw = func(int) (*term.State, error) { return state, makeErr }
+	termRestore = func(_ int, s *term.State) error { *restored = append(*restored, s); return nil }
+	return state, restored
+}
+
+// A secret is read with the terminal in raw mode, keys and all, and the
+// terminal is put back however the read ends. Ctrl-C arrives as a key, so it
+// stops the question at once, whatever the command does with signals.
+func TestTerminalReadsSecretInRawMode(t *testing.T) {
+	state, restored := fakeRaw(t, nil)
+	for _, tt := range []struct {
+		typed, want string
+		err         error
+	}{
+		{typed: "pass word\r", want: "pass word"},
+		{typed: "pass\nnext", want: "pass"},
+		{typed: "pass\r\n", want: "pass"},
+		{typed: "abc\x7fd\r", want: "abd"},
+		{typed: "abc\bd\r", want: "abd"},
+		{typed: "xé\x7f\r", want: "x"},
+		{typed: "\x7f\x7fa\r", want: "a"},
+		{typed: "abc\x15de\r", want: "de"},
+		{typed: "tab\tin it\r", want: "tab\tin it"},
+		{typed: "a\x01\x1b[Ab\r", want: "a\x01\x1b[Ab"},
+		{typed: "a\x04b\r", want: "ab"},
+		{typed: "no newline", want: "no newline"},
+		{typed: "correct horse\x17battery\r", want: "correct battery"},
+		{typed: "one two  \x17\r", want: "one "},
+		{typed: "word\x17\x17x\r", want: "x"},
+		{typed: "a\x0f\x11\x12\x13\x14\x19\x1ab\r", want: "ab"},
+		{typed: "a\x16\x14\x16\x03\x16\rb\r", want: "a\x14\x03\rb"},
+		{typed: "a\x16", want: "a"},
+		{typed: "ab\x03cd\r", err: ErrInterrupted},
+		{typed: "ab\x1ccd\r", err: ErrInterrupted},
+		{typed: "\x04", err: io.EOF},
+		{typed: "", err: io.EOF},
+	} {
+		*restored = nil
+		var out bytes.Buffer
+		tm := &Terminal{in: bufio.NewReader(strings.NewReader(tt.typed)), out: &out, raw: &out}
+		got, err := tm.ReadSecret("Passphrase: ")
+		if got != tt.want || !errors.Is(err, tt.err) || (tt.err == nil && err != nil) {
+			t.Errorf("ReadSecret(%q) = %q, %v; want %q, %v", tt.typed, got, err, tt.want, tt.err)
+		}
+		if len(*restored) != 1 || (*restored)[0] != state {
+			t.Errorf("ReadSecret(%q) put the terminal back %d times, want once, as it was", tt.typed, len(*restored))
+		}
+		if out.String() != "Passphrase: \n" {
+			t.Errorf("ReadSecret(%q) printed %q, want only the prompt and a newline", tt.typed, out.String())
+		}
+	}
+
+	// A passphrase pasted with a Windows line ending leaves nothing behind for
+	// the next question, which reads its own answer, not an empty one. A \n
+	// on its own after the line is still the next answer.
+	for typed, next := range map[string]string{"pw\r\nn\n": "n", "pw\r\n\n": "", "pw\rn\n": "n"} {
+		tm := &Terminal{in: bufio.NewReader(strings.NewReader(typed)), out: io.Discard, raw: io.Discard}
+		if pw, err := tm.ReadSecret("Passphrase: "); err != nil || pw != "pw" {
+			t.Fatalf("ReadSecret(%q) = %q, %v", typed, pw, err)
+		}
+		if got, err := tm.ReadLine("Save the key? "); err != nil || got != next {
+			t.Errorf("after %q, the next answer = %q, %v; want %q", typed, got, err, next)
+		}
+	}
+
+	// Once the Terminal's Context is cancelled, a secret is not read at all,
+	// and the terminal is left as it is.
+	*restored = nil
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tm := &Terminal{in: bufio.NewReader(strings.NewReader("pw\r")), out: io.Discard, raw: io.Discard, ctx: ctx}
+	if _, err := tm.ReadSecret("Passphrase: "); !errors.Is(err, context.Canceled) || len(*restored) != 0 {
+		t.Fatalf("ReadSecret once cancelled = %v, terminal changed %d times", err, len(*restored))
+	}
+
+	// A secret waiting for a key stops as soon as the Context is cancelled,
+	// as by SIGTERM, and the terminal is put back, though the read is left
+	// waiting.
+	*restored = nil
+	pr, pw := io.Pipe() // nothing is ever typed
+	t.Cleanup(func() { pw.Close() })
+	ctx, cancel = context.WithCancel(context.Background())
+	tm = &Terminal{in: bufio.NewReader(pr), out: io.Discard, raw: io.Discard}
+	tm.SetContext(ctx)
+	time.AfterFunc(20*time.Millisecond, cancel)
+	if _, err := tm.ReadSecret("Passphrase: "); !errors.Is(err, context.Canceled) || len(*restored) != 1 || (*restored)[0] != state {
+		t.Fatalf("ReadSecret cancelled while waiting = %v, terminal put back %d times", err, len(*restored))
+	}
+
+	// A read that fails part way also puts the terminal back.
+	*restored = nil
+	tm = &Terminal{in: bufio.NewReader(io.MultiReader(strings.NewReader("ab"), iotest.ErrReader(errors.New("gone")))), out: io.Discard, raw: io.Discard}
+	if _, err := tm.ReadSecret("Passphrase: "); err == nil || err.Error() != "gone" || len(*restored) != 1 {
+		t.Fatalf("ReadSecret with a failing read = %v, restored %d times", err, len(*restored))
+	}
+}
+
+// A terminal that cannot be put in raw mode is reported, and left alone.
+func TestTerminalSecretWithoutRawMode(t *testing.T) {
+	_, restored := fakeRaw(t, errors.New("not a tty"))
+	tm := &Terminal{in: bufio.NewReader(strings.NewReader("pw\n")), out: io.Discard, raw: io.Discard}
+	if _, err := tm.ReadSecret("Passphrase: "); err == nil || err.Error() != "not a tty" || len(*restored) != 0 {
+		t.Fatalf("ReadSecret = %v, restored %d times", err, len(*restored))
+	}
+}
+
+// Ctrl-C at a passphrase question stops init before anything is saved, and
+// stops recovery test, each saying it was interrupted.
+func TestCtrlCAtPassphraseQuestion(t *testing.T) {
+	e := newEnv(t)
+	e.ui.answer = func(string, string) (string, error) { return "", ErrInterrupted }
+	err := e.app.Init(InitOptions{Repo: e.root, Recovery: repo.RecoveryPassphrase})
+	if !errors.Is(err, ErrInterrupted) || err.Error() != "init interrupted: nothing was saved" {
+		t.Fatalf("Init = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(e.root, repo.Dir)); !errors.Is(err, fs.ErrNotExist) || e.store.Len() != 0 {
+		t.Fatalf("init saved something: %v, %d keys", err, e.store.Len())
+	}
+
+	pf := filepath.Join(t.TempDir(), "pass")
+	os.WriteFile(pf, []byte("correct horse battery staple\n"), 0o600)
+	if err := e.app.Init(InitOptions{Repo: e.root, Recovery: repo.RecoveryPassphrase, PassphraseFile: pf}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.app.RecoveryTest(e.root); !errors.Is(err, ErrInterrupted) || err.Error() != "recovery test interrupted" {
+		t.Fatalf("RecoveryTest = %v", err)
+	}
+
+	// verify and trust, which asks for the key to set up signing, say so in
+	// the same way.
+	e.app.Store = &keys.MemStore{}
+	if err := e.app.Verify(e.root, false); !errors.Is(err, ErrInterrupted) || err.Error() != "verify interrupted" {
+		t.Fatalf("Verify = %v", err)
+	}
+	os.RemoveAll(e.app.SignDir)
+	if err := e.app.Trust(e.root, true); !errors.Is(err, ErrInterrupted) || err.Error() != "trust interrupted: nothing was approved" {
+		t.Fatalf("Trust = %v", err)
+	}
+
+	// Restore says it was interrupted too, though no signal cancelled it.
+	dest := filepath.Join(t.TempDir(), "r")
+	if err := e.app.Restore(RestoreOptions{Repo: e.root, To: dest, Context: context.Background()}); !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "was not changed") {
+		t.Fatalf("Restore = %v", err)
+	}
+}
+
+// Ctrl-C while restore asks for the recovery phrase stops the restore,
+// saying nothing was changed, rather than reporting a failed question.
+func TestRestoreStoppedAtTheKeyQuestion(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	e.app.Store = &keys.MemStore{}
+	ctx, cancel := context.WithCancel(context.Background())
+	e.ui.answer = func(string, string) (string, error) {
+		cancel()
+		return "", context.Canceled
+	}
+	dest := filepath.Join(t.TempDir(), "r")
+	err := e.app.Restore(RestoreOptions{Repo: e.root, To: dest, Context: ctx})
+	if !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "was not changed") {
+		t.Fatalf("Restore = %v, want ErrInterrupted", err)
+	}
+	// Restore gave the UI its context, so a question stops with it.
+	if e.ui.ctx != ctx {
+		t.Fatal("Restore did not give the UI its context")
+	}
+	if _, err := os.Stat(dest); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("destination: %v", err)
+	}
+}
+
+// A passphrase holding a tab, as one set through --passphrase-file can, is
+// typed at the terminal as it was set, so the backup can still be opened.
+func TestPassphraseWithTabCanBeTyped(t *testing.T) {
+	e := newEnv(t)
+	pass := "correct\thorse battery staple"
+	pf := filepath.Join(t.TempDir(), "pass")
+	os.WriteFile(pf, []byte(pass+"\n"), 0o600)
+	if err := e.app.Init(InitOptions{Repo: e.root, Recovery: repo.RecoveryPassphrase, PassphraseFile: pf}); err != nil {
+		t.Fatal(err)
+	}
+	fakeRaw(t, nil)
+	var out bytes.Buffer
+	e.app.UI = &Terminal{in: bufio.NewReader(strings.NewReader(pass + "\r")), out: &out, raw: &out}
+	if err := e.app.RecoveryTest(e.root); err != nil {
+		t.Fatalf("RecoveryTest with the passphrase typed: %v\n%s", err, out.String())
+	}
+}
+
+// damagedStore holds a damaged secret for every key.
+type damagedStore struct{ *keys.MemStore }
+
+func (damagedStore) Get(string) (keys.Secret, error) { return keys.Secret{}, keys.ErrDamaged }
+
+// A key saved damaged is reported as damaged, not as missing or as a
+// keychain that could not be read.
+func TestDamagedSavedKey(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	e.app.Store = damagedStore{&keys.MemStore{}}
+	e.app.Doctor(e.root)
+	if out := e.ui.out.String(); !strings.Contains(out, "✗ the key saved for") || strings.Contains(out, "could not read the") {
+		t.Fatalf("doctor with a damaged key:\n%s", out)
+	}
+}
+
+// countingStore counts the keys looked up in it.
+type countingStore struct {
+	*keys.MemStore
+	gets int
+}
+
+func (c *countingStore) Get(rcpt string) (keys.Secret, error) {
+	c.gets++
+	return c.MemStore.Get(rcpt)
+}
+
+// savedKeys looks up each key only when the loop reaches it, so a loop that
+// stops at the first key found looks up no more.
+func TestSavedKeysLooksUpOnlyWhatIsReached(t *testing.T) {
+	e := newEnv(t)
+	store := &countingStore{MemStore: &keys.MemStore{}}
+	e.app.Store = store
+	id, _ := age.GenerateX25519Identity()
+	store.Set(id.Recipient().String(), keys.IdentitySecret(id))
+	other, _ := age.GenerateX25519Identity()
+	rcpts := []string{id.Recipient().String(), other.Recipient().String(), "age1unused"}
+	for k := range e.app.savedKeys(rcpts) {
+		if k.err != nil || k.id.Recipient().String() != rcpts[0] {
+			t.Fatalf("first key = %+v", k)
+		}
+		break
+	}
+	if store.gets != 1 {
+		t.Fatalf("looked up %d keys, want 1", store.gets)
+	}
+	n := 0
+	for range e.app.savedKeys(rcpts) {
+		n++
+	}
+	if n != 3 || store.gets != 4 {
+		t.Fatalf("yielded %d keys after %d lookups, want 3 after 4", n, store.gets)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -75,13 +76,11 @@ func StagedPaths(dir string) ([]string, error) {
 // single `git cat-file --batch`, so memory use stays bounded however large
 // the files are. Paths containing a newline cannot be passed to cat-file and
 // are reported with ok=false.
-func BlobHeads(dir, rev string, paths []string, n int, fn func(path string, head []byte, ok bool) error) error {
+func BlobHeads(dir, rev string, paths []string, n int, fn func(path string, head []byte, ok bool)) error {
 	var names, specs []string
 	for _, p := range paths {
 		if strings.ContainsAny(p, "\n\r") {
-			if err := fn(p, nil, false); err != nil {
-				return err
-			}
+			fn(p, nil, false)
 			continue
 		}
 		names = append(names, p)
@@ -95,7 +94,7 @@ type Blob struct{ ID, Path string }
 
 // BlobIDHeads is BlobHeads for blobs named by their IDs. fn is given each
 // blob's path.
-func BlobIDHeads(dir string, blobs []Blob, n int, fn func(path string, head []byte, ok bool) error) error {
+func BlobIDHeads(dir string, blobs []Blob, n int, fn func(path string, head []byte, ok bool)) error {
 	names, specs := make([]string, len(blobs)), make([]string, len(blobs))
 	for i, b := range blobs {
 		names[i], specs[i] = b.Path, b.ID
@@ -107,7 +106,7 @@ func BlobIDHeads(dir string, blobs []Blob, n int, fn func(path string, head []by
 // specs[i] names, for each i, through one `git cat-file --batch`. An object
 // that is missing or not a blob, such as a submodule, is reported with
 // ok=false. No spec may hold a newline.
-func objectHeads(dir string, names, specs []string, n int, fn func(name string, head []byte, ok bool) error) error {
+func objectHeads(dir string, names, specs []string, n int, fn func(name string, head []byte, ok bool)) error {
 	if len(specs) == 0 {
 		return nil
 	}
@@ -133,50 +132,91 @@ func objectHeads(dir string, names, specs []string, n int, fn func(name string, 
 		w.Flush()
 		stdin.Close()
 	}()
-	r := bufio.NewReader(stdout)
-	head := make([]byte, n)
-	var cbErr error
-	for _, name := range names {
-		line, err := r.ReadString('\n')
-		if err != nil {
-			cbErr = fmt.Errorf("git cat-file: %w", err)
-			break
-		}
-		fields := strings.Fields(line)
-		if len(fields) != 3 || fields[1] != "blob" {
-			// "missing" or a non-blob (e.g. a submodule): never ciphertext.
-			if cbErr = fn(name, nil, false); cbErr != nil {
-				break
-			}
-			continue
-		}
-		size, err := strconv.ParseInt(fields[2], 10, 64)
-		if err != nil {
-			cbErr = fmt.Errorf("git cat-file: bad size in %q", line)
-			break
-		}
-		k := int(min(size, int64(n)))
-		if _, err := io.ReadFull(r, head[:k]); err != nil {
-			cbErr = err
-			break
-		}
-		if _, err := io.CopyN(io.Discard, r, size-int64(k)+1); err != nil { // +1: trailing newline
-			cbErr = err
-			break
-		}
-		if cbErr = fn(name, head[:k], true); cbErr != nil {
-			break
-		}
-	}
-	if cbErr != nil {
+	if err := readBatch(stdout, names, n, fn); err != nil {
+		// git's output ends early when git fails, so its own message says
+		// why.
 		cmd.Process.Kill()
 		cmd.Wait()
-		return cbErr
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			err = fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
 	}
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("git cat-file: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+// noObject ends each line `git cat-file --batch` prints for an object it did
+// not find, which has nothing after it.
+var noObject = []string{" missing", " ambiguous", " submodule"}
+
+// readBatch reads `git cat-file --batch` output for one object for each of
+// names, in order, and calls fn with the name and the object's first n
+// bytes. An object that is missing, or is not a blob, such as the commit a
+// submodule names, is reported with ok=false. git prints the contents of
+// every object it finds, whatever its type, so each is read through, or the
+// text of a commit would be read as the lines about the objects after it.
+// Memory use stays bounded however large an object is.
+func readBatch(r io.Reader, names []string, n int, fn func(name string, head []byte, ok bool)) error {
+	br := bufio.NewReader(r)
+	head := &prefix{buf: make([]byte, 0, n)}
+	// One buffer and one limit carry every object, where io.CopyN would
+	// make a new buffer of up to 32 KiB for each.
+	buf := make([]byte, 32<<10)
+	body := &io.LimitedReader{R: br}
+	for _, name := range names {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("git cat-file: %w", err)
+		}
+		// An object not found is one line, with nothing after it: "missing",
+		// "ambiguous", or, from newer git, "<oid> submodule" for a
+		// submodule entry whose commit is not in the repo. A found object's
+		// line ends in its size, so it never ends in one of these.
+		if l := strings.TrimSuffix(line, "\n"); slices.ContainsFunc(noObject, func(s string) bool { return strings.HasSuffix(l, s) }) {
+			fn(name, nil, false)
+			continue
+		}
+		fields := strings.Fields(line)
+		var size int64
+		if len(fields) == 3 {
+			size, err = strconv.ParseInt(fields[2], 10, 64)
+		}
+		if len(fields) != 3 || err != nil || size < 0 {
+			return fmt.Errorf("git cat-file: bad size in %q", line)
+		}
+		head.buf, head.max = head.buf[:0], int(min(size, int64(n)))
+		body.N = size + 1 // +1: trailing newline
+		copied, err := io.CopyBuffer(head, body, buf)
+		if err == nil && copied != size+1 {
+			err = io.ErrUnexpectedEOF
+		}
+		if err != nil {
+			return fmt.Errorf("git cat-file: %w", err)
+		}
+		if fields[1] != "blob" {
+			// Anything but a blob, such as a submodule's commit, is never
+			// ciphertext.
+			fn(name, nil, false)
+			continue
+		}
+		fn(name, head.buf, true)
+	}
+	return nil
+}
+
+// prefix keeps the first max bytes written to it and drops the rest, in
+// buf, whose capacity is at least max.
+type prefix struct {
+	buf []byte
+	max int
+}
+
+func (p *prefix) Write(b []byte) (int, error) {
+	p.buf = append(p.buf, b[:min(len(b), p.max-len(p.buf))]...)
+	return len(b), nil
 }
 
 // BlobSpec names the blob for path at rev ("" for the index). For the index
@@ -207,11 +247,26 @@ func HookPath(dir, name string) (string, error) {
 	return p, nil
 }
 
+// hasCommit reports whether rev names a commit in the repository at dir,
+// asking git through run. A rev that names none, as HEAD before the first
+// commit, is false with no error. git failing for any other reason, as when
+// it cannot read the repository, is an error, never taken for no commits.
+func hasCommit(dir, rev string, run func(dir string, args ...string) (string, error)) (bool, error) {
+	_, err := run(dir, "rev-parse", "--verify", "-q", rev+"^{commit}")
+	switch {
+	case err == nil:
+		return true, nil
+	case exitCode(err) == 1: // --verify -q exits 1, quietly, for no commit
+		return false, nil
+	}
+	return false, err
+}
+
 // TreePaths lists every file in the commit rev. It returns no paths and no
 // error when rev does not exist yet (a repository with no commits).
 func TreePaths(dir, rev string) ([]string, error) {
-	if _, err := Run(dir, "rev-parse", "--verify", "-q", rev+"^{commit}"); err != nil {
-		return nil, nil
+	if ok, err := hasCommit(dir, rev, Run); !ok {
+		return nil, err
 	}
 	cmd := exec.Command("git", Args(dir, "ls-tree", "-r", "-z", "--name-only", rev)...)
 	var stdout, stderr bytes.Buffer
@@ -231,8 +286,8 @@ func TreePaths(dir, rev string) ([]string, error) {
 
 // LastCommitTime returns when HEAD was committed; ok is false with no commits.
 func LastCommitTime(dir string) (t time.Time, ok bool, err error) {
-	if _, err := Run(dir, "rev-parse", "--verify", "-q", "HEAD^{commit}"); err != nil {
-		return time.Time{}, false, nil
+	if ok, err := hasCommit(dir, "HEAD", Run); !ok {
+		return time.Time{}, false, err
 	}
 	out, err := Run(dir, "log", "-1", "--format=%ct")
 	if err != nil {

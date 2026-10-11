@@ -72,6 +72,21 @@ func (s Secret) Phrase() ([]string, error) {
 // ErrNotFound means the store has no secret for that recipient.
 var ErrNotFound = errors.New("key not found")
 
+// ErrDamaged means the store has a secret for that recipient that cannot
+// be read as one salt saved.
+var ErrDamaged = errors.New("the saved key is damaged")
+
+// decode reads a secret a store saved. Why it cannot is left out of the
+// error, as encoding/json quotes the byte it stopped at, which can be part
+// of the secret.
+func decode(b []byte) (Secret, error) {
+	var s Secret
+	if err := json.Unmarshal(b, &s); err != nil {
+		return Secret{}, ErrDamaged
+	}
+	return s, nil
+}
+
 // Store keeps secrets keyed by their public recipient string.
 type Store interface {
 	Get(recipient string) (Secret, error)
@@ -94,8 +109,7 @@ func (KeyringStore) Get(recipient string) (Secret, error) {
 	if err != nil {
 		return Secret{}, err
 	}
-	var s Secret
-	return s, json.Unmarshal([]byte(v), &s)
+	return decode([]byte(v))
 }
 
 func (KeyringStore) Set(recipient string, s Secret) error {
@@ -118,20 +132,20 @@ func (KeyringStore) Delete(recipient string) error {
 // machines without a keychain (headless Linux).
 type FileStore struct{ Dir string }
 
-func (f FileStore) path(recipient string) string {
+// Path is the file that holds, or would hold, the secret for recipient.
+func (f FileStore) Path(recipient string) string {
 	return filepath.Join(f.Dir, strings.ToLower(recipient)+".json")
 }
 
 func (f FileStore) Get(recipient string) (Secret, error) {
-	b, err := os.ReadFile(f.path(recipient))
+	b, err := os.ReadFile(f.Path(recipient))
 	if errors.Is(err, os.ErrNotExist) {
 		return Secret{}, ErrNotFound
 	}
 	if err != nil {
 		return Secret{}, err
 	}
-	var s Secret
-	return s, json.Unmarshal(b, &s)
+	return decode(b)
 }
 
 func (f FileStore) Set(recipient string, s Secret) error {
@@ -139,11 +153,11 @@ func (f FileStore) Set(recipient string, s Secret) error {
 	if err != nil {
 		return err
 	}
-	return private.Write(f.path(recipient), b)
+	return private.Write(f.Path(recipient), b)
 }
 
 func (f FileStore) Delete(recipient string) error {
-	err := os.Remove(f.path(recipient))
+	err := os.Remove(f.Path(recipient))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -191,13 +205,42 @@ type FallbackStore struct {
 	Warn func(error)
 }
 
+// Get returns the secret from Primary, or else from Secondary. A secret in
+// neither, when Primary could not be read, is a KeychainError, so the
+// message can say the key may be in Primary. One Primary holds damaged is
+// ErrDamaged, as Primary was read.
 func (f FallbackStore) Get(recipient string) (Secret, error) {
 	s, err := f.Primary.Get(recipient)
 	if err == nil {
 		return s, nil
 	}
-	return f.Secondary.Get(recipient)
+	s, err2 := f.Secondary.Get(recipient)
+	switch {
+	case !errors.Is(err2, ErrNotFound) || errors.Is(err, ErrNotFound):
+		return s, err2
+	case errors.Is(err, ErrDamaged):
+		return Secret{}, err
+	}
+	return Secret{}, &KeychainError{Err: err}
 }
+
+// KeychainError means a key is not in the fallback file, and the keychain
+// could not be read, as when it is locked or access to it was refused, so
+// the key may be there. It counts as ErrNotFound, so a machine with no
+// keychain at all works as one whose keychain lacks the key.
+type KeychainError struct{ Err error }
+
+func (e *KeychainError) Error() string { return ErrNotFound.Error() + e.Why() }
+
+// Why says why the key may be there after all, to follow a message that
+// says it is missing: ", and the system keychain could not be read (…)".
+func (e *KeychainError) Why() string {
+	return fmt.Sprintf(", and the system keychain could not be read (%v)", e.Err)
+}
+
+func (e *KeychainError) Is(target error) bool { return target == ErrNotFound }
+
+func (e *KeychainError) Unwrap() error { return e.Err }
 
 func (f FallbackStore) Set(recipient string, s Secret) error {
 	err := f.Primary.Set(recipient, s)
@@ -230,7 +273,7 @@ func (f FallbackStore) Location(recipient string) string {
 		return ""
 	}
 	if fs, ok := f.Secondary.(FileStore); ok {
-		return fs.path(recipient)
+		return fs.Path(recipient)
 	}
 	return ""
 }
