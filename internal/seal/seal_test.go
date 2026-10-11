@@ -355,8 +355,13 @@ func TestSealRefusesSymlinkedOverlap(t *testing.T) {
 	if err := os.MkdirAll(inside, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for name, target := range map[string]string{"into the repo": inside, "around the repo": filepath.Dir(f.root)} {
-		link := filepath.Join(t.TempDir(), "link")
+	outside := t.TempDir()
+	for name, at := range map[string]struct{ link, target string }{
+		"into the repo":               {filepath.Join(t.TempDir(), "link"), inside},
+		"around the repo":             {filepath.Join(t.TempDir(), "link"), filepath.Dir(f.root)},
+		"in the repo, leading out of": {filepath.Join(f.root, "link"), outside},
+	} {
+		link, target := at.link, at.target
 		if err := os.Symlink(target, link); err != nil {
 			t.Fatal(err)
 		}

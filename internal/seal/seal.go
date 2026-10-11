@@ -147,8 +147,10 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		return nil, errors.New("seal: no signing key")
 	}
 	// The source's symlinks are followed once, here, so the check below and
-	// the walk always see the same folder (see walkSource). Messages name
-	// the folders as given.
+	// the walk always see the same folder (see walkSource). The folders are
+	// compared both as given and as real, so a source given as a symlink
+	// inside the repo is refused even when it leads outside, as seal --prune
+	// would remove it. Messages name the folders as given.
 	var realSrc string
 	if src != "" {
 		var absSrc string
@@ -160,7 +162,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
-		if overlap(realSrc, realRoot) {
+		if overlap(absSrc, absRoot) || overlap(realSrc, realRoot) {
 			return nil, disjointError(absSrc, absRoot, opt.Show)
 		}
 	}
