@@ -6,7 +6,7 @@
 ![Beta](https://img.shields.io/badge/status-beta-orange)
 ![Testers Wanted](https://img.shields.io/badge/testers-wanted-blue)
 
-> ⚠️ This project is in beta. Expect bugs and breaking changes. Feedback and testing contributions are welcome!
+> ⚠️ This project is in beta. Expect breaking changes. Feedback and testing contributions are welcome!
 
 Salt encrypts your agent's files and database memories before they leave your machine.
 
