@@ -361,8 +361,8 @@ func TestSealRefusesSymlinkedOverlap(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err := Seal(link, f.repo, Options{CacheDir: f.cache, Signer: f.signer})
-		if err == nil || !strings.Contains(err.Error(), "must not contain each other") || !strings.Contains(err.Error(), link) {
-			t.Errorf("%s: Seal = %v, want it refused, naming %s", name, err, link)
+		if err == nil || !strings.Contains(err.Error(), "must not contain each other") || !strings.Contains(err.Error(), "source "+link+" ") {
+			t.Errorf("%s: Seal = %v, want it refused, naming %s as given", name, err, link)
 		}
 	}
 }
@@ -522,6 +522,10 @@ func TestVerify(t *testing.T) {
 	stray := filepath.Join(f.root, "objects", "zz", "stray.age")
 	os.MkdirAll(filepath.Dir(stray), 0o755)
 	os.WriteFile(stray, []byte("age-encryption.org/v1\n"), 0o644)
+	// One in files/ too, which comes first in path order.
+	strayFile := filepath.Join(f.root, "files", "stray.age")
+	os.MkdirAll(filepath.Dir(strayFile), 0o755)
+	os.WriteFile(strayFile, []byte("age-encryption.org/v1\n"), 0o644)
 
 	res, err = Verify(f.root, f.ids(), VerifyOptions{Workers: 0})
 	if err != nil {
@@ -534,8 +538,8 @@ func TestVerify(t *testing.T) {
 	if !strings.Contains(joined, "is missing") || !strings.Contains(joined, "cannot be decrypted") {
 		t.Fatalf("problems = %v", res.Problems)
 	}
-	if len(res.Unreferenced) != 1 || res.UnreferencedCount != 1 || res.Unreferenced[0] != "objects/zz/stray.age" {
-		t.Fatalf("unreferenced = %v", res.Unreferenced)
+	if !slices.Equal(res.Unreferenced, []string{"files/stray.age", "objects/zz/stray.age"}) || res.UnreferencedCount != 2 {
+		t.Fatalf("unreferenced = %v, want both, in path order", res.Unreferenced)
 	}
 
 	other, _ := age.GenerateX25519Identity()

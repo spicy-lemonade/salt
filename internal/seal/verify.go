@@ -113,7 +113,8 @@ func Verify(root string, ids []age.Identity, opt VerifyOptions) (*VerifyResult, 
 
 	// Listing unreferenced files is informational, so a folder that can't be
 	// walked (CheckNoSymlinks has already refused a symlinked one) is skipped.
-	for _, dir := range []string{repo.ObjectsDir, repo.FilesDir} {
+	// In path order: files/ comes before objects/.
+	for _, dir := range []string{repo.FilesDir, repo.ObjectsDir} {
 		walkRepoDir(rt, dir, func(rel string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return nil

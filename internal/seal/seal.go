@@ -147,9 +147,22 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	if len(opt.Signer) != ed25519.PrivateKeySize {
 		return nil, errors.New("seal: no signing key")
 	}
+	// The source's symlinks are followed once, here, so the check below and
+	// the walk always see the same folder (see walkSource). Messages name
+	// the folders as given.
+	var realSrc string
 	if src != "" {
-		if err := CheckDisjoint(src, r.Root, opt.Show); err != nil {
+		var absSrc string
+		var err error
+		if absSrc, realSrc, err = realPath(src); err != nil {
 			return nil, err
+		}
+		absRoot, realRoot, err := realPath(r.Root)
+		if err != nil {
+			return nil, err
+		}
+		if overlap(realSrc, realRoot) {
+			return nil, disjointError(absSrc, absRoot, opt.Show)
 		}
 	}
 	if err := CheckNoSymlinks(r.Root); err != nil {
@@ -163,7 +176,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	var items []item
 	var err error
 	if src != "" {
-		if items, err = walkSource(src, exclude, res, opt.Show); err != nil {
+		if items, err = walkSource(src, realSrc, exclude, res, opt.Show); err != nil {
 			return nil, err
 		}
 	}
@@ -599,17 +612,13 @@ func partIntact(rt *os.Root, p cachePart) (cachePart, bool) {
 	return p, true
 }
 
-// walkSource lists the files and symlinks in the folder src. filepath.WalkDir
-// does not go into a symlink it is given, so a source folder given as one
-// would be sealed as empty, removing everything sealed before. The folder
-// is walked where its symlinks lead instead, so errors about the files in it
-// name them there.
-func walkSource(src string, exclude []string, res *Result, fn func(string) string) ([]item, error) {
-	real, err := filepath.EvalSymlinks(src)
-	var fi os.FileInfo
-	if err == nil {
-		fi, err = os.Stat(real)
-	}
+// walkSource lists the files and symlinks in the folder src, which is real
+// with its symlinks followed. filepath.WalkDir does not go into a symlink it
+// is given, so a source folder given as one would be sealed as empty,
+// removing everything sealed before. The folder is walked as real instead,
+// so errors about the files in it name them there.
+func walkSource(src, real string, exclude []string, res *Result, fn func(string) string) ([]item, error) {
+	fi, err := os.Stat(real)
 	if err != nil {
 		return nil, err
 	}
@@ -854,8 +863,8 @@ func removeEmptyDirs(rt *os.Root, dir string) {
 
 // CheckDisjoint refuses a source inside the repo or a repo inside the source:
 // either would seal ciphertext into itself or leak plaintext into the repo.
-// Paths are compared with their symlinks followed, as seal walks a source
-// given as a symlink where it leads. Messages name the paths as given.
+// The caller gives both with their symlinks followed, as preset.Gather does,
+// so a symlink cannot hide one inside the other.
 func CheckDisjoint(src, root string, fn func(string) string) error {
 	a, err := filepath.Abs(src)
 	if err != nil {
@@ -865,20 +874,29 @@ func CheckDisjoint(src, root string, fn func(string) string) error {
 	if err != nil {
 		return err
 	}
-	ra, rb := realOr(a), realOr(b)
-	if Within(a, b) || Within(b, a) || Within(ra, rb) || Within(rb, ra) {
-		return fmt.Errorf("source %s and repository %s must not contain each other", show(fn, a), show(fn, b))
+	if overlap(a, b) {
+		return disjointError(a, b, fn)
 	}
 	return nil
 }
 
-// realOr returns p with its symlinks followed, or p itself when they cannot
-// be, as when it does not exist yet.
-func realOr(p string) string {
-	if real, err := filepath.EvalSymlinks(p); err == nil {
-		return real
+// overlap reports whether either of the absolute paths a and b is inside the
+// other, or both are the same.
+func overlap(a, b string) bool { return Within(a, b) || Within(b, a) }
+
+// disjointError is the error for a source src and a repository root that
+// overlap, both absolute.
+func disjointError(src, root string, fn func(string) string) error {
+	return fmt.Errorf("source %s and repository %s must not contain each other", show(fn, src), show(fn, root))
+}
+
+// realPath returns p made absolute, and that with its symlinks followed.
+func realPath(p string) (abs, real string, err error) {
+	if abs, err = filepath.Abs(p); err != nil {
+		return "", "", err
 	}
-	return p
+	real, err = filepath.EvalSymlinks(abs)
+	return abs, real, err
 }
 
 // Within reports whether the path p is dir or inside it.
