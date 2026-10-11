@@ -791,6 +791,9 @@ func TestTerminalQuestionStopsWhenCancelled(t *testing.T) {
 	if _, err := term.ReadSecret("pw: "); !errors.Is(err, context.Canceled) {
 		t.Fatalf("ReadSecret after cancelling: %v", err)
 	}
+	if _, err := term.ReadLine("? "); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReadLine after cancelling: %v", err)
+	}
 
 	// An answer given in time is returned as without a Context.
 	term = &Terminal{in: bufio.NewReader(strings.NewReader("yes\n")), out: &out, raw: &out, Context: context.Background()}
