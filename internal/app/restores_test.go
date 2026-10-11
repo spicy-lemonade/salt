@@ -8,12 +8,13 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
 func TestRestoreLog(t *testing.T) {
 	base := t.TempDir()
-	l := restoreLog{filepath.Join(base, "cache", "restores.json")}
+	l := restoreLog{dir: filepath.Join(base, "cache", "restores"), older: filepath.Join(base, "cache", "restores.json")}
 	a, b := filepath.Join(base, "a"), filepath.Join(base, "b")
 	os.Mkdir(a, 0o700)
 	os.Mkdir(b, 0o700)
@@ -27,39 +28,93 @@ func TestRestoreLog(t *testing.T) {
 	if err := l.add(b); err != nil {
 		t.Fatal(err)
 	}
-	if fi, _ := os.Stat(l.path); fi.Mode().Perm() != 0o600 {
-		t.Fatalf("log mode %v, want 0600", fi.Mode().Perm())
+	if fi, _ := os.Stat(l.record(a)); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("record mode %v, want 0600", fi.Mode().Perm())
 	}
-	if dirs, _ := l.leftovers(); !slices.Equal(dirs, []string{b, a}) {
+	if dirs, _ := l.leftovers(); !slices.Equal(dirs, []string{a, b}) {
 		t.Fatalf("leftovers = %v", dirs)
 	}
 	if err := l.remove(b); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.remove(b); err != nil { // already gone from the list
+	if err := l.remove(b); err != nil { // already forgotten
 		t.Fatal(err)
 	}
 	// A folder deleted by hand is no longer a leftover, and the next add
-	// drops it from the list.
+	// removes its record.
 	os.Remove(a)
 	if dirs, _ := l.leftovers(); len(dirs) != 0 {
 		t.Fatalf("leftovers after deleting a = %v", dirs)
 	}
 	l.add(b)
-	if dirs, _ := l.load(); !slices.Equal(dirs, []string{b}) {
-		t.Fatalf("log = %v, want only %s", dirs, b)
+	if records, _ := l.records(); len(records) != 1 || records[l.record(b)] != b {
+		t.Fatalf("records = %v, want only %s", records, b)
 	}
 
-	// An unreadable log is reported, and started afresh by add.
-	os.WriteFile(l.path, []byte("{"), 0o600)
-	if _, err := l.leftovers(); err == nil {
-		t.Fatal("corrupt log read without error")
+	// A record being written is not read, and one that cannot be read is
+	// reported, with the folders the others name.
+	os.WriteFile(filepath.Join(l.dir, "x.tmp-1"), []byte("half"), 0o600)
+	os.Mkdir(filepath.Join(l.dir, "unreadable"), 0o700)
+	if dirs, err := l.leftovers(); err == nil || !slices.Equal(dirs, []string{b}) {
+		t.Fatalf("leftovers with an unreadable record = %v, %v", dirs, err)
+	}
+	os.Remove(filepath.Join(l.dir, "unreadable"))
+
+	// The list an older salt kept is read, and moved into records by add.
+	c := filepath.Join(base, "c")
+	os.Mkdir(c, 0o700)
+	os.WriteFile(l.older, []byte(`["`+c+`", "`+filepath.Join(base, "gone")+`"]`), 0o600)
+	if dirs, err := l.leftovers(); err != nil || !slices.Equal(dirs, []string{b, c}) {
+		t.Fatalf("leftovers with an older list = %v, %v", dirs, err)
 	}
 	if err := l.add(b); err != nil {
 		t.Fatal(err)
 	}
-	if dirs, _ := l.load(); !slices.Equal(dirs, []string{b}) {
-		t.Fatalf("log after a corrupt one = %v", dirs)
+	if _, err := os.Stat(l.older); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("older list kept: %v", err)
+	}
+	if dirs, _ := l.leftovers(); !slices.Equal(dirs, []string{b, c}) {
+		t.Fatalf("leftovers after moving the older list = %v", dirs)
+	}
+
+	// An unreadable older list is reported, and dropped by add.
+	os.WriteFile(l.older, []byte("{"), 0o600)
+	if _, err := l.leftovers(); err == nil {
+		t.Fatal("corrupt list read without error")
+	}
+	if err := l.add(b); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.leftovers(); err != nil {
+		t.Fatalf("after add: %v", err)
+	}
+}
+
+// Restores running at once each keep their own record, however their adds
+// and removes fall, so none is lost. With one list for them all, each add
+// rewrote the others' records from what it had read.
+func TestRestoreLogConcurrent(t *testing.T) {
+	base := t.TempDir()
+	l := restoreLog{dir: filepath.Join(base, "restores"), older: filepath.Join(base, "restores.json")}
+	var dirs []string
+	for i := range 20 {
+		d := filepath.Join(base, fmt.Sprint("r", i))
+		os.Mkdir(d, 0o700)
+		dirs = append(dirs, d)
+	}
+	var wg sync.WaitGroup
+	for _, d := range dirs {
+		wg.Go(func() {
+			if err := l.add(d); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	got, err := l.leftovers()
+	slices.Sort(dirs)
+	if err != nil || !slices.Equal(got, dirs) {
+		t.Fatalf("leftovers = %v, %v, want all %d", got, err, len(dirs))
 	}
 }
 
@@ -79,8 +134,8 @@ func TestRestoreInterrupted(t *testing.T) {
 	if entries, _ := os.ReadDir(filepath.Dir(dest)); len(entries) != 0 {
 		t.Fatalf("left behind: %v", entries)
 	}
-	if dirs, _ := e.app.restoreLog().load(); len(dirs) != 0 {
-		t.Fatalf("restores.json still lists %v", dirs)
+	if records, _ := e.app.restoreLog().records(); len(records) != 0 {
+		t.Fatalf("restores still recorded: %v", records)
 	}
 }
 
@@ -118,7 +173,9 @@ func TestDoctorReportsLeftoverRestores(t *testing.T) {
 	healthyRepo(t, e)
 	left, gone := filepath.Join(t.TempDir(), ".salt-restore-1"), filepath.Join(t.TempDir(), ".salt-restore-2")
 	os.Mkdir(left, 0o700)
-	e.app.restoreLog().save([]string{left, gone})
+	l := e.app.restoreLog()
+	l.add(left)
+	os.WriteFile(l.older, []byte(`["`+gone+`"]`), 0o600)
 	e.app.Doctor(e.root)
 	out := e.ui.out.String()
 	if !strings.Contains(out, "! "+left+" was left by a restore that did not finish and may hold decrypted files") {
@@ -128,7 +185,7 @@ func TestDoctorReportsLeftoverRestores(t *testing.T) {
 		t.Fatalf("a folder that is gone was reported:\n%s", out)
 	}
 
-	os.WriteFile(e.app.restoreLog().path, []byte("{"), 0o600)
+	os.WriteFile(l.older, []byte("{"), 0o600)
 	e.ui.out.Reset()
 	e.app.Doctor(e.root)
 	if !strings.Contains(e.ui.out.String(), "could not read the list of restores in progress") {

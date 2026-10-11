@@ -1,13 +1,17 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/spicy-lemonade/salt/internal/private"
 )
@@ -16,17 +20,88 @@ import (
 // SIGTERM) and the files it had written were removed.
 var ErrInterrupted = errors.New("interrupted")
 
-// restoreLog lists the temporary folders of restores in progress. A restore
-// that is killed outright (SIGKILL, a power cut) cannot clean up, and its
-// folder may hold decrypted files, so doctor reports any still listed.
-type restoreLog struct{ path string }
+// restoreLog records the temporary folders of restores in progress, one
+// file for each in dir, so restores running at once never rewrite each
+// other's record. A restore that is killed outright (SIGKILL, a power cut)
+// cannot clean up, and its folder may hold decrypted files, so doctor
+// reports any still recorded. older is the one list an older salt kept for
+// them all, which is still read.
+type restoreLog struct{ dir, older string }
 
 func (a *App) restoreLog() restoreLog {
-	return restoreLog{filepath.Join(a.CacheDir, "restores.json")}
+	return restoreLog{dir: filepath.Join(a.CacheDir, "restores"), older: filepath.Join(a.CacheDir, "restores.json")}
 }
 
-func (l restoreLog) load() ([]string, error) {
-	b, err := os.ReadFile(l.path)
+// record is the file in l.dir that records the folder tmp.
+func (l restoreLog) record(tmp string) string {
+	sum := sha256.Sum256([]byte(tmp))
+	return filepath.Join(l.dir, hex.EncodeToString(sum[:8]))
+}
+
+// add records tmp. Records whose folder is already gone are removed, and
+// the folders in an older salt's list that still exist are recorded one by
+// one instead, since it only helps doctor. Losing either only leaves a
+// record doctor skips.
+func (l restoreLog) add(tmp string) error {
+	if err := private.Write(l.record(tmp), []byte(tmp)); err != nil {
+		return err
+	}
+	if older, err := l.loadOlder(); err == nil {
+		for _, d := range older {
+			if _, err := os.Lstat(d); err == nil {
+				private.Write(l.record(d), []byte(d))
+			}
+		}
+	}
+	os.Remove(l.older)
+	records, _ := l.records()
+	for p, d := range records {
+		if _, err := os.Lstat(d); errors.Is(err, fs.ErrNotExist) {
+			os.Remove(p)
+		}
+	}
+	return nil
+}
+
+// remove forgets tmp.
+func (l restoreLog) remove(tmp string) error {
+	err := os.Remove(l.record(tmp))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// records maps each record in l.dir to the folder it records.
+func (l restoreLog) records() (map[string]string, error) {
+	entries, err := os.ReadDir(l.dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	var errs []error
+	for _, e := range entries {
+		// One being written by private.Write is not a record yet.
+		if strings.Contains(e.Name(), ".tmp-") {
+			continue
+		}
+		p := filepath.Join(l.dir, e.Name())
+		b, err := os.ReadFile(p)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		out[p] = string(b)
+	}
+	return out, errors.Join(errs...)
+}
+
+// loadOlder reads an older salt's list, or none when there is none.
+func (l restoreLog) loadOlder() ([]string, error) {
+	b, err := os.ReadFile(l.older)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
@@ -35,50 +110,25 @@ func (l restoreLog) load() ([]string, error) {
 	}
 	var dirs []string
 	if err := json.Unmarshal(b, &dirs); err != nil {
-		return nil, fmt.Errorf("%s: %w", l.path, err)
+		return nil, fmt.Errorf("%s: %w", l.older, err)
 	}
 	return dirs, nil
 }
 
-func (l restoreLog) save(dirs []string) error {
-	b, err := json.Marshal(dirs)
-	if err != nil {
-		return err
-	}
-	return private.Write(l.path, b)
-}
-
-// add records dir. Entries whose folder is already gone are dropped, and an
-// unreadable list is started afresh, since it only helps doctor.
-func (l restoreLog) add(dir string) error {
-	dirs, _ := l.load()
-	kept := []string{dir}
-	for _, d := range dirs {
-		if _, err := os.Lstat(d); err == nil && d != dir {
-			kept = append(kept, d)
-		}
-	}
-	return l.save(kept)
-}
-
-func (l restoreLog) remove(dir string) error {
-	dirs, err := l.load()
-	if err != nil || !slices.Contains(dirs, dir) {
-		return err
-	}
-	return l.save(slices.DeleteFunc(dirs, func(d string) bool { return d == dir }))
-}
-
-// leftovers are listed folders that still exist.
+// leftovers are the recorded folders that still exist, in order. It changes
+// nothing, so doctor can call it. A record or list that cannot be read is
+// reported, along with the folders the others name.
 func (l restoreLog) leftovers() ([]string, error) {
-	dirs, err := l.load()
+	records, err := l.records()
+	older, olderErr := l.loadOlder()
 	var out []string
-	for _, d := range dirs {
+	for _, d := range slices.Concat(slices.Collect(maps.Values(records)), older) {
 		if _, err := os.Lstat(d); err == nil {
 			out = append(out, d)
 		}
 	}
-	return out, err
+	slices.Sort(out)
+	return slices.Compact(out), errors.Join(err, olderErr)
 }
 
 // trackRestore records a restore's temporary folder until it is gone.
