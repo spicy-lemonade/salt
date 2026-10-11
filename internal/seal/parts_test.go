@@ -479,6 +479,74 @@ func TestReadIndexRejectsBadParts(t *testing.T) {
 	}
 }
 
+// An entry names no more objects than maxEntryObjects, nor more than its
+// size can fill: every object but the last holds at least
+// minObjectPlaintext bytes. Seal checks the same, through validEntry.
+func TestReadIndexBoundsParts(t *testing.T) {
+	old := maxEntryObjects
+	maxEntryObjects = 3
+	t.Cleanup(func() { maxEntryObjects = old })
+	unit := minObjectPlaintext()
+	parts := func(n int) []string {
+		p := make([]string, n)
+		for i := range p {
+			p[i] = "objects/aa/" + strconv.Itoa(i) + ".age"
+		}
+		return p
+	}
+	for name, tt := range map[string]struct {
+		parts int
+		size  int64
+		want  string
+	}{
+		"at the object limit":       {2, 2 * unit, ""},
+		"over the object limit":     {3, 1 << 40, "a is in more than 3 objects"},
+		"one object, no size":       {0, 0, ""},
+		"parts its size fills":      {2, 2*unit + 1, ""},
+		"more parts than its size":  {2, 2*unit - 1, "a is in more objects than its size allows"},
+		"a part of an empty file":   {1, 0, "a is in more objects than its size allows"},
+		"a part of a one-byte file": {1, 1, "a is in more objects than its size allows"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, true)
+			e := Entry{Path: "a", Object: "objects/aa/b.age", Parts: parts(tt.parts), SHA256: strings.Repeat("0", 64), Size: tt.size, Mode: 0o644}
+			f.writeIndex(&Index{Version: partsIndexVersion, Entries: []Entry{e}})
+			_, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
+			if tt.want == "" && err != nil {
+				t.Fatalf("ReadIndex refused it: %v", err)
+			}
+			if tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)) {
+				t.Fatalf("ReadIndex error = %v, want %q", err, tt.want)
+			}
+			if err := checkIndexEntries([]Entry{e}); (err == nil) != (tt.want == "") {
+				t.Fatalf("checkIndexEntries = %v", err)
+			}
+		})
+	}
+}
+
+// The bound holds for the smaller of a chunk and a part, so lowering either,
+// as tests do, never refuses what seal wrote.
+func TestMinObjectPlaintext(t *testing.T) {
+	oldMin, oldLimit := minChunk, oneObjectLimit
+	t.Cleanup(func() { minChunk, oneObjectLimit = oldMin, oldLimit })
+	for _, tt := range []struct {
+		chunk int
+		limit int64
+		want  int64
+	}{
+		{1 << 20, 99 << 20, 512 << 10},
+		{4 << 10, 99 << 20, 2 << 10},
+		{1 << 20, 16 << 10, 8 << 10},
+		{1, 1, 1},
+	} {
+		minChunk, oneObjectLimit = tt.chunk, tt.limit
+		if got := minObjectPlaintext(); got != tt.want {
+			t.Errorf("minObjectPlaintext with chunks of %d and parts of %d = %d, want %d", tt.chunk, tt.limit, got, tt.want)
+		}
+	}
+}
+
 // loadCache returns the fixture's change cache and where it is kept.
 func (f *fixture) loadCache() (*cache, string) {
 	f.t.Helper()
@@ -595,7 +663,7 @@ func TestCacheEntryParts(t *testing.T) {
 func TestSignatureCoversInvalidUTF8Part(t *testing.T) {
 	f := newFixture(t, true)
 	f.writeIndex(&Index{Version: partsIndexVersion, Entries: []Entry{
-		{Path: "a", Object: "objects/aa/a.age", Parts: []string{"objects/bb/\xff.age"}, SHA256: strings.Repeat("0", 64), Mode: 0o644},
+		{Path: "a", Object: "objects/aa/a.age", Parts: []string{"objects/bb/\xff.age"}, SHA256: strings.Repeat("0", 64), Size: minObjectPlaintext(), Mode: 0o644},
 	}})
 	ix, err := ReadIndex(f.root, f.ids(), SignatureOptions{})
 	if err != nil {

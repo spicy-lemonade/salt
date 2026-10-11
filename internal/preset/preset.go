@@ -38,8 +38,9 @@ type Preset struct {
 	// never backs up, such as caches.
 	Skip []string `json:"skip"`
 	// Never lists name patterns (path.Match) of files and folders that hold
-	// secrets, such as .env or a folder of keys. No preset given with this
-	// one backs them up either, wherever it finds them.
+	// secrets, such as .env or a folder of keys, in lower case, as names are
+	// matched in lower case. No preset given with this one backs them up
+	// either, wherever it finds them. defaultNever is always added.
 	Never []string `json:"never"`
 	// Secrets lists files that may hold secrets, which are left out when they
 	// do.
@@ -114,6 +115,15 @@ var defaultSecretKeys = []string{
 	"*api_key", "*apikey", "*api-key", "*secret", "*secret_key", "*secretkey", "*access_key", "*accesskey",
 	"*private_key", "*privatekey",
 	"*password", "*passphrase", "token", "*_token", "*-token", "authorization",
+}
+
+// defaultNever lists name patterns (path.Match), in lower case, of files and
+// folders that hold secrets wherever they are found, such as .env files, key
+// files and the folders of SSH and cloud logins. Every backup leaves them
+// out, with each preset's own Never patterns, whichever presets are given.
+var defaultNever = []string{
+	".env", "*.env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*",
+	".netrc", ".npmrc", ".pypirc", ".git-credentials", ".ssh", ".aws",
 }
 
 // ErrUnknown means no preset has the name asked for.
@@ -239,6 +249,11 @@ func (p *Preset) check(name string) error {
 					return fmt.Errorf("the secrets ref setting %q must be an exact name in lower case, as settings are matched by name in lower case", k)
 				}
 			}
+		}
+	}
+	for _, pat := range p.Never {
+		if pat != strings.ToLower(pat) {
+			return fmt.Errorf("the never pattern %q must be in lower case, as names are matched in lower case", pat)
 		}
 	}
 	for _, pat := range slices.Concat(p.Skip, p.Never, secretPatterns(p.Secrets)) {

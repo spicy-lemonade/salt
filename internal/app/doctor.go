@@ -13,6 +13,7 @@ import (
 
 	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/escape"
+	"github.com/spicy-lemonade/salt/internal/gitx"
 	"github.com/spicy-lemonade/salt/internal/hook"
 	"github.com/spicy-lemonade/salt/internal/keys"
 	"github.com/spicy-lemonade/salt/internal/regular"
@@ -127,7 +128,9 @@ func (a *App) Doctor(repoRoot string) error {
 		r.add(ok, "last commit %s ago (%s)", roughDuration(age), t.Format("2006-01-02 15:04"))
 	}
 	if url := a.Git.Remote(root); url != "" {
-		r.add(ok, "remote: %s", url)
+		// A URL can hold a password or token, as in a GitHub token given
+		// as the user name, which doctor never shows.
+		r.add(ok, "remote: %s", gitx.RedactURL(url))
 	} else {
 		r.add(warn, "no `origin` remote; backups are not leaving this machine")
 	}

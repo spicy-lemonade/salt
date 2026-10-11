@@ -8,6 +8,10 @@ import (
 	"testing/iotest"
 )
 
+// small caps strings at 4 bytes and other tokens at 3, and leaves the count
+// of values unchecked.
+var small = tokenLimits{String: 4, Other: 3, Values: 1 << 30}
+
 // readLimited reads s through a tokenLimitReader with strings capped at 4
 // bytes and other tokens at 3, both in one go and one byte per Read, so
 // escapes and tokens split across reads are covered.
@@ -15,7 +19,7 @@ func readLimited(t *testing.T, s string) []error {
 	t.Helper()
 	var errs []error
 	for _, r := range []io.Reader{strings.NewReader(s), iotest.OneByteReader(strings.NewReader(s))} {
-		got, err := io.ReadAll(newTokenLimitReader(r, 4, 3))
+		got, err := io.ReadAll(newTokenLimitReader(r, small))
 		if err == nil && string(got) != s {
 			t.Fatalf("read %q, want %q", got, s)
 		}
@@ -68,7 +72,7 @@ func TestTokenLimitReaderStopsAtTheBadByte(t *testing.T) {
 		{`["abcde"]`, `["abcd`},
 		{`[12345]`, `[123`},
 	} {
-		r := newTokenLimitReader(strings.NewReader(tt.in), 4, 3)
+		r := newTokenLimitReader(strings.NewReader(tt.in), small)
 		buf := make([]byte, 64)
 		n, err := r.Read(buf)
 		if err == nil || string(buf[:n]) != tt.before {
@@ -83,8 +87,35 @@ func TestTokenLimitReaderStopsAtTheBadByte(t *testing.T) {
 
 func TestTokenLimitReaderPassesErrors(t *testing.T) {
 	boom := errors.New("boom")
-	_, err := io.ReadAll(newTokenLimitReader(iotest.ErrReader(boom), 4, 3))
+	_, err := io.ReadAll(newTokenLimitReader(iotest.ErrReader(boom), small))
 	if !errors.Is(err, boom) {
 		t.Fatalf("error = %v, want %v", err, boom)
+	}
+}
+
+// Values Depth deep or deeper, nested ones included, count towards one
+// total across every group. Commas in strings and shallower values are free.
+func TestTokenLimitReaderCountsValues(t *testing.T) {
+	const tooMany = "more than 4 values in its entries"
+	for name, tt := range map[string]struct {
+		in, want string
+	}{
+		"at the limit":               {`[{"a":1,"b":2},{"a":1,"b":2},{"a":1,"b":2}]`, ""},
+		"over across groups":         {`[{"a":1,"b":2},{"a":1,"b":2},{"a":1,"b":2},{"a":1,"b":2}]`, tooMany},
+		"nested values count":        {`[{"a":[1,2]},{"a":[1,2]},{"a":[1,2]},{"a":[1,2]}]`, tooMany},
+		"shallower values are free":  {`[1,2,3,4,5,6,7,8]`, ""},
+		"commas in strings are free": {`[{"a":"1,2,3,4,5,6"}]`, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, r := range []io.Reader{strings.NewReader(tt.in), iotest.OneByteReader(strings.NewReader(tt.in))} {
+				_, err := io.ReadAll(newTokenLimitReader(r, tokenLimits{String: 64, Other: 64, Depth: 2, Values: 4}))
+				if tt.want == "" && err != nil {
+					t.Fatalf("%s refused: %v", tt.in, err)
+				}
+				if tt.want != "" && (err == nil || err.Error() != tt.want) {
+					t.Fatalf("%s: error = %v, want %q", tt.in, err, tt.want)
+				}
+			}
+		})
 	}
 }

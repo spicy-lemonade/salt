@@ -1242,6 +1242,34 @@ func TestIndexBombs(t *testing.T) {
 			bw.WriteString(`,"entries":[]}`)
 			bw.Flush()
 		}, "value longer than 64 bytes"},
+		// encoding/json would build all 8 million parts into one slice,
+		// over a GiB in all, before the signature is checked.
+		{"32 MiB of one-byte parts", func(w io.Writer) {
+			bw := bufio.NewWriter(w)
+			bw.WriteString(`{"version":2,"entries":[{"path":"a","object":"objects/aa/b.age","sha256":"` + strings.Repeat("0", 64) + `","size":9000000000000000000,"mode":420,"parts":["a"`)
+			for i := 0; i < 8<<20-1<<12; i++ {
+				bw.WriteString(`,"a"`)
+			}
+			bw.WriteString(`]}]}`)
+			bw.Flush()
+		}, fmt.Sprintf("more than %d values in its entries", indexLimits.Values)},
+		// The same, spread over entries each under maxEntryObjects.
+		{"one-byte parts in many entries", func(w io.Writer) {
+			bw := bufio.NewWriter(w)
+			bw.WriteString(`{"version":2,"entries":[`)
+			for e := 0; e < 7; e++ {
+				if e > 0 {
+					bw.WriteByte(',')
+				}
+				bw.WriteString(`{"path":"a` + strings.Repeat("a", e) + `","object":"objects/aa/b.age","sha256":"` + strings.Repeat("0", 64) + `","size":9000000000000000000,"mode":420,"parts":["a"`)
+				for i := 0; i < maxEntryObjects-2; i++ {
+					bw.WriteString(`,"a"`)
+				}
+				bw.WriteString(`]}`)
+			}
+			bw.WriteString(`]}`)
+			bw.Flush()
+		}, fmt.Sprintf("more than %d values in its entries", indexLimits.Values)},
 		{"huge value where the list should be", func(w io.Writer) {
 			bw := bufio.NewWriter(w)
 			bw.WriteString(`{"version":1,"entries":"`)

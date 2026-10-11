@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"go.yaml.in/yaml/v3"
 
@@ -36,6 +37,8 @@ const (
 	notYAML   = "it could not be read as YAML or JSON to check it for secrets"
 	commented = "a comment in it stops it being checked for secrets"
 	noSpace   = "a name with no space after its colon stops it being checked for secrets"
+	oddName   = "a name with an escape or an unusual space stops it being checked for secrets"
+	named     = "its name marks it as holding secrets"
 )
 
 // sidecars are the files SQLite keeps beside a database while it is in use.
@@ -352,7 +355,8 @@ type walker struct {
 	// secrets holds every preset's secrets rules, each with
 	// defaultSecretKeys added to its keys.
 	secrets []Secret
-	// never holds every preset's Never patterns.
+	// never holds every preset's Never patterns, matched against names in
+	// lower case. defaultNever is matched after them.
 	never []string
 	show  func(string) string
 }
@@ -400,33 +404,42 @@ func (w *walker) walk(s *spot, by []*Preset) (gone bool, err error) {
 		if listedHook != nil {
 			listedHook(walked)
 		}
-		// What any preset never backs up, such as a file of secrets, is left
-		// out wherever it is, the place itself included.
-		if _, ok := w.spots[walked]; (ok && walked != real) || matchAny(w.never, d.Name()) {
+		skip := func() error {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
+		if _, ok := w.spots[walked]; ok && walked != real {
+			return skip()
+		}
 		here := by
 		if walked != real {
 			here = slices.DeleteFunc(slices.Clone(reach[filepath.Dir(walked)]), func(p *Preset) bool { return skips(p, d.Name()) })
 			if len(here) == 0 {
-				if d.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
+				return skip()
 			}
-		}
-		if d.IsDir() {
-			reach[walked] = here
-			return nil
 		}
 		sub, err := filepath.Rel(real, walked)
 		if err != nil {
 			return err
 		}
 		at, to := filepath.Join(pl.Abs, sub), path.Join(pl.Rel, filepath.ToSlash(sub))
+		// What any preset never backs up, such as a file of secrets, is left
+		// out wherever it is, the place itself included. Case is ignored, as
+		// many file systems ignore it, so .ENV is left out with .env. A preset
+		// that names it expects it there, so only a name salt leaves out on
+		// its own, such as a talk.key, is reported.
+		if name := strings.ToLower(d.Name()); matchAny(w.never, name) {
+			return skip()
+		} else if matchAny(defaultNever, name) {
+			w.f.LeftOut = append(w.f.LeftOut, LeftOut{Path: at, Why: named})
+			return skip()
+		}
+		if d.IsDir() {
+			reach[walked] = here
+			return nil
+		}
 		if !d.Type().IsRegular() {
 			w.f.Skipped = append(w.f.Skipped, w.show(at))
 			return nil
@@ -596,7 +609,10 @@ func secretsIn(b []byte, sec Secret) (why string, secret bool, number string) {
 // as in {apiKey:"x"}, become one name, so a name not quoted inside {} that
 // holds : stops the check, even where YAML means it, as in {llama3:8b: 1}.
 // A quoted name, such as "a:b", and a YAML name outside {}, such as
-// llama3:8b, are names.
+// llama3:8b, are names. JSON5 also reads an escape in a name not quoted or
+// in single quotes, as in 'api\x4bey', and drops a space that is not ASCII
+// after a name, so such a name inside {} stops the check too (see
+// isOddName).
 func secretKeys(n *yaml.Node, sec Secret) (text, number, unread string) {
 	switch n.Kind {
 	case yaml.DocumentNode, yaml.SequenceNode:
@@ -616,6 +632,9 @@ func secretKeys(n *yaml.Node, sec Secret) (text, number, unread string) {
 			if n.Style&yaml.FlowStyle != 0 && k.Style&(yaml.DoubleQuotedStyle|yaml.SingleQuotedStyle) == 0 && strings.Contains(k.Value, ":") {
 				return "", "", noSpace
 			}
+			if n.Style&yaml.FlowStyle != 0 && isOddName(k) {
+				return "", "", oddName
+			}
 			if matchAny(sec.Keys, strings.ToLower(k.Value)) {
 				if hasValue(v, sec.Refs) {
 					return k.Value, "", ""
@@ -632,6 +651,28 @@ func secretKeys(n *yaml.Node, sec Secret) (text, number, unread string) {
 		}
 	}
 	return "", number, ""
+}
+
+// isOddName reports whether JSON5 may read the name k differently from
+// YAML: one not quoted that holds a backslash, which JSON5 reads as an
+// escape, or a character that is not ASCII or is a space other than " ",
+// which JSON5 can take for a space around the name; or one in single quotes
+// that holds a backslash, which only JSON5 reads as an escape. In double
+// quotes, YAML reads \a, \e, \N, \_, \L and \P as a control character,
+// U+00A0, U+2028 or U+2029, where JSON5 reads the letter alone, so a name
+// that YAML read as holding one of them is odd too.
+func isOddName(k *yaml.Node) bool {
+	switch {
+	case k.Style&yaml.DoubleQuotedStyle != 0:
+		return strings.ContainsFunc(k.Value, func(r rune) bool {
+			return unicode.IsControl(r) || r == '\u00a0' || r == '\u2028' || r == '\u2029'
+		})
+	case k.Style&yaml.SingleQuotedStyle != 0:
+		return strings.Contains(k.Value, `\`)
+	}
+	return strings.ContainsFunc(k.Value, func(r rune) bool {
+		return r == '\\' || r > unicode.MaxASCII || (r != ' ' && unicode.IsSpace(r))
+	})
 }
 
 // isComment reports whether n is text, not quoted, that starts with // or
@@ -663,23 +704,23 @@ func hasNumber(n *yaml.Node) bool {
 // the environment variable a secret is kept in, not the secret.
 var envRef = regexp.MustCompile(`^\$\{(env:)?` + varName + `\}$`)
 
-// hasValue reports whether n holds text that could be a secret: a string
+// hasValue reports whether n holds text that could be a secret: a value
 // that is not empty, at any depth. A number, true or false, or null is a
 // setting, never a secret, so max_token: 512 is not taken for one. Nor is a
-// string that is only ${NAME} or ${env:NAME}, though one with anything more,
-// such as a default, is, or an object refs names (see isRef). An alias
-// counts, since what it points to is not followed.
+// value that is only ${NAME} or ${env:NAME}, though one with anything more,
+// such as a default, is, or an object refs names (see isRef). Every other
+// value is text, whatever its tag, such as a date or a tag of the tool's
+// own, as in api_key: !secret sk-1. An alias counts, since what it points
+// to is not followed.
 func hasValue(n *yaml.Node, refs [][]string) bool {
 	has := func(c *yaml.Node) bool { return hasValue(c, refs) }
 	switch n.Kind {
 	case yaml.ScalarNode:
 		switch n.Tag {
-		case "!!binary":
-			return n.Value != ""
-		case "!!str":
-			return n.Value != "" && !envRef.MatchString(n.Value)
+		case "!!null", "!!bool", "!!int", "!!float":
+			return false
 		}
-		return false
+		return n.Value != "" && !envRef.MatchString(n.Value)
 	case yaml.AliasNode:
 		return true
 	case yaml.MappingNode:

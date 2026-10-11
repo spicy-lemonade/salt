@@ -111,6 +111,8 @@ type fakeGit struct {
 	// head is what Head returns, h1 when empty.
 	head    string
 	headErr error
+	// headOK is how many calls to Head succeed before headErr is returned.
+	headOK, headCalls int
 	// onStage and onCommit run during Stage and Commit; onCommit's error
 	// is Commit's.
 	onStage  func()
@@ -187,10 +189,15 @@ func (f *fakeGit) Commit(_ context.Context, _, msg string) error {
 }
 
 func (f *fakeGit) Head(string) (string, error) {
-	if f.head == "" {
-		return "h1", f.headErr
+	f.headCalls++
+	err := f.headErr
+	if f.headCalls <= f.headOK {
+		err = nil
 	}
-	return f.head, f.headErr
+	if f.head == "" {
+		return "h1", err
+	}
+	return f.head, err
 }
 
 func (f *fakeGit) Lease(ctx context.Context, _ string, known []string) (string, error) {
@@ -605,6 +612,35 @@ func TestDoctorProblems(t *testing.T) {
 			}
 			if tt.fails != errors.Is(err, ErrReported) {
 				t.Errorf("err = %v, want failure=%v\n%s", err, tt.fails, out)
+			}
+		})
+	}
+}
+
+// Doctor never shows a password or token held in origin's URL, and shows
+// every other URL as it is, the SSH form's user included.
+func TestDoctorHidesRemoteCredentials(t *testing.T) {
+	// Subtests are not named by URL, since the name is in the test's
+	// temporary folder, which doctor shows.
+	for _, tt := range []struct{ name, remote, want, never string }{
+		{"user and token", "https://x-access-token:ghp_SECRET123@github.com/you/backup.git", "remote: https://github.com/you/backup.git", "SECRET123"},
+		{"token as user", "https://ghp_SECRET123@github.com/you/backup.git", "remote: https://github.com/you/backup.git", "SECRET123"},
+		{"ssh", "git@github.com:you/backup.git", "remote: git@github.com:you/backup.git", ""},
+		{"https", "https://github.com/you/backup.git", "remote: https://github.com/you/backup.git", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			healthyRepo(t, e)
+			e.git.remote = tt.remote
+			if err := e.app.Doctor(e.root); err != nil {
+				t.Fatalf("Doctor: %v\n%s", err, e.ui.out.String())
+			}
+			out := e.ui.out.String()
+			if !strings.Contains(out, tt.want) {
+				t.Errorf("output missing %q:\n%s", tt.want, out)
+			}
+			if tt.never != "" && strings.Contains(out, tt.never) {
+				t.Errorf("output shows %q:\n%s", tt.never, out)
 			}
 		})
 	}
