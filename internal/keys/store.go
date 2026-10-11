@@ -76,11 +76,13 @@ var ErrNotFound = errors.New("key not found")
 // be read as one salt saved.
 var ErrDamaged = errors.New("the saved key is damaged")
 
-// decode reads a secret a store saved.
+// decode reads a secret a store saved. Why it cannot is left out of the
+// error, as encoding/json quotes the byte it stopped at, which can be part
+// of the secret.
 func decode(b []byte) (Secret, error) {
 	var s Secret
 	if err := json.Unmarshal(b, &s); err != nil {
-		return Secret{}, fmt.Errorf("%w (%v)", ErrDamaged, err)
+		return Secret{}, ErrDamaged
 	}
 	return s, nil
 }
@@ -133,6 +135,9 @@ type FileStore struct{ Dir string }
 func (f FileStore) path(recipient string) string {
 	return filepath.Join(f.Dir, strings.ToLower(recipient)+".json")
 }
+
+// Path is the file that holds, or would hold, the secret for recipient.
+func (f FileStore) Path(recipient string) string { return f.path(recipient) }
 
 func (f FileStore) Get(recipient string) (Secret, error) {
 	b, err := os.ReadFile(f.path(recipient))

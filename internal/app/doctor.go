@@ -203,6 +203,8 @@ func (a *App) doctorSigning(r *report, rp *repo.Repo) {
 	switch k, rcpt, err := a.signingKey(rp); {
 	case errors.Is(err, errNoSigningKey):
 		r.add(warn, "this machine has no key to sign backups, so `salt seal` will refuse; run `salt trust %q`", rp.Root)
+	case errors.Is(err, keys.ErrDamaged):
+		r.add(fail, "%v; run `salt trust %q` to replace it", err, rp.Root)
 	case err != nil:
 		r.add(fail, "the signing key saved on this machine cannot be read: %v", err)
 	case a.wrongSigningKey(k, rcpt):

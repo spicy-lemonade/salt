@@ -21,17 +21,22 @@ var errNoSigningKey = errors.New("no signing key")
 
 // signingKey returns this machine's key for signing backups to r: the one
 // saved for the first of r's recipients that has one, and that recipient.
+// An error names the signing key's file and the public key it is for, so it
+// is never taken for the key that decrypts backups.
 func (a *App) signingKey(r *repo.Repo) (ed25519.PrivateKey, string, error) {
 	for _, rcpt := range r.RecipientStrings {
 		s, err := a.signStore().Get(rcpt)
 		if errors.Is(err, keys.ErrNotFound) {
 			continue
 		}
-		if err != nil {
-			return nil, rcpt, err
+		var k ed25519.PrivateKey
+		if err == nil {
+			k, err = s.SigningKey()
 		}
-		k, err := s.SigningKey()
-		return k, rcpt, err
+		if err != nil {
+			return nil, rcpt, fmt.Errorf("the key in %s that signs backups for %s: %w", a.short(a.signStore().Path(rcpt)), shortKey(rcpt), err)
+		}
+		return k, rcpt, nil
 	}
 	return nil, "", errNoSigningKey
 }
@@ -55,11 +60,13 @@ func (a *App) saveSigningKey(id *age.X25519Identity) error {
 
 // ensureSigningKey makes sure this machine can sign backups to r. The key is
 // derived from r's decryption key, taken from the keychain or by asking for
-// the recovery phrase or passphrase. A saved key that does not match the
-// decryption key saved here is replaced (see wrongSigningKey).
+// the recovery phrase or passphrase. A saved key that is damaged, or does
+// not match the decryption key saved here (see wrongSigningKey), is
+// replaced.
 func (a *App) ensureSigningKey(r *repo.Repo) error {
 	switch k, rcpt, err := a.signingKey(r); {
-	case errors.Is(err, errNoSigningKey):
+	case errors.Is(err, errNoSigningKey), errors.Is(err, keys.ErrDamaged):
+		// None, or a damaged one, which is replaced.
 	case err != nil:
 		return err
 	case !a.wrongSigningKey(k, rcpt):

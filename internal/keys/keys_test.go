@@ -238,7 +238,7 @@ func TestDamagedSecret(t *testing.T) {
 	}
 	file := FileStore{Dir: t.TempDir()}
 	os.WriteFile(file.path("age1x"), []byte("not json"), 0o600)
-	if _, err := file.Get("age1x"); !errors.Is(err, ErrDamaged) {
+	if _, err := file.Get("age1x"); !errors.Is(err, ErrDamaged) || strings.Contains(err.Error(), "'o'") {
 		t.Fatalf("FileStore.Get of a damaged secret = %v", err)
 	}
 	fs := FallbackStore{Primary: KeyringStore{}, Secondary: &MemStore{}}

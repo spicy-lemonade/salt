@@ -152,16 +152,26 @@ func TestTrustSetsUpSigningFromThePhrase(t *testing.T) {
 func TestSigningKeyStoreErrors(t *testing.T) {
 	e := newEnv(t)
 	healthyRepo(t, e)
-	os.WriteFile(signingFile(t, e), []byte("not json"), 0o600)
-	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); err == nil || !strings.Contains(err.Error(), "reading the signing key") {
+	// A damaged signing key is named as the key that signs backups, by its
+	// file, and the message says how to replace it, without quoting any of
+	// what is in it.
+	damaged := signingFile(t, e)
+	os.WriteFile(damaged, []byte("Xnot json"), 0o600)
+	err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root})
+	if err == nil || !errors.Is(err, keys.ErrDamaged) || !strings.Contains(err.Error(), "the key in "+damaged+" that signs backups for") ||
+		!strings.Contains(err.Error(), "salt trust") || strings.Contains(err.Error(), "'X'") {
 		t.Fatalf("seal with a damaged signing key: %v", err)
 	}
-	if err := e.app.Trust(e.root, true); err == nil {
-		t.Fatal("trust with a damaged signing key succeeded")
-	}
 	e.app.Doctor(e.root)
-	if !strings.Contains(e.ui.out.String(), "✗ the signing key saved on this machine cannot be read") {
-		t.Fatalf("doctor with a damaged signing key:\n%s", e.ui.out.String())
+	if out := e.ui.out.String(); !strings.Contains(out, "✗ the key in "+damaged+" that signs backups for") || !strings.Contains(out, "run `salt trust") {
+		t.Fatalf("doctor with a damaged signing key:\n%s", out)
+	}
+	// Trust replaces it, so the next seal signs again.
+	if err := e.app.Trust(e.root, true); err != nil {
+		t.Fatalf("trust with a damaged signing key: %v", err)
+	}
+	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); err != nil {
+		t.Fatalf("seal after trust replaced the damaged signing key: %v", err)
 	}
 
 	// A signing store that cannot be made (here, a link to a missing folder)
