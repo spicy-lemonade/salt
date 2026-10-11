@@ -37,9 +37,10 @@ type Terminal struct {
 	out, raw io.Writer
 	// Context, if set, stops ReadLine waiting for an answer as soon as it
 	// is cancelled, as by Ctrl-C in a command that catches it, which would
-	// otherwise notice only once the question was answered. A line asked
-	// for once it is cancelled returns its error at once. ReadSecret needs
-	// none, as Ctrl-C reaches it as a key (see readHidden).
+	// otherwise notice only once the question was answered. A question asked
+	// once it is cancelled, by ReadLine or ReadSecret, returns its error at
+	// once, so nothing reads the terminal after. ReadSecret needs nothing
+	// more, as Ctrl-C reaches it as a key (see readHidden).
 	Context context.Context
 }
 
@@ -71,6 +72,9 @@ func (t *Terminal) ReadLine(prompt string) (string, error) {
 }
 
 func (t *Terminal) ReadSecret(prompt string) (string, error) {
+	if t.Context != nil && t.Context.Err() != nil {
+		return "", t.Context.Err()
+	}
 	fd := int(os.Stdin.Fd())
 	if !isTerminal(fd) {
 		return t.ReadLine(prompt)

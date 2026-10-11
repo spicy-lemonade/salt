@@ -850,9 +850,19 @@ func TestTerminalReadsSecretInRawMode(t *testing.T) {
 		}
 	}
 
+	// Once the Terminal's Context is cancelled, a secret is not read at all,
+	// and the terminal is left as it is.
+	*restored = nil
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tm := &Terminal{in: bufio.NewReader(strings.NewReader("pw\r")), out: io.Discard, raw: io.Discard, Context: ctx}
+	if _, err := tm.ReadSecret("Passphrase: "); !errors.Is(err, context.Canceled) || len(*restored) != 0 {
+		t.Fatalf("ReadSecret once cancelled = %v, terminal changed %d times", err, len(*restored))
+	}
+
 	// A read that fails part way also puts the terminal back.
 	*restored = nil
-	tm := &Terminal{in: bufio.NewReader(io.MultiReader(strings.NewReader("ab"), iotest.ErrReader(errors.New("gone")))), out: io.Discard, raw: io.Discard}
+	tm = &Terminal{in: bufio.NewReader(io.MultiReader(strings.NewReader("ab"), iotest.ErrReader(errors.New("gone")))), out: io.Discard, raw: io.Discard}
 	if _, err := tm.ReadSecret("Passphrase: "); err == nil || err.Error() != "gone" || len(*restored) != 1 {
 		t.Fatalf("ReadSecret with a failing read = %v, restored %d times", err, len(*restored))
 	}
