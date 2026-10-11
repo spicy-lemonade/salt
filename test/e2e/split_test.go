@@ -93,7 +93,9 @@ func TestSealChunksAFileOverTheLimit(t *testing.T) {
 			objects++
 		}
 	}
-	if chunks := size / (16 << 20); objects < chunks+1 {
+	// Chunks are at most 16 MiB, so there are at least size/16 MiB of them,
+	// rounded up.
+	if chunks := (size + 16<<20 - 1) / (16 << 20); objects < chunks+1 {
 		t.Errorf("pushed %d objects, want at least %d chunks and 1 small file", objects, chunks)
 	}
 
