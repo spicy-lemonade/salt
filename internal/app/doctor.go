@@ -1,7 +1,6 @@
 package app
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -161,24 +160,22 @@ func (a *App) doctorKeys(r *report, rp *repo.Repo) {
 		}
 	}
 
-	note := ""
-	for _, rcpt := range rp.RecipientStrings {
-		_, err := a.storedIdentity(rcpt)
-		if errors.Is(err, keys.ErrNotFound) {
-			note = cmp.Or(note, keychainNote(err))
+	saved, note := a.savedKeys(rp.RecipientStrings)
+	for _, k := range saved {
+		if errors.Is(k.err, keys.ErrNotFound) {
 			continue
 		}
-		if errors.Is(err, errDamagedKey) {
-			r.add(fail, "the key saved for %s in the %s is damaged", shortKey(rcpt), a.StoreName)
+		if errors.Is(k.err, errDamagedKey) {
+			r.add(fail, "the key saved for %s in the %s is damaged", shortKey(k.rcpt), a.StoreName)
 			return
 		}
-		if err != nil {
-			r.add(warn, "could not read the %s: %v", a.StoreName, err)
+		if k.err != nil {
+			r.add(warn, "could not read the %s: %v", a.StoreName, k.err)
 			return
 		}
 		where := "the " + a.StoreName
 		if l, isLocator := a.Store.(interface{ Location(string) string }); isLocator {
-			if loc := l.Location(rcpt); loc != "" {
+			if loc := l.Location(k.rcpt); loc != "" {
 				where = "private file " + a.short(loc)
 			}
 		}

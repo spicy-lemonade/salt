@@ -43,17 +43,15 @@ func (a *App) RecoveryShow(repoRoot string) error {
 	if !a.UI.Interactive() {
 		return ErrNotInteractive
 	}
-	note := ""
-	for _, rcpt := range r.RecipientStrings {
-		s, err := a.Store.Get(rcpt)
-		if errors.Is(err, keys.ErrNotFound) {
-			note = cmp.Or(note, keychainNote(err))
+	saved, note := a.savedKeys(r.RecipientStrings)
+	for _, k := range saved {
+		if errors.Is(k.err, keys.ErrNotFound) || errors.Is(k.err, errDamagedKey) {
 			continue
 		}
-		if err != nil {
-			return err
+		if k.err != nil {
+			return k.err
 		}
-		words, err := s.Phrase()
+		words, err := k.secret.Phrase()
 		if err != nil {
 			continue
 		}
@@ -146,17 +144,15 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 // for the recovery phrase or passphrase (then offering to save the key).
 func (a *App) identities(r *repo.Repo) ([]age.Identity, error) {
 	var ids []age.Identity
-	note := ""
-	for _, rcpt := range r.RecipientStrings {
-		id, err := a.storedIdentity(rcpt)
-		if errors.Is(err, keys.ErrNotFound) || errors.Is(err, errDamagedKey) {
-			note = cmp.Or(note, keychainNote(err))
+	saved, note := a.savedKeys(r.RecipientStrings)
+	for _, k := range saved {
+		if errors.Is(k.err, keys.ErrNotFound) || errors.Is(k.err, errDamagedKey) {
 			continue
 		}
-		if err != nil {
-			return nil, err
+		if k.err != nil {
+			return nil, k.err
 		}
-		ids = append(ids, id)
+		ids = append(ids, k.id)
 	}
 	if len(ids) > 0 {
 		return ids, nil
@@ -190,18 +186,47 @@ var errDamagedKey = errors.New("the key saved for it on this machine is damaged"
 // rcpt. It returns keys.ErrNotFound when none is saved, and errDamagedKey
 // unless the one saved really is rcpt's.
 func (a *App) storedIdentity(rcpt string) (*age.X25519Identity, error) {
+	_, id, err := a.storedKey(rcpt)
+	return id, err
+}
+
+// storedKey is storedIdentity, with the secret the key was read from.
+func (a *App) storedKey(rcpt string) (keys.Secret, *age.X25519Identity, error) {
 	s, err := a.Store.Get(rcpt)
 	if errors.Is(err, keys.ErrDamaged) {
-		return nil, errDamagedKey
+		return keys.Secret{}, nil, errDamagedKey
 	}
 	if err != nil {
-		return nil, err
+		return keys.Secret{}, nil, err
 	}
 	id, err := s.Identity()
 	if err != nil || id.Recipient().String() != rcpt {
-		return nil, errDamagedKey
+		return keys.Secret{}, nil, errDamagedKey
 	}
-	return id, nil
+	return s, id, nil
+}
+
+// savedKey is what this machine holds for one of a repo's public keys.
+type savedKey struct {
+	rcpt   string
+	secret keys.Secret
+	id     *age.X25519Identity
+	// err is nil when id is the key saved for rcpt, and otherwise as
+	// storedKey returns it.
+	err error
+}
+
+// savedKeys returns what this machine holds for each of the public keys
+// rcpts, in order, and a note for a message saying a key is missing: that
+// the system keychain could not be read, when it could not (see
+// keychainNote), or "".
+func (a *App) savedKeys(rcpts []string) (saved []savedKey, note string) {
+	for _, rcpt := range rcpts {
+		s, id, err := a.storedKey(rcpt)
+		note = cmp.Or(note, keychainNote(err))
+		saved = append(saved, savedKey{rcpt: rcpt, secret: s, id: id, err: err})
+	}
+	return saved, note
 }
 
 // keychainNote says, for an error from the key store, that the system

@@ -102,19 +102,20 @@ func (a *App) Trust(repoRoot string, yes bool) error {
 	pin := trust.For(r)
 	a.UI.Printf("Backups to %s will be encrypted to these keys:\n", a.short(r.Root))
 	unknown := 0
-	for _, rcpt := range pin.Recipients {
+	saved, note := a.savedKeys(pin.Recipients)
+	for _, k := range saved {
 		mark := "  (your key on this machine)"
-		switch _, err := a.storedIdentity(rcpt); {
-		case errors.Is(err, keys.ErrNotFound):
-			mark = "  ⚠ NOT on this machine" + keychainNote(err)
+		switch {
+		case errors.Is(k.err, keys.ErrNotFound):
+			mark = "  ⚠ NOT on this machine" + note
 			unknown++
-		case errors.Is(err, errDamagedKey):
+		case errors.Is(k.err, errDamagedKey):
 			mark = "  ⚠ " + errDamagedKey.Error()
 			unknown++
-		case err != nil:
-			return err
+		case k.err != nil:
+			return k.err
 		}
-		a.UI.Printf("  %s%s\n", rcpt, mark)
+		a.UI.Printf("  %s%s\n", k.rcpt, mark)
 	}
 	a.UI.Printf("File names are %s.\n", map[bool]string{true: "hidden", false: "visible"}[pin.EncryptPaths])
 	if unknown > 0 {

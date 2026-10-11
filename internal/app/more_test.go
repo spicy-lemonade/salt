@@ -427,6 +427,19 @@ func TestRecoveryShowBranches(t *testing.T) {
 	if err := e.app.RecoveryShow(e.root); err == nil || !strings.Contains(err.Error(), "no recovery phrase") {
 		t.Fatalf("no key: %v", err)
 	}
+	// A phrase saved for the repo's key that is not that key's phrase is
+	// never shown, as it would not open the backup.
+	r, err := repo.Open(e.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _ := keys.NewEntropy()
+	e.app.Store.Set(r.RecipientStrings[0], keys.PhraseSecret(other))
+	e.ui.answer = func(p, out string) (string, error) { return "y", nil }
+	e.ui.out.Reset()
+	if err := e.app.RecoveryShow(e.root); err == nil || !strings.Contains(err.Error(), "no recovery phrase") || strings.Contains(e.ui.out.String(), " 1. ") {
+		t.Fatalf("another key's phrase: %v\n%s", err, e.ui.out.String())
+	}
 	if err := e.app.RecoveryShow(t.TempDir()); !errors.Is(err, repo.ErrNotInitialised) {
 		t.Fatalf("not a repo: %v", err)
 	}
