@@ -88,6 +88,15 @@ func TestRestoreLog(t *testing.T) {
 	if _, err := l.leftovers(); err != nil {
 		t.Fatalf("after add: %v", err)
 	}
+
+	// A records folder or an older list that is not what salt writes, such
+	// as a file in place of the folder, is reported.
+	broken := restoreLog{dir: filepath.Join(base, "c-file"), older: filepath.Join(base, "a-folder")}
+	os.WriteFile(broken.dir, nil, 0o600)
+	os.Mkdir(broken.older, 0o700)
+	if _, err := broken.leftovers(); err == nil || !strings.Contains(err.Error(), "c-file") || !strings.Contains(err.Error(), "a-folder") {
+		t.Fatalf("leftovers with a file for the folder and a folder for the list: %v", err)
+	}
 }
 
 // Restores running at once each keep their own record, however their adds

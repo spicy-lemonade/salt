@@ -211,6 +211,9 @@ func TestFallbackStoreKeychainError(t *testing.T) {
 	if !errors.Is(err, ErrNotFound) || !errors.As(err, &kc) || !strings.Contains(err.Error(), "the system keychain could not be read (no keychain)") {
 		t.Fatalf("Get with a broken keychain = %v, want ErrNotFound naming the keychain's error", err)
 	}
+	if errors.Unwrap(err) == nil || errors.Unwrap(err).Error() != "no keychain" {
+		t.Fatalf("Unwrap = %v, want the keychain's own error", errors.Unwrap(err))
+	}
 	ok := FallbackStore{Primary: &MemStore{}, Secondary: &MemStore{}}
 	if _, err := ok.Get("age1x"); err != ErrNotFound {
 		t.Fatalf("Get missing from both = %v, want ErrNotFound itself", err)
