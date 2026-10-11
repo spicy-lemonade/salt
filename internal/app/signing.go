@@ -20,10 +20,15 @@ func (a *App) signStore() keys.FileStore { return keys.FileStore{Dir: a.SignDir}
 var errNoSigningKey = errors.New("no signing key")
 
 // signingKey returns this machine's key for signing backups to r: the one
-// saved for the first of r's recipients that has one, and that recipient.
-// An error names the signing key's file and the public key it is for, so it
-// is never taken for the key that decrypts backups.
+// saved for the first of r's recipients that has one it can use, and that
+// recipient. One it cannot use, such as a damaged one, is passed over, so a
+// good one for a later recipient, such as the one salt trust saves, is
+// still found. Only when none can be used is the first such failure
+// returned. Its error names the signing key's file and the public key it is
+// for, so it is never taken for the key that decrypts backups.
 func (a *App) signingKey(r *repo.Repo) (ed25519.PrivateKey, string, error) {
+	var firstErr error
+	var firstRcpt string
 	for _, rcpt := range r.RecipientStrings {
 		s, err := a.signStore().Get(rcpt)
 		if errors.Is(err, keys.ErrNotFound) {
@@ -33,10 +38,16 @@ func (a *App) signingKey(r *repo.Repo) (ed25519.PrivateKey, string, error) {
 		if err == nil {
 			k, err = s.SigningKey()
 		}
-		if err != nil {
-			return nil, rcpt, fmt.Errorf("the key in %s that signs backups for %s: %w", a.short(a.signStore().Path(rcpt)), shortKey(rcpt), err)
+		if err == nil {
+			return k, rcpt, nil
 		}
-		return k, rcpt, nil
+		if firstErr == nil {
+			firstRcpt = rcpt
+			firstErr = fmt.Errorf("the key in %s that signs backups for %s: %w", a.short(a.signStore().Path(rcpt)), shortKey(rcpt), err)
+		}
+	}
+	if firstErr != nil {
+		return nil, firstRcpt, firstErr
 	}
 	return nil, "", errNoSigningKey
 }

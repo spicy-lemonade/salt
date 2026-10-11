@@ -342,3 +342,42 @@ func TestTrustMarksADamagedKey(t *testing.T) {
 		t.Fatalf("identities used a damaged key:\n%s", e.ui.out.String())
 	}
 }
+
+// A damaged signing key for one recipient does not stop a good one for a
+// later recipient being used. With recipients A then B, A's signing key
+// damaged and only B's key on this machine, trust saves a signing key for B,
+// and every seal after signs with it, rather than stopping at A's.
+func TestDamagedSigningKeyForAnotherRecipient(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	a := signingFile(t, e) // the first recipient's
+	os.WriteFile(a, []byte("not json"), 0o600)
+
+	b, _ := age.GenerateX25519Identity()
+	recipients := filepath.Join(e.root, repo.RecipientsFile)
+	old, err := os.ReadFile(recipients)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recipients, append(old, []byte(b.Recipient().String()+"\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := &keys.MemStore{}
+	store.Set(b.Recipient().String(), keys.IdentitySecret(b))
+	e.app.Store = store
+
+	if err := e.app.Trust(e.root, true); err != nil {
+		t.Fatalf("trust: %v\n%s", err, e.ui.out.String())
+	}
+	for i := range 2 {
+		if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); err != nil {
+			t.Fatalf("seal %d after trust: %v", i+1, err)
+		}
+	}
+	// With no signing key that can be used, the first one's failure is what
+	// is said, as before.
+	os.Remove(filepath.Join(e.app.SignDir, b.Recipient().String()+".json"))
+	if err := e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root}); !errors.Is(err, keys.ErrDamaged) || !strings.Contains(err.Error(), "the key in "+a) {
+		t.Fatalf("seal with only a damaged signing key: %v", err)
+	}
+}
