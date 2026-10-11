@@ -1625,3 +1625,13 @@ func TestMaxCipher(t *testing.T) {
 		t.Errorf("maxCipher near the top = %d, want no limit", got)
 	}
 }
+
+// A repository folder that is no longer there stops the seal before
+// anything is read.
+func TestSealRepoFolderGone(t *testing.T) {
+	f := newFixture(t, true)
+	f.repo.Root = filepath.Join(t.TempDir(), "gone")
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Seal into a missing repo folder = %v", err)
+	}
+}
