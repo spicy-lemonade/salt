@@ -75,13 +75,11 @@ func StagedPaths(dir string) ([]string, error) {
 // single `git cat-file --batch`, so memory use stays bounded however large
 // the files are. Paths containing a newline cannot be passed to cat-file and
 // are reported with ok=false.
-func BlobHeads(dir, rev string, paths []string, n int, fn func(path string, head []byte, ok bool) error) error {
+func BlobHeads(dir, rev string, paths []string, n int, fn func(path string, head []byte, ok bool)) error {
 	var names, specs []string
 	for _, p := range paths {
 		if strings.ContainsAny(p, "\n\r") {
-			if err := fn(p, nil, false); err != nil {
-				return err
-			}
+			fn(p, nil, false)
 			continue
 		}
 		names = append(names, p)
@@ -95,7 +93,7 @@ type Blob struct{ ID, Path string }
 
 // BlobIDHeads is BlobHeads for blobs named by their IDs. fn is given each
 // blob's path.
-func BlobIDHeads(dir string, blobs []Blob, n int, fn func(path string, head []byte, ok bool) error) error {
+func BlobIDHeads(dir string, blobs []Blob, n int, fn func(path string, head []byte, ok bool)) error {
 	names, specs := make([]string, len(blobs)), make([]string, len(blobs))
 	for i, b := range blobs {
 		names[i], specs[i] = b.Path, b.ID
@@ -107,7 +105,7 @@ func BlobIDHeads(dir string, blobs []Blob, n int, fn func(path string, head []by
 // specs[i] names, for each i, through one `git cat-file --batch`. An object
 // that is missing or not a blob, such as a submodule, is reported with
 // ok=false. No spec may hold a newline.
-func objectHeads(dir string, names, specs []string, n int, fn func(name string, head []byte, ok bool) error) error {
+func objectHeads(dir string, names, specs []string, n int, fn func(name string, head []byte, ok bool)) error {
 	if len(specs) == 0 {
 		return nil
 	}
@@ -133,58 +131,64 @@ func objectHeads(dir string, names, specs []string, n int, fn func(name string, 
 		w.Flush()
 		stdin.Close()
 	}()
-	r := bufio.NewReader(stdout)
-	head := make([]byte, n)
-	var cbErr error
-	// fromGit is whether cbErr is from reading git's output, which ends
-	// early when git fails, so git's own message is added to it.
-	fromGit := true
-	for _, name := range names {
-		line, err := r.ReadString('\n')
-		if err != nil {
-			cbErr = fmt.Errorf("git cat-file: %w", err)
-			break
-		}
-		fields := strings.Fields(line)
-		if len(fields) != 3 || fields[1] != "blob" {
-			// "missing" or a non-blob (e.g. a submodule): never ciphertext.
-			if cbErr = fn(name, nil, false); cbErr != nil {
-				fromGit = false
-				break
-			}
-			continue
-		}
-		size, err := strconv.ParseInt(fields[2], 10, 64)
-		if err != nil {
-			cbErr = fmt.Errorf("git cat-file: bad size in %q", line)
-			break
-		}
-		k := int(min(size, int64(n)))
-		if _, err := io.ReadFull(r, head[:k]); err != nil {
-			cbErr = fmt.Errorf("git cat-file: %w", err)
-			break
-		}
-		if _, err := io.CopyN(io.Discard, r, size-int64(k)+1); err != nil { // +1: trailing newline
-			cbErr = fmt.Errorf("git cat-file: %w", err)
-			break
-		}
-		if cbErr = fn(name, head[:k], true); cbErr != nil {
-			fromGit = false
-			break
-		}
-	}
-	if cbErr != nil {
+	if err := ReadBatch(stdout, names, n, fn); err != nil {
+		// git's output ends early when git fails, so its own message says
+		// why.
 		cmd.Process.Kill()
 		cmd.Wait()
-		if msg := strings.TrimSpace(stderr.String()); fromGit && msg != "" {
-			cbErr = fmt.Errorf("%w: %s", cbErr, msg)
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			err = fmt.Errorf("%w: %s", err, msg)
 		}
-		return cbErr
+		return err
 	}
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("git cat-file: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+// ReadBatch reads `git cat-file --batch` output for one object for each of
+// names, in order, and calls fn with the name and the object's first n
+// bytes. An object that is missing or not a blob, such as a submodule, is
+// reported with ok=false. Each blob is read through, so memory use stays
+// bounded however large it is.
+func ReadBatch(r io.Reader, names []string, n int, fn func(name string, head []byte, ok bool)) error {
+	br := bufio.NewReader(r)
+	head := &prefix{buf: make([]byte, 0, n)}
+	for _, name := range names {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("git cat-file: %w", err)
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 3 || fields[1] != "blob" {
+			// "missing" or a non-blob (e.g. a submodule): never ciphertext.
+			fn(name, nil, false)
+			continue
+		}
+		size, err := strconv.ParseInt(fields[2], 10, 64)
+		if err != nil || size < 0 {
+			return fmt.Errorf("git cat-file: bad size in %q", line)
+		}
+		head.buf, head.max = head.buf[:0], int(min(size, int64(n)))
+		if _, err := io.CopyN(head, br, size+1); err != nil { // +1: trailing newline
+			return fmt.Errorf("git cat-file: %w", err)
+		}
+		fn(name, head.buf, true)
+	}
+	return nil
+}
+
+// prefix keeps the first max bytes written to it and drops the rest, in
+// buf, whose capacity is at least max.
+type prefix struct {
+	buf []byte
+	max int
+}
+
+func (p *prefix) Write(b []byte) (int, error) {
+	p.buf = append(p.buf, b[:min(len(b), p.max-len(p.buf))]...)
+	return len(b), nil
 }
 
 // BlobSpec names the blob for path at rev ("" for the index). For the index

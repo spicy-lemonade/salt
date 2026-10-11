@@ -2,6 +2,7 @@ package gitx
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -91,6 +92,42 @@ func TestParseLog(t *testing.T) {
 	} {
 		if _, err := ParseLog(bad); err == nil {
 			t.Errorf("ParseLog(%q) accepted", bad)
+		}
+	}
+}
+
+// ReadBatch gives each blob's first bytes, however large the blob, reports a
+// missing object or one that is not a blob as not a file, and refuses output
+// it cannot read, such as one that ends part way.
+func TestReadBatch(t *testing.T) {
+	big := "age-encryption.org/v1\n" + strings.Repeat("x", 100<<10)
+	out := "1111 blob 3\nabc\n" +
+		":0:gone missing\n" +
+		"2222 commit 10\n" +
+		"3333 blob " + fmt.Sprint(len(big)) + "\n" + big + "\n" +
+		"4444 blob 0\n\n"
+	type got struct {
+		name, head string
+		ok         bool
+	}
+	var seen []got
+	err := ReadBatch(strings.NewReader(out), []string{"a", "gone", "sub", "big", "empty"}, 8, func(name string, head []byte, ok bool) {
+		seen = append(seen, got{name, string(head), ok})
+	})
+	want := []got{{"a", "abc", true}, {"gone", "", false}, {"sub", "", false}, {"big", "age-encr", true}, {"empty", "", true}}
+	if err != nil || !slices.Equal(seen, want) {
+		t.Fatalf("ReadBatch = %v, %+v; want %+v", err, seen, want)
+	}
+
+	for name, out := range map[string]string{
+		"no header":        "",
+		"bad size":         "1111 blob many\n",
+		"negative size":    "1111 blob -1\n",
+		"ends in the blob": "1111 blob 10\nabc",
+	} {
+		err := ReadBatch(strings.NewReader(out), []string{"a"}, 8, func(string, []byte, bool) {})
+		if err == nil || !strings.HasPrefix(err.Error(), "git cat-file: ") {
+			t.Errorf("%s: ReadBatch = %v, want an error from reading git cat-file", name, err)
 		}
 	}
 }
