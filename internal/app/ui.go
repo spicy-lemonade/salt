@@ -189,6 +189,7 @@ func (t *Terminal) readKeys() (string, error) {
 		case c == ctrlV:
 			literal = true
 		case bytes.IndexByte(dropped, c) >= 0:
+			// Dropped, as a terminal would never pass it on.
 		default:
 			line = append(line, c)
 		}
