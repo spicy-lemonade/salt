@@ -1000,7 +1000,7 @@ func TestPassphraseWithTabCanBeTyped(t *testing.T) {
 }
 
 // damagedStore holds a damaged secret for every key.
-type damagedStore struct{ keys.MemStore }
+type damagedStore struct{ *keys.MemStore }
 
 func (damagedStore) Get(string) (keys.Secret, error) { return keys.Secret{}, keys.ErrDamaged }
 
@@ -1009,7 +1009,7 @@ func (damagedStore) Get(string) (keys.Secret, error) { return keys.Secret{}, key
 func TestDamagedSavedKey(t *testing.T) {
 	e := newEnv(t)
 	healthyRepo(t, e)
-	e.app.Store = &damagedStore{}
+	e.app.Store = damagedStore{&keys.MemStore{}}
 	e.app.Doctor(e.root)
 	if out := e.ui.out.String(); !strings.Contains(out, "✗ the key saved for") || strings.Contains(out, "could not read the") {
 		t.Fatalf("doctor with a damaged key:\n%s", out)
