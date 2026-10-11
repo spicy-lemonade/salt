@@ -775,12 +775,64 @@ func TestSealFileRemovedWhileSealed(t *testing.T) {
 	}
 }
 
-// An index that cannot be written fails the seal.
+// An index that cannot be written fails the seal, but the files it sealed
+// keep what they wrote, so the next seal only writes the index.
 func TestSealIndexWriteFails(t *testing.T) {
 	f := newFixture(t, true)
-	os.MkdirAll(filepath.Join(f.root, repo.IndexFile, "full"), 0o755)
+	blocker := filepath.Join(f.root, repo.IndexFile)
+	os.MkdirAll(filepath.Join(blocker, "full"), 0o755)
 	_, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer})
 	if err == nil || !strings.Contains(err.Error(), "writing index") {
 		t.Fatalf("seal with an index that cannot be written: %v", err)
+	}
+	os.RemoveAll(blocker)
+	res := f.seal(false)
+	if res.Encrypted != 0 || res.Reused != res.Files || !res.IndexNew {
+		t.Fatalf("seal after the index failed: %+v, want every file reused and the index written", res)
+	}
+	if _, err := Verify(f.root, f.ids(), VerifyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A seal that fails once its files are sealed, as on an index salt would
+// refuse to read, keeps what they wrote too.
+func TestSealIndexRefusedKeepsWhatFilesWrote(t *testing.T) {
+	f := newFixture(t, true)
+	entriesHook = func(entries []Entry) []Entry {
+		return append(entries, Entry{Path: "../escape", Object: "objects/aa/b.age", SHA256: strings.Repeat("0", 64)})
+	}
+	t.Cleanup(func() { entriesHook = nil })
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); err == nil {
+		t.Fatal("sealed an index restore would refuse")
+	}
+	entriesHook = nil
+	if res := f.seal(false); res.Encrypted != 0 || res.Reused != res.Files {
+		t.Fatalf("seal after the refused index: %+v, want every file reused", res)
+	}
+}
+
+// A seal whose clean-up fails, after the index is written, records the new
+// index, so the next seal neither encrypts the changed file again nor
+// rewrites the index.
+func TestSealCleanupFailureKeepsCache(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root removes files from read-only folders")
+	}
+	f := newFixture(t, true)
+	f.seal(false)
+	locked := filepath.Join(f.root, repo.ObjectsDir, "zz")
+	os.MkdirAll(locked, 0o755)
+	os.WriteFile(filepath.Join(locked, "stale.age"), []byte("old"), 0o644)
+	os.Chmod(locked, 0o555)
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	f.write("NOTES.md", "be kinder\n")
+	if _, err := Seal(f.src, f.repo, Options{CacheDir: f.cache, Signer: f.signer}); err == nil {
+		t.Fatal("clean-up of a read-only folder did not fail")
+	}
+	os.Chmod(locked, 0o755)
+	res := f.seal(false)
+	if res.Encrypted != 0 || res.IndexNew || !slices.Contains(res.Removed, "objects/zz/stale.age") {
+		t.Fatalf("seal after the clean-up failed: %+v, want nothing encrypted or rewritten, and the stale file removed", res)
 	}
 }

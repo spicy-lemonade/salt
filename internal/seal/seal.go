@@ -366,36 +366,45 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 		}
 	}
 
+	// A failure from here on also keeps what the files wrote, as one while
+	// sealing them does: next records it, with the index as it is until it
+	// is written. Losing this save only costs that reuse.
+	next.IndexSHA, next.IndexSize, next.IndexModTime = c.IndexSHA, c.IndexSize, c.IndexModTime
+	fail := func(err error) (*Result, error) {
+		next.save(cPath)
+		return nil, err
+	}
 	if entriesHook != nil {
 		entries = entriesHook(entries)
 	}
 	if err := checkIndexEntries(entries); err != nil {
-		return nil, err
+		return fail(err)
 	}
 	ix := &Index{Version: version, Entries: entries}
 	ix.sign(opt.Signer)
 	b, ixSHA, err := ix.marshal()
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
 	if len(b) > maxIndexSize {
-		return nil, fmt.Errorf("the index would be %d bytes; salt supports at most %d", len(b), maxIndexSize)
+		return fail(fmt.Errorf("the index would be %d bytes; salt supports at most %d", len(b), maxIndexSize))
 	}
-	next.IndexSHA = ixSHA
 	ixPart, ok := partIntact(rt, cachePart{Object: repo.IndexFile, CipherSize: c.IndexSize, ModTime: c.IndexModTime})
 	if ixSHA != c.IndexSHA || !ok {
 		_, parts, err := encryptTo(rt, repo.IndexFile, bytes.NewReader(b), r.Recipients, 0)
 		if err != nil {
-			return nil, fmt.Errorf("writing index: %w", err)
+			return fail(fmt.Errorf("writing index: %w", err))
 		}
 		ixPart = parts[0]
 		res.IndexNew = true
 	}
-	next.IndexSize, next.IndexModTime = ixPart.CipherSize, ixPart.ModTime
+	// Only now is the index on disk the one next names.
+	next.IndexSHA, next.IndexSize, next.IndexModTime = ixSHA, ixPart.CipherSize, ixPart.ModTime
 
 	removed, err := removeStale(rt, keep, opt.Prune)
 	res.Removed = removed
 	if err != nil {
+		next.save(cPath)
 		return res, err
 	}
 	return res, next.save(cPath)
