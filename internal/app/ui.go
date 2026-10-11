@@ -103,7 +103,10 @@ const (
 // Backspace removes the last character, Ctrl-U the whole line, and Ctrl-D
 // on an empty line ends the input. Every other byte is kept, a tab or any
 // other control character included, as term.ReadPassword keeps them, so a
-// passphrase set with one, as through --passphrase-file, can be typed.
+// passphrase set with one, as through --passphrase-file, can be typed. A
+// line ends at \r or \n, and a \n already read in straight after a \r, as
+// when a line copied on Windows is pasted, ends it too, so the next question
+// does not take it for an empty answer.
 func (t *Terminal) readHidden(fd int) (string, error) {
 	state, err := makeRaw(fd)
 	if err != nil {
@@ -120,7 +123,16 @@ func (t *Terminal) readHidden(fd int) (string, error) {
 			return "", err
 		}
 		switch c {
-		case '\r', '\n':
+		case '\r':
+			// Only what has already arrived is looked at, so this never
+			// waits for another key.
+			if t.in.Buffered() > 0 {
+				if next, _ := t.in.Peek(1); next[0] == '\n' {
+					t.in.Discard(1)
+				}
+			}
+			return string(line), nil
+		case '\n':
 			return string(line), nil
 		case ctrlC:
 			return "", ErrInterrupted

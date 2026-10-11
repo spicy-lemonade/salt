@@ -825,6 +825,7 @@ func TestTerminalReadsSecretInRawMode(t *testing.T) {
 	}{
 		{typed: "pass word\r", want: "pass word"},
 		{typed: "pass\nnext", want: "pass"},
+		{typed: "pass\r\n", want: "pass"},
 		{typed: "abc\x7fd\r", want: "abd"},
 		{typed: "abc\bd\r", want: "abd"},
 		{typed: "xé\x7f\r", want: "x"},
@@ -850,6 +851,19 @@ func TestTerminalReadsSecretInRawMode(t *testing.T) {
 		}
 		if out.String() != "Passphrase: \n" {
 			t.Errorf("ReadSecret(%q) printed %q, want only the prompt and a newline", tt.typed, out.String())
+		}
+	}
+
+	// A passphrase pasted with a Windows line ending leaves nothing behind for
+	// the next question, which reads its own answer, not an empty one. A \n
+	// on its own after the line is still the next answer.
+	for typed, next := range map[string]string{"pw\r\nn\n": "n", "pw\r\n\n": "", "pw\rn\n": "n"} {
+		tm := &Terminal{in: bufio.NewReader(strings.NewReader(typed)), out: io.Discard, raw: io.Discard}
+		if pw, err := tm.ReadSecret("Passphrase: "); err != nil || pw != "pw" {
+			t.Fatalf("ReadSecret(%q) = %q, %v", typed, pw, err)
+		}
+		if got, err := tm.ReadLine("Save the key? "); err != nil || got != next {
+			t.Errorf("after %q, the next answer = %q, %v; want %q", typed, got, err, next)
 		}
 	}
 
