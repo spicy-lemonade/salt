@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"slices"
 	"strings"
 
@@ -43,9 +44,14 @@ func (a *App) RecoveryShow(repoRoot string) error {
 	if !a.UI.Interactive() {
 		return ErrNotInteractive
 	}
-	saved, note := a.savedKeys(r.RecipientStrings)
-	for _, k := range saved {
-		if errors.Is(k.err, keys.ErrNotFound) || errors.Is(k.err, errDamagedKey) {
+	var note string
+	damaged := false
+	for k := range a.savedKeys(r.RecipientStrings, &note) {
+		if errors.Is(k.err, keys.ErrNotFound) {
+			continue
+		}
+		if errors.Is(k.err, errDamagedKey) {
+			damaged = true
 			continue
 		}
 		if k.err != nil {
@@ -68,6 +74,9 @@ func (a *App) RecoveryShow(repoRoot string) error {
 		}
 		a.UI.Clear()
 		return nil
+	}
+	if damaged {
+		return fmt.Errorf("the key saved for this backup on this machine (%s) is damaged, so its recovery phrase cannot be shown. Your written-down phrase still opens the backup", a.StoreName)
 	}
 	return fmt.Errorf("no recovery phrase for this backup is saved on this machine (%s)%s", a.StoreName, note)
 }
@@ -144,8 +153,8 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 // for the recovery phrase or passphrase (then offering to save the key).
 func (a *App) identities(r *repo.Repo) ([]age.Identity, error) {
 	var ids []age.Identity
-	saved, note := a.savedKeys(r.RecipientStrings)
-	for _, k := range saved {
+	var note string
+	for k := range a.savedKeys(r.RecipientStrings, &note) {
 		if errors.Is(k.err, keys.ErrNotFound) || errors.Is(k.err, errDamagedKey) {
 			continue
 		}
@@ -216,17 +225,21 @@ type savedKey struct {
 	err error
 }
 
-// savedKeys returns what this machine holds for each of the public keys
-// rcpts, in order, and a note for a message saying a key is missing: that
-// the system keychain could not be read, when it could not (see
-// keychainNote), or "".
-func (a *App) savedKeys(rcpts []string) (saved []savedKey, note string) {
-	for _, rcpt := range rcpts {
-		s, id, err := a.storedKey(rcpt)
-		note = cmp.Or(note, keychainNote(err))
-		saved = append(saved, savedKey{rcpt: rcpt, secret: s, id: id, err: err})
+// savedKeys yields what this machine holds for each of the public keys
+// rcpts, in order. Each is looked up only when the loop reaches it, so a
+// loop that stops at the first key found looks up no more. Along the way,
+// *note becomes a note for a message saying a key is missing: that the
+// system keychain could not be read, when it could not (see keychainNote).
+func (a *App) savedKeys(rcpts []string, note *string) iter.Seq[savedKey] {
+	return func(yield func(savedKey) bool) {
+		for _, rcpt := range rcpts {
+			s, id, err := a.storedKey(rcpt)
+			*note = cmp.Or(*note, keychainNote(err))
+			if !yield(savedKey{rcpt: rcpt, secret: s, id: id, err: err}) {
+				return
+			}
+		}
 	}
-	return saved, note
 }
 
 // keychainNote says, for an error from the key store, that the system

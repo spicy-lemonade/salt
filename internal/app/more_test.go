@@ -428,7 +428,7 @@ func TestRecoveryShowBranches(t *testing.T) {
 		t.Fatalf("no key: %v", err)
 	}
 	// A phrase saved for the repo's key that is not that key's phrase is
-	// never shown, as it would not open the backup.
+	// never shown, as it would not open the backup, and is called damaged.
 	r, err := repo.Open(e.root)
 	if err != nil {
 		t.Fatal(err)
@@ -437,7 +437,7 @@ func TestRecoveryShowBranches(t *testing.T) {
 	e.app.Store.Set(r.RecipientStrings[0], keys.PhraseSecret(other))
 	e.ui.answer = func(p, out string) (string, error) { return "y", nil }
 	e.ui.out.Reset()
-	if err := e.app.RecoveryShow(e.root); err == nil || !strings.Contains(err.Error(), "no recovery phrase") || strings.Contains(e.ui.out.String(), " 1. ") {
+	if err := e.app.RecoveryShow(e.root); err == nil || !strings.Contains(err.Error(), "the key saved for this backup on this machine (test store) is damaged") || strings.Contains(e.ui.out.String(), " 1. ") {
 		t.Fatalf("another key's phrase: %v\n%s", err, e.ui.out.String())
 	}
 	if err := e.app.RecoveryShow(t.TempDir()); !errors.Is(err, repo.ErrNotInitialised) {
@@ -1026,5 +1026,46 @@ func TestDamagedSavedKey(t *testing.T) {
 	e.app.Doctor(e.root)
 	if out := e.ui.out.String(); !strings.Contains(out, "✗ the key saved for") || strings.Contains(out, "could not read the") {
 		t.Fatalf("doctor with a damaged key:\n%s", out)
+	}
+}
+
+// countingStore counts the keys looked up in it.
+type countingStore struct {
+	*keys.MemStore
+	gets int
+}
+
+func (c *countingStore) Get(rcpt string) (keys.Secret, error) {
+	c.gets++
+	return c.MemStore.Get(rcpt)
+}
+
+// savedKeys looks up each key only when the loop reaches it, so a loop that
+// stops at the first key found looks up no more, and the keychain note is
+// set from those it looked up.
+func TestSavedKeysLooksUpOnlyWhatIsReached(t *testing.T) {
+	e := newEnv(t)
+	store := &countingStore{MemStore: &keys.MemStore{}}
+	e.app.Store = store
+	id, _ := age.GenerateX25519Identity()
+	store.Set(id.Recipient().String(), keys.IdentitySecret(id))
+	other, _ := age.GenerateX25519Identity()
+	rcpts := []string{id.Recipient().String(), other.Recipient().String(), "age1unused"}
+	var note string
+	for k := range e.app.savedKeys(rcpts, &note) {
+		if k.err != nil || k.id.Recipient().String() != rcpts[0] {
+			t.Fatalf("first key = %+v", k)
+		}
+		break
+	}
+	if store.gets != 1 || note != "" {
+		t.Fatalf("looked up %d keys, note %q; want 1 and none", store.gets, note)
+	}
+	n := 0
+	for range e.app.savedKeys(rcpts, &note) {
+		n++
+	}
+	if n != 3 || store.gets != 4 {
+		t.Fatalf("yielded %d keys after %d lookups, want 3 after 4", n, store.gets)
 	}
 }

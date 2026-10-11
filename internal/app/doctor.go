@@ -160,8 +160,8 @@ func (a *App) doctorKeys(r *report, rp *repo.Repo) {
 		}
 	}
 
-	saved, note := a.savedKeys(rp.RecipientStrings)
-	for _, k := range saved {
+	var note string
+	for k := range a.savedKeys(rp.RecipientStrings, &note) {
 		if errors.Is(k.err, keys.ErrNotFound) {
 			continue
 		}

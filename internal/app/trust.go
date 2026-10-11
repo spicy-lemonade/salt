@@ -102,8 +102,8 @@ func (a *App) Trust(repoRoot string, yes bool) error {
 	pin := trust.For(r)
 	a.UI.Printf("Backups to %s will be encrypted to these keys:\n", a.short(r.Root))
 	unknown := 0
-	saved, note := a.savedKeys(pin.Recipients)
-	for _, k := range saved {
+	var note string
+	for k := range a.savedKeys(pin.Recipients, &note) {
 		mark := "  (your key on this machine)"
 		switch {
 		case errors.Is(k.err, keys.ErrNotFound):
