@@ -601,6 +601,12 @@ func walkSource(src string, exclude []string, res *Result, fn func(string) strin
 	if !fi.IsDir() {
 		return nil, fmt.Errorf("%s is not a directory", show(fn, src))
 	}
+	// filepath.WalkDir does not go into a symlink it is given, so a source
+	// folder given as one would be sealed as empty, removing everything
+	// sealed before. It is walked where the symlink leads instead.
+	if src, err = filepath.EvalSymlinks(src); err != nil {
+		return nil, err
+	}
 	skip := map[string]bool{}
 	for _, e := range exclude {
 		skip[e] = true
@@ -838,6 +844,8 @@ func removeEmptyDirs(rt *os.Root, dir string) {
 
 // CheckDisjoint refuses a source inside the repo or a repo inside the source:
 // either would seal ciphertext into itself or leak plaintext into the repo.
+// Paths are compared with their symlinks followed, as seal walks a source
+// given as a symlink where it leads. Messages name the paths as given.
 func CheckDisjoint(src, root string, fn func(string) string) error {
 	a, err := filepath.Abs(src)
 	if err != nil {
@@ -847,10 +855,20 @@ func CheckDisjoint(src, root string, fn func(string) string) error {
 	if err != nil {
 		return err
 	}
-	if Within(a, b) || Within(b, a) {
+	ra, rb := realOr(a), realOr(b)
+	if Within(a, b) || Within(b, a) || Within(ra, rb) || Within(rb, ra) {
 		return fmt.Errorf("source %s and repository %s must not contain each other", show(fn, a), show(fn, b))
 	}
 	return nil
+}
+
+// realOr returns p with its symlinks followed, or p itself when they cannot
+// be, as when it does not exist yet.
+func realOr(p string) string {
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		return real
+	}
+	return p
 }
 
 // Within reports whether the path p is dir or inside it.

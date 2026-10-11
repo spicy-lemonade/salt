@@ -324,6 +324,52 @@ func TestSealRefusesOverlap(t *testing.T) {
 	}
 }
 
+// A source folder given as a symlink is sealed where it leads. Walking the
+// symlink itself would find nothing, and seal would then remove every file
+// sealed before.
+func TestSealSymlinkedSource(t *testing.T) {
+	f := newFixture(t, true)
+	first := f.seal(true)
+	link := filepath.Join(t.TempDir(), "current")
+	if err := os.Symlink(f.src, link); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Seal(link, f.repo, Options{CacheDir: f.cache, Signer: f.signer, Prune: true})
+	if err != nil {
+		t.Fatalf("Seal through a symlink: %v", err)
+	}
+	if res.Files != first.Files || res.Symlinks != first.Symlinks || res.Reused != first.Files || len(res.Removed) != 0 {
+		t.Fatalf("through a symlink: %+v, want the %d files and %d symlinks sealed before, all unchanged", res, first.Files, first.Symlinks)
+	}
+	dest := filepath.Join(t.TempDir(), "r")
+	if _, err := Restore(f.root, f.ids(), dest, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dest, "notes", "facts.md")); err != nil || string(b) != "secret memory\n" {
+		t.Fatalf("restored notes/facts.md = %q, %v", b, err)
+	}
+}
+
+// A source given as a symlink into the repo, or to a folder holding the repo,
+// is refused, as the folder it leads to would be.
+func TestSealRefusesSymlinkedOverlap(t *testing.T) {
+	f := newFixture(t, true)
+	inside := filepath.Join(f.root, "inside")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{"into the repo": inside, "around the repo": filepath.Dir(f.root)} {
+		link := filepath.Join(t.TempDir(), "link")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Seal(link, f.repo, Options{CacheDir: f.cache, Signer: f.signer})
+		if err == nil || !strings.Contains(err.Error(), "must not contain each other") || !strings.Contains(err.Error(), link) {
+			t.Errorf("%s: Seal = %v, want it refused, naming %s", name, err, link)
+		}
+	}
+}
+
 func TestRestoreSafety(t *testing.T) {
 	f := newFixture(t, true)
 	f.seal(false)
