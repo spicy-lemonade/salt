@@ -166,7 +166,18 @@ func TestSigningKeyStoreErrors(t *testing.T) {
 	if out := e.ui.out.String(); !strings.Contains(out, "✗ the key in "+damaged+" that signs backups for") || !strings.Contains(out, "run `salt trust") {
 		t.Fatalf("doctor with a damaged signing key:\n%s", out)
 	}
-	// Trust replaces it, so the next seal signs again.
+	// One that cannot be read at all, as a folder in its place, is named
+	// the same way, once.
+	os.Remove(damaged)
+	os.Mkdir(damaged, 0o700)
+	err = e.app.Seal(SealOptions{Src: t.TempDir(), Repo: e.root})
+	if err == nil || !strings.HasPrefix(err.Error(), "the key in "+damaged+" that signs backups for") || strings.Contains(err.Error(), "signing key") {
+		t.Fatalf("seal with an unreadable signing key: %v", err)
+	}
+	os.Remove(damaged)
+	os.WriteFile(damaged, []byte("Xnot json"), 0o600)
+
+	// Trust replaces a damaged one, so the next seal signs again.
 	if err := e.app.Trust(e.root, true); err != nil {
 		t.Fatalf("trust with a damaged signing key: %v", err)
 	}

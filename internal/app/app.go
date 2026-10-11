@@ -336,7 +336,7 @@ func (a *App) openToSeal(path string) (*repo.Repo, ed25519.PrivateKey, error) {
 		return nil, nil, fmt.Errorf("%w. Run `salt trust %q` to replace it", err, r.Root)
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("reading the signing key: %w", err)
+		return nil, nil, err // signingKey's errors name the signing key
 	}
 	return r, signer, nil
 }
