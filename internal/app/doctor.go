@@ -375,11 +375,8 @@ func (a *App) Verify(repoRoot string, allowUnsigned bool) error {
 		return err
 	}
 	ids, err := a.identities(rp)
-	if errors.Is(err, ErrInterrupted) {
-		return fmt.Errorf("verify %w", ErrInterrupted)
-	}
 	if err != nil {
-		return err
+		return stopped(err, "verify", "")
 	}
 	res, err := seal.Verify(rp.Root, ids, seal.VerifyOptions{
 		SignatureOptions: seal.SignatureOptions{AllowUnsigned: allowUnsigned, SignedBy: signedBy},

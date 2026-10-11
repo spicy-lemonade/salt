@@ -20,6 +20,16 @@ import (
 // a question it asked, and the files it had written were removed.
 var ErrInterrupted = errors.New("interrupted")
 
+// stopped says, for err from a question the person stopped
+// (ErrInterrupted), that the command cmd was interrupted, followed by then,
+// such as ": nothing was saved". Any other err is returned as it is.
+func stopped(err error, cmd, then string) error {
+	if errors.Is(err, ErrInterrupted) {
+		return fmt.Errorf("%s %w%s", cmd, ErrInterrupted, then)
+	}
+	return err
+}
+
 // restoreLog records the temporary folders of restores in progress, one
 // file for each in dir, so restores running at once never rewrite each
 // other's record. A restore that is killed outright (SIGKILL, a power cut)

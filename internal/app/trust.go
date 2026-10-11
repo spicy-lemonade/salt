@@ -148,12 +148,8 @@ func (a *App) Trust(repoRoot string, yes bool) error {
 			return nil
 		}
 	}
-	err = a.ensureSigningKey(r)
-	if errors.Is(err, ErrInterrupted) {
-		return fmt.Errorf("trust %w: nothing was approved", ErrInterrupted)
-	}
-	if err != nil {
-		return err
+	if err := a.ensureSigningKey(r); err != nil {
+		return stopped(err, "trust", ": nothing was approved")
 	}
 	if err := a.trustStore().Save(r.Root, pin); err != nil {
 		return err

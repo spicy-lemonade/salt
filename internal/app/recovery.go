@@ -24,12 +24,8 @@ func (a *App) RecoveryTest(repoRoot string) error {
 	if !a.UI.Interactive() {
 		return ErrNotInteractive
 	}
-	_, _, err = a.promptIdentity(r)
-	if errors.Is(err, ErrInterrupted) {
-		return fmt.Errorf("recovery test %w", ErrInterrupted)
-	}
-	if err != nil {
-		return err
+	if _, _, err := a.promptIdentity(r); err != nil {
+		return stopped(err, "recovery test", "")
 	}
 	a.UI.Printf("✓ Your %s opens this backup.\n", recoveryNoun(r))
 	return nil
@@ -116,13 +112,14 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 		}
 	}
 	ids, err := a.identities(r)
-	// Ctrl-C while salt asks for the recovery phrase or passphrase stops the
-	// question (see UI.SetContext and Terminal.readHidden).
-	if err != nil && (ctx.Err() != nil || errors.Is(err, ErrInterrupted)) {
-		return fmt.Errorf("restore %w: %s was not changed", ErrInterrupted, a.short(o.To))
-	}
 	if err != nil {
-		return err
+		// Ctrl-C or SIGTERM while salt asks for the recovery phrase or
+		// passphrase stops the question (see UI.SetContext and
+		// Terminal.readHidden).
+		if ctx.Err() != nil {
+			err = ErrInterrupted
+		}
+		return stopped(err, "restore", fmt.Sprintf(": %s was not changed", a.short(o.To)))
 	}
 	a.warnLeftoverRestores(o.To)
 	res, err := seal.Restore(r.Root, ids, o.To, seal.RestoreOptions{
