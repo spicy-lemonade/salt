@@ -98,6 +98,8 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// A question about the key stops when ctx does.
+	a.UI.SetContext(ctx)
 	r, downloaded, done, err := a.openRepo(ctx, o.Repo)
 	if errors.Is(err, errDownloadStopped) {
 		return fmt.Errorf("restore %w: %s was not changed", ErrInterrupted, a.short(o.To))
@@ -115,7 +117,7 @@ func (a *App) Restore(o RestoreOptions) (err error) {
 	}
 	ids, err := a.identities(r)
 	// Ctrl-C while salt asks for the recovery phrase or passphrase stops the
-	// question (see Terminal.Context and Terminal.ReadSecret).
+	// question (see UI.SetContext and Terminal.readHidden).
 	if err != nil && (ctx.Err() != nil || errors.Is(err, ErrInterrupted)) {
 		return fmt.Errorf("restore %w: %s was not changed", ErrInterrupted, a.short(o.To))
 	}

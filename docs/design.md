@@ -570,7 +570,9 @@ against someone who can push to it:
   the destination. Ctrl-C or SIGTERM removes it, and also stops the
   question for the recovery phrase at once. A passphrase is read with the
   terminal in raw mode, so Ctrl-C reaches it as a key, in any command: the
-  question stops at once and the terminal shows what is typed again. A
+  question stops at once and the terminal shows what is typed again. Salt
+  acts on the keys the terminal would have, such as Backspace and Ctrl-W. In
+  a restore, SIGTERM stops the question too. A
   restore killed outright can't clean up, so the folder is recorded
   while the restore runs, in a file of its own so restores running at once
   never lose each other's record, and `salt doctor` and the next

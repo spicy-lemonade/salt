@@ -164,16 +164,14 @@ type usageError struct{ msg string }
 
 func (u usageError) Error() string { return u.msg }
 
-// newApp builds salt's App, and the Terminal it talks to the person through,
-// so that a command that catches Ctrl-C can set the Terminal's Context.
-func newApp() (*app.App, *app.Terminal, error) {
+func newApp() (*app.App, error) {
 	cache, err := seal.DefaultCacheDir()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	cfg, err := os.UserConfigDir()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	// Without a home folder, paths are simply shown in full.
 	home, _ := os.UserHomeDir()
@@ -205,7 +203,7 @@ func newApp() (*app.App, *app.Terminal, error) {
 		Now:       time.Now,
 		Version:   version,
 		Home:      home,
-	}, ui, nil
+	}, nil
 }
 
 func storeName() string {
@@ -227,7 +225,7 @@ func run(cmd string, args []string) error {
 		fmt.Print(usage)
 		return nil
 	}
-	a, ui, err := newApp()
+	a, err := newApp()
 	if err != nil {
 		return err
 	}
@@ -360,12 +358,9 @@ func run(cmd string, args []string) error {
 			return usageError{"restore needs --to DIR"}
 		}
 		// Ctrl-C or SIGTERM stops the restore and removes the partly
-		// restored files. It also stops the question for the recovery
-		// phrase, which would otherwise wait for its answer, with the signal
-		// caught.
+		// restored files.
 		ctx, stop := interruptible()
 		defer stop()
-		ui.Context = ctx
 		return a.Restore(app.RestoreOptions{Repo: pos[0], To: *to, Paths: pos[1:], Force: *force, AllowUnsigned: *unsigned, Context: ctx})
 	case "recovery":
 		if len(args) == 0 {

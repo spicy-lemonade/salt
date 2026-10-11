@@ -783,7 +783,8 @@ func TestTerminalQuestionStopsWhenCancelled(t *testing.T) {
 	t.Cleanup(func() { pw.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	var out bytes.Buffer
-	term := &Terminal{in: bufio.NewReader(pr), out: &out, raw: &out, Context: ctx}
+	term := &Terminal{in: bufio.NewReader(pr), out: &out, raw: &out}
+	term.SetContext(ctx)
 	time.AfterFunc(20*time.Millisecond, cancel)
 	if _, err := term.ReadLine("? "); !errors.Is(err, context.Canceled) {
 		t.Fatalf("ReadLine once cancelled: %v", err)
@@ -796,7 +797,7 @@ func TestTerminalQuestionStopsWhenCancelled(t *testing.T) {
 	}
 
 	// An answer given in time is returned as without a Context.
-	term = &Terminal{in: bufio.NewReader(strings.NewReader("yes\n")), out: &out, raw: &out, Context: context.Background()}
+	term = &Terminal{in: bufio.NewReader(strings.NewReader("yes\n")), out: &out, raw: &out, ctx: context.Background()}
 	if s, err := term.ReadLine("? "); err != nil || s != "yes" {
 		t.Fatalf("ReadLine = %q, %v", s, err)
 	}
@@ -879,9 +880,23 @@ func TestTerminalReadsSecretInRawMode(t *testing.T) {
 	*restored = nil
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	tm := &Terminal{in: bufio.NewReader(strings.NewReader("pw\r")), out: io.Discard, raw: io.Discard, Context: ctx}
+	tm := &Terminal{in: bufio.NewReader(strings.NewReader("pw\r")), out: io.Discard, raw: io.Discard, ctx: ctx}
 	if _, err := tm.ReadSecret("Passphrase: "); !errors.Is(err, context.Canceled) || len(*restored) != 0 {
 		t.Fatalf("ReadSecret once cancelled = %v, terminal changed %d times", err, len(*restored))
+	}
+
+	// A secret waiting for a key stops as soon as the Context is cancelled,
+	// as by SIGTERM, and the terminal is put back, though the read is left
+	// waiting.
+	*restored = nil
+	pr, pw := io.Pipe() // nothing is ever typed
+	t.Cleanup(func() { pw.Close() })
+	ctx, cancel = context.WithCancel(context.Background())
+	tm = &Terminal{in: bufio.NewReader(pr), out: io.Discard, raw: io.Discard}
+	tm.SetContext(ctx)
+	time.AfterFunc(20*time.Millisecond, cancel)
+	if _, err := tm.ReadSecret("Passphrase: "); !errors.Is(err, context.Canceled) || len(*restored) != 1 || (*restored)[0] != state {
+		t.Fatalf("ReadSecret cancelled while waiting = %v, terminal put back %d times", err, len(*restored))
 	}
 
 	// A read that fails part way also puts the terminal back.
@@ -956,6 +971,10 @@ func TestRestoreStoppedAtTheKeyQuestion(t *testing.T) {
 	err := e.app.Restore(RestoreOptions{Repo: e.root, To: dest, Context: ctx})
 	if !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "was not changed") {
 		t.Fatalf("Restore = %v, want ErrInterrupted", err)
+	}
+	// Restore gave the UI its context, so a question stops with it.
+	if e.ui.ctx != ctx {
+		t.Fatal("Restore did not give the UI its context")
 	}
 	if _, err := os.Stat(dest); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("destination: %v", err)

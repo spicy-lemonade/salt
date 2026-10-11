@@ -29,6 +29,7 @@ func init() {
 
 // scriptUI answers prompts through a callback that can see all output so far.
 type scriptUI struct {
+	ctx         context.Context // the last SetContext gave
 	out         strings.Builder
 	answer      func(prompt, out string) (string, error)
 	interactive bool
@@ -51,6 +52,7 @@ func (s *scriptUI) ReadLine(p string) (string, error) {
 func (s *scriptUI) ReadSecret(p string) (string, error) { return s.ReadLine(p) }
 func (s *scriptUI) Interactive() bool                   { return s.interactive }
 func (s *scriptUI) Clear()                              { s.clears++ }
+func (s *scriptUI) SetContext(ctx context.Context)      { s.ctx = ctx }
 
 type testEnv struct {
 	t     *testing.T

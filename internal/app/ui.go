@@ -25,6 +25,10 @@ type UI interface {
 	Interactive() bool
 	// Clear hides what was printed (the recovery phrase) from the screen.
 	Clear()
+	// SetContext gives the UI the context of a command that catches Ctrl-C
+	// and SIGTERM, so that a question waiting for an answer stops as soon as
+	// it is cancelled, rather than once it is answered.
+	SetContext(ctx context.Context)
 }
 
 // ErrNotInteractive is returned when a command needs a person at a terminal.
@@ -36,13 +40,13 @@ type Terminal struct {
 	// out escapes control characters, since messages can quote names from
 	// the backup repo; raw is the same stream unescaped, for Clear's codes.
 	out, raw io.Writer
-	// Context, if set, stops ReadLine waiting for an answer as soon as it
-	// is cancelled, as by Ctrl-C in a command that catches it, which would
-	// otherwise notice only once the question was answered. A question asked
-	// once it is cancelled, by ReadLine or ReadSecret, returns its error at
-	// once, so nothing reads the terminal after. ReadSecret needs nothing
-	// more, as Ctrl-C reaches it as a key (see readHidden).
-	Context context.Context
+	// ctx, if set (see SetContext), stops a question waiting for an
+	// answer as soon as it is cancelled, as by SIGTERM, or Ctrl-C at a line
+	// that is shown, in a command that catches them. A question asked once
+	// it is cancelled returns its error at once, so nothing reads the
+	// terminal after. Ctrl-C at a secret reaches it as a key (see
+	// readHidden), so it needs no ctx.
+	ctx context.Context
 }
 
 // isTerminal reports whether fd is a terminal. Tests replace it, so they
@@ -61,6 +65,8 @@ func NewTerminal() *Terminal {
 
 func (t *Terminal) Printf(format string, a ...any) { fmt.Fprintf(t.out, format, a...) }
 
+func (t *Terminal) SetContext(ctx context.Context) { t.ctx = ctx }
+
 func (t *Terminal) ReadLine(prompt string) (string, error) {
 	fmt.Fprint(t.out, prompt)
 	return t.wait(func() (string, error) {
@@ -73,8 +79,8 @@ func (t *Terminal) ReadLine(prompt string) (string, error) {
 }
 
 func (t *Terminal) ReadSecret(prompt string) (string, error) {
-	if t.Context != nil && t.Context.Err() != nil {
-		return "", t.Context.Err()
+	if t.ctx != nil && t.ctx.Err() != nil {
+		return "", t.ctx.Err()
 	}
 	fd := int(os.Stdin.Fd())
 	if !isTerminal(fd) {
@@ -123,12 +129,21 @@ var dropped = []byte{15, 17, 18, 19, 20, 25, 26}
 // already read in straight after a \r, as when a line copied on Windows is
 // pasted, ends it too, so the next question does not take it for an empty
 // answer.
+//
+// The terminal is put in raw mode before the keys are read, so a question
+// stopped through ctx, as by SIGTERM, puts it back for good, though the
+// read is left waiting.
 func (t *Terminal) readHidden(fd int) (string, error) {
 	state, err := makeRaw(fd)
 	if err != nil {
 		return "", err
 	}
 	defer termRestore(fd, state)
+	return t.wait(t.readKeys)
+}
+
+// readKeys reads the keys of a hidden line, as readHidden describes.
+func (t *Terminal) readKeys() (string, error) {
 	var line []byte
 	literal := false
 	for {
@@ -180,15 +195,15 @@ func (t *Terminal) readHidden(fd int) (string, error) {
 	}
 }
 
-// wait returns what read, which waits for the person, returns, or Context's
+// wait returns what read, which waits for the person, returns, or ctx's
 // error as soon as it is cancelled. read is then left waiting, as the
-// command is stopping, and Context's error is returned from then on, so
-// nothing else reads from the terminal.
+// command is stopping, and ctx's error is returned from then on, so nothing
+// else reads from the terminal.
 func (t *Terminal) wait(read func() (string, error)) (string, error) {
-	if t.Context == nil {
+	if t.ctx == nil {
 		return read()
 	}
-	if err := t.Context.Err(); err != nil {
+	if err := t.ctx.Err(); err != nil {
 		return "", err
 	}
 	type answer struct {
@@ -203,8 +218,8 @@ func (t *Terminal) wait(read func() (string, error)) (string, error) {
 	select {
 	case a := <-got:
 		return a.s, a.err
-	case <-t.Context.Done():
-		return "", t.Context.Err()
+	case <-t.ctx.Done():
+		return "", t.ctx.Err()
 	}
 }
 
