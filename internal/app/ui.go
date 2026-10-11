@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -85,14 +86,25 @@ func (t *Terminal) ReadSecret(prompt string) (string, error) {
 	return s, err
 }
 
-// Keys readHidden acts on.
+// Keys readHidden acts on: those a terminal acts on itself by default when
+// a program reads a line, as term.ReadPassword left it to. Ctrl-O, Ctrl-Q,
+// Ctrl-R, Ctrl-S, Ctrl-T, Ctrl-Y and Ctrl-Z are among them on macOS, Linux
+// or both, so they are dropped rather than kept in the passphrase.
 const (
-	ctrlC     = 3
-	ctrlD     = 4
-	backspace = 8
-	ctrlU     = 21
-	del       = 127
+	ctrlC         = 3  // stop
+	ctrlD         = 4  // end of input, on an empty line
+	backspace     = 8  // remove a character
+	ctrlU         = 21 // remove the line
+	ctrlV         = 22 // keep the next key as it is
+	ctrlW         = 23 // remove a word
+	ctrlBackslash = 28 // quit
+	del           = 127
 )
+
+// dropped are the other keys a terminal acts on, which never reach a
+// program reading a line: discard, flow control, reprint, status and
+// suspend. Salt cannot suspend while the terminal is in raw mode.
+var dropped = []byte{15, 17, 18, 19, 20, 25, 26}
 
 // readHidden reads a line from the terminal fd without showing it. The
 // terminal is in raw mode meanwhile, so Ctrl-C arrives as a key rather than
@@ -100,13 +112,17 @@ const (
 // not the command catches signals, and the terminal is always put back as
 // it was. term.ReadPassword leaves signals on, so Ctrl-C at it ends salt
 // with the terminal still hiding what is typed, or is caught and ignored.
-// Backspace removes the last character, Ctrl-U the whole line, and Ctrl-D
-// on an empty line ends the input. Every other byte is kept, a tab or any
-// other control character included, as term.ReadPassword keeps them, so a
-// passphrase set with one, as through --passphrase-file, can be typed. A
-// line ends at \r or \n, and a \n already read in straight after a \r, as
-// when a line copied on Windows is pasted, ends it too, so the next question
-// does not take it for an empty answer.
+//
+// In raw mode the terminal edits nothing, so readHidden does what it would
+// have done (see the keys above): Backspace removes the last character,
+// Ctrl-W the last word, Ctrl-U the whole line, Ctrl-C and Ctrl-\ stop the
+// question, and Ctrl-D on an empty line ends the input. Ctrl-V keeps the
+// next key as it is, whatever it is, as a terminal does. Every other byte
+// is kept, a tab included, so a passphrase set with one, as through
+// --passphrase-file, can be typed. A line ends at \r or \n, and a \n
+// already read in straight after a \r, as when a line copied on Windows is
+// pasted, ends it too, so the next question does not take it for an empty
+// answer.
 func (t *Terminal) readHidden(fd int) (string, error) {
 	state, err := makeRaw(fd)
 	if err != nil {
@@ -114,6 +130,7 @@ func (t *Terminal) readHidden(fd int) (string, error) {
 	}
 	defer termRestore(fd, state)
 	var line []byte
+	literal := false
 	for {
 		c, err := t.in.ReadByte()
 		switch {
@@ -122,8 +139,12 @@ func (t *Terminal) readHidden(fd int) (string, error) {
 		case err != nil:
 			return "", err
 		}
-		switch c {
-		case '\r':
+		if literal {
+			line, literal = append(line, c), false
+			continue
+		}
+		switch {
+		case c == '\r':
 			// Only what has already arrived is looked at, so this never
 			// waits for another key.
 			if t.in.Buffered() > 0 {
@@ -132,19 +153,27 @@ func (t *Terminal) readHidden(fd int) (string, error) {
 				}
 			}
 			return string(line), nil
-		case '\n':
+		case c == '\n':
 			return string(line), nil
-		case ctrlC:
+		case c == ctrlC || c == ctrlBackslash:
 			return "", ErrInterrupted
-		case ctrlD:
+		case c == ctrlD:
 			if len(line) == 0 {
 				return "", io.EOF
 			}
-		case backspace, del:
+		case c == backspace || c == del:
 			_, n := utf8.DecodeLastRune(line)
 			line = line[:len(line)-n]
-		case ctrlU:
+		case c == ctrlU:
 			line = line[:0]
+		case c == ctrlW:
+			// As a terminal does: the spaces before the cursor, then the
+			// word before them.
+			line = bytes.TrimRight(line, " \t")
+			line = line[:bytes.LastIndexAny(line, " \t")+1]
+		case c == ctrlV:
+			literal = true
+		case bytes.IndexByte(dropped, c) >= 0:
 		default:
 			line = append(line, c)
 		}
