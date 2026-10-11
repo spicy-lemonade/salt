@@ -12,8 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-
-	"github.com/spicy-lemonade/salt/internal/private"
+	"time"
 )
 
 // ErrInterrupted means the person stopped a restore or a seal (Ctrl-C or
@@ -25,40 +24,54 @@ var ErrInterrupted = errors.New("interrupted")
 // other's record. A restore that is killed outright (SIGKILL, a power cut)
 // cannot clean up, and its folder may hold decrypted files, so doctor
 // reports any still recorded. older is the one list an older salt kept for
-// them all, which is still read.
+// them all, which is only read, and removed once it names no folder that
+// still exists.
 type restoreLog struct{ dir, older string }
 
 func (a *App) restoreLog() restoreLog {
 	return restoreLog{dir: filepath.Join(a.CacheDir, "restores"), older: filepath.Join(a.CacheDir, "restores.json")}
 }
 
+// staleRecord is how old a record cut short must be before add removes it.
+// Writing one takes far less.
+const staleRecord = time.Minute
+
+// recordName is the length of a record's name: 8 bytes of the SHA-256 of
+// the folder it records, in hex.
+const recordName = 16
+
 // record is the file in l.dir that records the folder tmp.
 func (l restoreLog) record(tmp string) string {
 	sum := sha256.Sum256([]byte(tmp))
-	return filepath.Join(l.dir, hex.EncodeToString(sum[:8]))
+	return filepath.Join(l.dir, hex.EncodeToString(sum[:recordName/2]))
 }
 
-// add records tmp. Records whose folder is already gone are removed, and
-// the folders in an older salt's list that still exist are recorded one by
-// one instead, since it only helps doctor. Losing either only leaves a
-// record doctor skips.
+// add records tmp. It is written in place, not through a temporary file as
+// private.Write does, so no temporary file is ever left in l.dir. A record
+// ends with a newline, so one cut short by a crash names no folder. Records
+// of folders already gone are then removed, and so are those cut short once
+// they are older than staleRecord, as a younger one may be another salt's
+// still being written. So is an older salt's list, once it has been read and
+// none of its folders exist. Losing any of that only leaves something doctor
+// skips.
 func (l restoreLog) add(tmp string) error {
-	if err := private.Write(l.record(tmp), []byte(tmp)); err != nil {
+	if err := os.MkdirAll(l.dir, 0o700); err != nil {
 		return err
 	}
-	if older, err := l.loadOlder(); err == nil {
-		for _, d := range older {
-			if _, err := os.Lstat(d); err == nil {
-				private.Write(l.record(d), []byte(d))
-			}
-		}
+	if err := os.WriteFile(l.record(tmp), []byte(tmp+"\n"), 0o600); err != nil {
+		return err
 	}
-	os.Remove(l.older)
+	exists := func(d string) bool { _, err := os.Lstat(d); return err == nil }
 	records, _ := l.records()
 	for p, d := range records {
-		if _, err := os.Lstat(d); errors.Is(err, fs.ErrNotExist) {
+		if d != "" && !exists(d) {
+			os.Remove(p)
+		} else if fi, err := os.Stat(p); d == "" && err == nil && time.Since(fi.ModTime()) > staleRecord {
 			os.Remove(p)
 		}
+	}
+	if older, err := l.loadOlder(); err == nil && !slices.ContainsFunc(older, exists) {
+		os.Remove(l.older)
 	}
 	return nil
 }
@@ -72,7 +85,8 @@ func (l restoreLog) remove(tmp string) error {
 	return err
 }
 
-// records maps each record in l.dir to the folder it records.
+// records maps each record in l.dir to the folder it records, or to "" for
+// one cut short. Only files named as add names them are records.
 func (l restoreLog) records() (map[string]string, error) {
 	entries, err := os.ReadDir(l.dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -84,8 +98,7 @@ func (l restoreLog) records() (map[string]string, error) {
 	out := map[string]string{}
 	var errs []error
 	for _, e := range entries {
-		// One being written by private.Write is not a record yet.
-		if strings.Contains(e.Name(), ".tmp-") {
+		if !isRecordName(e.Name()) {
 			continue
 		}
 		p := filepath.Join(l.dir, e.Name())
@@ -94,9 +107,19 @@ func (l restoreLog) records() (map[string]string, error) {
 			errs = append(errs, err)
 			continue
 		}
-		out[p] = string(b)
+		d, complete := strings.CutSuffix(string(b), "\n")
+		if !complete {
+			d = ""
+		}
+		out[p] = d
 	}
 	return out, errors.Join(errs...)
+}
+
+// isRecordName reports whether name is recordName hex digits, as record
+// names a record.
+func isRecordName(name string) bool {
+	return len(name) == recordName && strings.Trim(name, "0123456789abcdef") == ""
 }
 
 // loadOlder reads an older salt's list, or none when there is none.

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestRestoreLog(t *testing.T) {
@@ -51,42 +52,78 @@ func TestRestoreLog(t *testing.T) {
 		t.Fatalf("records = %v, want only %s", records, b)
 	}
 
-	// A record being written is not read, and one that cannot be read is
+	// Only files named as records are read, and one that cannot be read is
 	// reported, with the folders the others name.
-	os.WriteFile(filepath.Join(l.dir, "x.tmp-1"), []byte("half"), 0o600)
-	os.Mkdir(filepath.Join(l.dir, "unreadable"), 0o700)
+	other := filepath.Join(l.dir, "notes.txt")
+	os.WriteFile(other, []byte(a+"\n"), 0o600)
+	unreadable := filepath.Join(l.dir, "0123456789abcdef")
+	os.Mkdir(unreadable, 0o700)
 	if dirs, err := l.leftovers(); err == nil || !slices.Equal(dirs, []string{b}) {
 		t.Fatalf("leftovers with an unreadable record = %v, %v", dirs, err)
 	}
-	os.Remove(filepath.Join(l.dir, "unreadable"))
+	os.Remove(unreadable)
 
-	// The list an older salt kept is read, and moved into records by add.
+	// A record cut short, by a crash as it was written, names no folder,
+	// even one that exists. add leaves a young one, which may be another
+	// salt's still being written, and removes an old one. It leaves files
+	// that are not records alone.
+	cut := filepath.Join(l.dir, "fedcba9876543210")
+	os.WriteFile(cut, []byte(b), 0o600)
+	if dirs, _ := l.leftovers(); !slices.Equal(dirs, []string{b}) {
+		t.Fatalf("leftovers with a record cut short = %v", dirs)
+	}
+	l.add(b)
+	if _, err := os.Stat(cut); err != nil {
+		t.Fatalf("a young record cut short was removed: %v", err)
+	}
+	old := time.Now().Add(-2 * staleRecord)
+	os.Chtimes(cut, old, old)
+	l.add(b)
+	if _, err := os.Stat(cut); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("an old record cut short was kept: %v", err)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("a file that is not a record was removed: %v", err)
+	}
+
+	// The list an older salt kept is read, but never changed. add removes
+	// it only once it has been read and none of its folders exist.
 	c := filepath.Join(base, "c")
 	os.Mkdir(c, 0o700)
 	os.WriteFile(l.older, []byte(`["`+c+`", "`+filepath.Join(base, "gone")+`"]`), 0o600)
 	if dirs, err := l.leftovers(); err != nil || !slices.Equal(dirs, []string{b, c}) {
 		t.Fatalf("leftovers with an older list = %v, %v", dirs, err)
 	}
-	if err := l.add(b); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(l.older); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("older list kept: %v", err)
-	}
+	l.add(b)
 	if dirs, _ := l.leftovers(); !slices.Equal(dirs, []string{b, c}) {
-		t.Fatalf("leftovers after moving the older list = %v", dirs)
+		t.Fatalf("leftovers after add with an older list = %v", dirs)
+	}
+	os.Remove(c)
+	l.add(b)
+	if _, err := os.Stat(l.older); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("an older list naming no folder that exists was kept: %v", err)
 	}
 
-	// An unreadable older list is reported, and dropped by add.
+	// An older list that cannot be read is reported, and kept, as it may
+	// name a folder of decrypted files.
 	os.WriteFile(l.older, []byte("{"), 0o600)
-	if _, err := l.leftovers(); err == nil {
-		t.Fatal("corrupt list read without error")
+	if _, err := l.leftovers(); err == nil || !strings.Contains(err.Error(), l.older) {
+		t.Fatalf("corrupt list: %v", err)
 	}
-	if err := l.add(b); err != nil {
-		t.Fatal(err)
+	l.add(b)
+	if _, err := os.Stat(l.older); err != nil {
+		t.Fatalf("an older list that could not be read was removed: %v", err)
 	}
-	if _, err := l.leftovers(); err != nil {
-		t.Fatalf("after add: %v", err)
+	os.Remove(l.older)
+
+	// A record cannot be written where its folder cannot be made.
+	blocked := restoreLog{dir: filepath.Join(other, "restores")}
+	if err := blocked.add(b); err == nil {
+		t.Fatal("add made a record inside a file")
+	}
+	os.Mkdir(l.record(a), 0o700)
+	if err := l.add(a); err == nil {
+		t.Fatal("add wrote a record over a folder")
 	}
 
 	// A records folder or an older list that is not what salt writes, such
