@@ -136,6 +136,9 @@ func objectHeads(dir string, names, specs []string, n int, fn func(name string, 
 	r := bufio.NewReader(stdout)
 	head := make([]byte, n)
 	var cbErr error
+	// fromGit is whether cbErr is from reading git's output, which ends
+	// early when git fails, so git's own message is added to it.
+	fromGit := true
 	for _, name := range names {
 		line, err := r.ReadString('\n')
 		if err != nil {
@@ -146,6 +149,7 @@ func objectHeads(dir string, names, specs []string, n int, fn func(name string, 
 		if len(fields) != 3 || fields[1] != "blob" {
 			// "missing" or a non-blob (e.g. a submodule): never ciphertext.
 			if cbErr = fn(name, nil, false); cbErr != nil {
+				fromGit = false
 				break
 			}
 			continue
@@ -157,20 +161,24 @@ func objectHeads(dir string, names, specs []string, n int, fn func(name string, 
 		}
 		k := int(min(size, int64(n)))
 		if _, err := io.ReadFull(r, head[:k]); err != nil {
-			cbErr = err
+			cbErr = fmt.Errorf("git cat-file: %w", err)
 			break
 		}
 		if _, err := io.CopyN(io.Discard, r, size-int64(k)+1); err != nil { // +1: trailing newline
-			cbErr = err
+			cbErr = fmt.Errorf("git cat-file: %w", err)
 			break
 		}
 		if cbErr = fn(name, head[:k], true); cbErr != nil {
+			fromGit = false
 			break
 		}
 	}
 	if cbErr != nil {
 		cmd.Process.Kill()
 		cmd.Wait()
+		if msg := strings.TrimSpace(stderr.String()); fromGit && msg != "" {
+			cbErr = fmt.Errorf("%w: %s", cbErr, msg)
+		}
 		return cbErr
 	}
 	if err := cmd.Wait(); err != nil {
@@ -207,11 +215,26 @@ func HookPath(dir, name string) (string, error) {
 	return p, nil
 }
 
+// hasCommit reports whether rev names a commit in the repository at dir,
+// asking git through run. A rev that names none, as HEAD before the first
+// commit, is false with no error. git failing for any other reason, as when
+// it cannot read the repository, is an error, never taken for no commits.
+func hasCommit(dir, rev string, run func(dir string, args ...string) (string, error)) (bool, error) {
+	_, err := run(dir, "rev-parse", "--verify", "-q", rev+"^{commit}")
+	switch {
+	case err == nil:
+		return true, nil
+	case exitCode(err) == 1: // --verify -q exits 1, quietly, for no commit
+		return false, nil
+	}
+	return false, err
+}
+
 // TreePaths lists every file in the commit rev. It returns no paths and no
 // error when rev does not exist yet (a repository with no commits).
 func TreePaths(dir, rev string) ([]string, error) {
-	if _, err := Run(dir, "rev-parse", "--verify", "-q", rev+"^{commit}"); err != nil {
-		return nil, nil
+	if ok, err := hasCommit(dir, rev, Run); !ok {
+		return nil, err
 	}
 	cmd := exec.Command("git", Args(dir, "ls-tree", "-r", "-z", "--name-only", rev)...)
 	var stdout, stderr bytes.Buffer
@@ -231,8 +254,8 @@ func TreePaths(dir, rev string) ([]string, error) {
 
 // LastCommitTime returns when HEAD was committed; ok is false with no commits.
 func LastCommitTime(dir string) (t time.Time, ok bool, err error) {
-	if _, err := Run(dir, "rev-parse", "--verify", "-q", "HEAD^{commit}"); err != nil {
-		return time.Time{}, false, nil
+	if ok, err := hasCommit(dir, "HEAD", Run); !ok {
+		return time.Time{}, false, err
 	}
 	out, err := Run(dir, "log", "-1", "--format=%ct")
 	if err != nil {

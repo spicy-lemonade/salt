@@ -132,11 +132,18 @@ func TestHistoryEdgeAnswers(t *testing.T) {
 	if _, err := CurrentBranch("/repo"); errors.Is(err, ErrDetached) || err == nil {
 		t.Errorf("CurrentBranch when git fails = %v", err)
 	}
-	f.failWith = nil
-	// No commits yet: nothing to list, and no error.
-	f.fail = "rev-parse --verify"
+	// No commits yet, which rev-parse --verify -q reports by exiting 1:
+	// nothing to list, and no error.
+	f.fail, f.failWith = "rev-parse --verify", exitError(1)
 	if log, err := FirstParentLog("/repo"); err != nil || log != nil {
 		t.Errorf("FirstParentLog with no commits = %v, %v", log, err)
+	}
+	// git failing any other way is an error, never taken for no commits.
+	for _, failWith := range []error{exitError(128), nil} {
+		f.failWith = failWith
+		if log, err := FirstParentLog("/repo"); err == nil || log != nil {
+			t.Errorf("FirstParentLog when rev-parse fails with %v = %v, %v, want the error", failWith, log, err)
+		}
 	}
 }
 

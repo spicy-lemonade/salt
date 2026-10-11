@@ -111,8 +111,8 @@ func exitCode(err error) int {
 // FirstParentLog lists the commits on HEAD's first-parent line, newest first.
 // It returns none when the branch has no commits yet.
 func FirstParentLog(dir string) ([]Commit, error) {
-	if _, err := gitLine(dir, "rev-parse", "--verify", "-q", "HEAD^{commit}"); err != nil {
-		return nil, nil
+	if ok, err := hasCommit(dir, "HEAD", gitLine); !ok {
+		return nil, err
 	}
 	out, err := runGit(dir, nil, MaxLogSize, "log", "--first-parent", "--format=%H%x00%P%x00%cI", "HEAD")
 	if err != nil {
