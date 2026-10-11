@@ -97,7 +97,9 @@ const (
 // it was. term.ReadPassword leaves signals on, so Ctrl-C at it ends salt
 // with the terminal still hiding what is typed, or is caught and ignored.
 // Backspace removes the last character, Ctrl-U the whole line, and Ctrl-D
-// on an empty line ends the input. Other control keys are ignored.
+// on an empty line ends the input. Every other byte is kept, a tab or any
+// other control character included, as term.ReadPassword keeps them, so a
+// passphrase set with one, as through --passphrase-file, can be typed.
 func (t *Terminal) readHidden(fd int) (string, error) {
 	state, err := makeRaw(fd)
 	if err != nil {
@@ -128,10 +130,7 @@ func (t *Terminal) readHidden(fd int) (string, error) {
 		case ctrlU:
 			line = line[:0]
 		default:
-			// Every byte of a character beyond ASCII is 0x80 or more.
-			if c >= ' ' {
-				line = append(line, c)
-			}
+			line = append(line, c)
 		}
 	}
 }

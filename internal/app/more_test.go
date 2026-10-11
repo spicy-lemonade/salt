@@ -827,7 +827,8 @@ func TestTerminalReadsSecretInRawMode(t *testing.T) {
 		{typed: "xé\x7f\r", want: "x"},
 		{typed: "\x7f\x7fa\r", want: "a"},
 		{typed: "abc\x15de\r", want: "de"},
-		{typed: "a\x01\x1bb\r", want: "ab"},
+		{typed: "tab\tin it\r", want: "tab\tin it"},
+		{typed: "a\x01\x1b[Ab\r", want: "a\x01\x1b[Ab"},
 		{typed: "a\x04b\r", want: "ab"},
 		{typed: "no newline", want: "no newline"},
 		{typed: "ab\x03cd\r", err: ErrInterrupted},
@@ -914,5 +915,23 @@ func TestRestoreStoppedAtTheKeyQuestion(t *testing.T) {
 	}
 	if _, err := os.Stat(dest); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("destination: %v", err)
+	}
+}
+
+// A passphrase holding a tab, as one set through --passphrase-file can, is
+// typed at the terminal as it was set, so the backup can still be opened.
+func TestPassphraseWithTabCanBeTyped(t *testing.T) {
+	e := newEnv(t)
+	pass := "correct\thorse battery staple"
+	pf := filepath.Join(t.TempDir(), "pass")
+	os.WriteFile(pf, []byte(pass+"\n"), 0o600)
+	if err := e.app.Init(InitOptions{Repo: e.root, Recovery: repo.RecoveryPassphrase, PassphraseFile: pf}); err != nil {
+		t.Fatal(err)
+	}
+	fakeRaw(t, nil)
+	var out bytes.Buffer
+	e.app.UI = &Terminal{in: bufio.NewReader(strings.NewReader(pass + "\r")), out: &out, raw: &out}
+	if err := e.app.RecoveryTest(e.root); err != nil {
+		t.Fatalf("RecoveryTest with the passphrase typed: %v\n%s", err, out.String())
 	}
 }
