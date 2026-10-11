@@ -998,3 +998,20 @@ func TestPassphraseWithTabCanBeTyped(t *testing.T) {
 		t.Fatalf("RecoveryTest with the passphrase typed: %v\n%s", err, out.String())
 	}
 }
+
+// damagedStore holds a damaged secret for every key.
+type damagedStore struct{ keys.MemStore }
+
+func (damagedStore) Get(string) (keys.Secret, error) { return keys.Secret{}, keys.ErrDamaged }
+
+// A key saved damaged is reported as damaged, not as missing or as a
+// keychain that could not be read.
+func TestDamagedSavedKey(t *testing.T) {
+	e := newEnv(t)
+	healthyRepo(t, e)
+	e.app.Store = &damagedStore{}
+	e.app.Doctor(e.root)
+	if out := e.ui.out.String(); !strings.Contains(out, "✗ the key saved for") || strings.Contains(out, "could not read the") {
+		t.Fatalf("doctor with a damaged key:\n%s", out)
+	}
+}

@@ -72,6 +72,19 @@ func (s Secret) Phrase() ([]string, error) {
 // ErrNotFound means the store has no secret for that recipient.
 var ErrNotFound = errors.New("key not found")
 
+// ErrDamaged means the store has a secret for that recipient that cannot
+// be read as one salt saved.
+var ErrDamaged = errors.New("the saved key is damaged")
+
+// decode reads a secret a store saved.
+func decode(b []byte) (Secret, error) {
+	var s Secret
+	if err := json.Unmarshal(b, &s); err != nil {
+		return Secret{}, fmt.Errorf("%w (%v)", ErrDamaged, err)
+	}
+	return s, nil
+}
+
 // Store keeps secrets keyed by their public recipient string.
 type Store interface {
 	Get(recipient string) (Secret, error)
@@ -94,8 +107,7 @@ func (KeyringStore) Get(recipient string) (Secret, error) {
 	if err != nil {
 		return Secret{}, err
 	}
-	var s Secret
-	return s, json.Unmarshal([]byte(v), &s)
+	return decode([]byte(v))
 }
 
 func (KeyringStore) Set(recipient string, s Secret) error {
@@ -130,8 +142,7 @@ func (f FileStore) Get(recipient string) (Secret, error) {
 	if err != nil {
 		return Secret{}, err
 	}
-	var s Secret
-	return s, json.Unmarshal(b, &s)
+	return decode(b)
 }
 
 func (f FileStore) Set(recipient string, s Secret) error {
@@ -193,17 +204,21 @@ type FallbackStore struct {
 
 // Get returns the secret from Primary, or else from Secondary. A secret in
 // neither, when Primary could not be read, is a KeychainError, so the
-// message can say the key may be in Primary.
+// message can say the key may be in Primary. One Primary holds damaged is
+// ErrDamaged, as Primary was read.
 func (f FallbackStore) Get(recipient string) (Secret, error) {
 	s, err := f.Primary.Get(recipient)
 	if err == nil {
 		return s, nil
 	}
 	s, err2 := f.Secondary.Get(recipient)
-	if errors.Is(err2, ErrNotFound) && !errors.Is(err, ErrNotFound) {
-		return Secret{}, &KeychainError{Err: err}
+	switch {
+	case !errors.Is(err2, ErrNotFound) || errors.Is(err, ErrNotFound):
+		return s, err2
+	case errors.Is(err, ErrDamaged):
+		return Secret{}, err
 	}
-	return s, err2
+	return Secret{}, &KeychainError{Err: err}
 }
 
 // KeychainError means a key is not in the fallback file, and the keychain

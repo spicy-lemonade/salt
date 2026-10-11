@@ -194,6 +194,9 @@ var errDamagedKey = errors.New("the key saved for it on this machine is damaged"
 // unless the one saved really is rcpt's.
 func (a *App) storedIdentity(rcpt string) (*age.X25519Identity, error) {
 	s, err := a.Store.Get(rcpt)
+	if errors.Is(err, keys.ErrDamaged) {
+		return nil, errDamagedKey
+	}
 	if err != nil {
 		return nil, err
 	}

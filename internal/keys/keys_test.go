@@ -225,6 +225,31 @@ func TestFallbackStoreKeychainError(t *testing.T) {
 	}
 }
 
+// A saved secret that cannot be read as one salt saved is ErrDamaged, in the
+// keychain and in a key file. A damaged one in the keychain is reported as
+// damaged, not as a keychain that could not be read.
+func TestDamagedSecret(t *testing.T) {
+	keyring.MockInit() // in-memory; never the real keychain
+	if err := keyring.Set(KeyringService, "age1x", "{"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (KeyringStore{}).Get("age1x"); !errors.Is(err, ErrDamaged) {
+		t.Fatalf("KeyringStore.Get of a damaged secret = %v", err)
+	}
+	file := FileStore{Dir: t.TempDir()}
+	os.WriteFile(file.path("age1x"), []byte("not json"), 0o600)
+	if _, err := file.Get("age1x"); !errors.Is(err, ErrDamaged) {
+		t.Fatalf("FileStore.Get of a damaged secret = %v", err)
+	}
+	fs := FallbackStore{Primary: KeyringStore{}, Secondary: &MemStore{}}
+	_, err := fs.Get("age1x")
+	var kc *KeychainError
+	if !errors.Is(err, ErrDamaged) || errors.As(err, &kc) {
+		t.Fatalf("FallbackStore.Get of a damaged keychain secret = %v, want ErrDamaged", err)
+	}
+	keyring.Delete(KeyringService, "age1x")
+}
+
 type brokenStore struct{}
 
 func (brokenStore) Get(string) (Secret, error) { return Secret{}, errors.New("no keychain") }
