@@ -375,6 +375,9 @@ func (a *App) Verify(repoRoot string, allowUnsigned bool) error {
 		return err
 	}
 	ids, err := a.identities(rp)
+	if errors.Is(err, ErrInterrupted) {
+		return fmt.Errorf("verify %w", ErrInterrupted)
+	}
 	if err != nil {
 		return err
 	}

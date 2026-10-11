@@ -165,8 +165,7 @@ type usageError struct{ msg string }
 func (u usageError) Error() string { return u.msg }
 
 // newApp builds salt's App, and the Terminal it talks to the person through,
-// for a command that stops its questions when Ctrl-C is caught to set
-// Terminal.Context.
+// so that a command that catches Ctrl-C can set the Terminal's Context.
 func newApp() (*app.App, *app.Terminal, error) {
 	cache, err := seal.DefaultCacheDir()
 	if err != nil {

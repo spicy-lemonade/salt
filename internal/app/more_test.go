@@ -899,8 +899,18 @@ func TestCtrlCAtPassphraseQuestion(t *testing.T) {
 		t.Fatalf("RecoveryTest = %v", err)
 	}
 
-	// Restore says it was interrupted too, though no signal cancelled it.
+	// verify and trust, which asks for the key to set up signing, say so in
+	// the same way.
 	e.app.Store = &keys.MemStore{}
+	if err := e.app.Verify(e.root, false); !errors.Is(err, ErrInterrupted) || err.Error() != "verify interrupted" {
+		t.Fatalf("Verify = %v", err)
+	}
+	os.RemoveAll(e.app.SignDir)
+	if err := e.app.Trust(e.root, true); !errors.Is(err, ErrInterrupted) || err.Error() != "trust interrupted: nothing was approved" {
+		t.Fatalf("Trust = %v", err)
+	}
+
+	// Restore says it was interrupted too, though no signal cancelled it.
 	dest := filepath.Join(t.TempDir(), "r")
 	if err := e.app.Restore(RestoreOptions{Repo: e.root, To: dest, Context: context.Background()}); !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "was not changed") {
 		t.Fatalf("Restore = %v", err)
