@@ -3,6 +3,10 @@
 [![CI](https://github.com/spicy-lemonade/salt/actions/workflows/ci.yml/badge.svg)](https://github.com/spicy-lemonade/salt/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![codecov](https://codecov.io/gh/spicy-lemonade/salt/graph/badge.svg)](https://codecov.io/gh/spicy-lemonade/salt)
+![Beta](https://img.shields.io/badge/status-beta-orange)
+![Testers Wanted](https://img.shields.io/badge/testers-wanted-blue)
+
+> ⚠️ This project is in early beta. Expect bugs and breaking changes. Feedback and testing contributions are welcome!
 
 Salt encrypts your agent's files and database memories before they leave your machine.
 
