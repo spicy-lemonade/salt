@@ -8,6 +8,9 @@ import (
 	"testing/iotest"
 )
 
+// noGroupLimit leaves the count of values unchecked.
+const noGroupLimit = 1 << 30
+
 // readLimited reads s through a tokenLimitReader with strings capped at 4
 // bytes and other tokens at 3, both in one go and one byte per Read, so
 // escapes and tokens split across reads are covered.
@@ -15,7 +18,7 @@ func readLimited(t *testing.T, s string) []error {
 	t.Helper()
 	var errs []error
 	for _, r := range []io.Reader{strings.NewReader(s), iotest.OneByteReader(strings.NewReader(s))} {
-		got, err := io.ReadAll(newTokenLimitReader(r, 4, 3))
+		got, err := io.ReadAll(newTokenLimitReader(r, 4, 3, 0, noGroupLimit, noGroupLimit))
 		if err == nil && string(got) != s {
 			t.Fatalf("read %q, want %q", got, s)
 		}
@@ -68,7 +71,7 @@ func TestTokenLimitReaderStopsAtTheBadByte(t *testing.T) {
 		{`["abcde"]`, `["abcd`},
 		{`[12345]`, `[123`},
 	} {
-		r := newTokenLimitReader(strings.NewReader(tt.in), 4, 3)
+		r := newTokenLimitReader(strings.NewReader(tt.in), 4, 3, 0, noGroupLimit, noGroupLimit)
 		buf := make([]byte, 64)
 		n, err := r.Read(buf)
 		if err == nil || string(buf[:n]) != tt.before {
@@ -83,8 +86,62 @@ func TestTokenLimitReaderStopsAtTheBadByte(t *testing.T) {
 
 func TestTokenLimitReaderPassesErrors(t *testing.T) {
 	boom := errors.New("boom")
-	_, err := io.ReadAll(newTokenLimitReader(iotest.ErrReader(boom), 4, 3))
+	_, err := io.ReadAll(newTokenLimitReader(iotest.ErrReader(boom), 4, 3, 0, noGroupLimit, noGroupLimit))
 	if !errors.Is(err, boom) {
 		t.Fatalf("error = %v, want %v", err, boom)
+	}
+}
+
+// Values are counted only in a group at groupDepth or deeper, nested groups
+// included, and the count starts again with the next group.
+func TestTokenLimitReaderCountsValues(t *testing.T) {
+	const tooMany = "more than 3 values in one entry"
+	for name, tt := range map[string]struct {
+		in, want string
+	}{
+		"at the limit":                 {`[{"a":1,"b":2,"c":3}]`, ""},
+		"over":                         {`[{"a":1,"b":2,"c":3,"d":4}]`, tooMany},
+		"nested values count":          {`[{"a":[1,2,3],"b":4}]`, tooMany},
+		"nested at the limit":          {`[{"a":[1,2],"b":3}]`, ""},
+		"each group counts on its own": {`[{"a":1,"b":2,"c":3},{"a":1,"b":2,"c":3}]`, ""},
+		"shallower values are free":    {`[1,2,3,4,5,6,7,8]`, ""},
+		"commas in strings are free":   {`[{"a":"1,2,3,4,5"}]`, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, r := range []io.Reader{strings.NewReader(tt.in), iotest.OneByteReader(strings.NewReader(tt.in))} {
+				_, err := io.ReadAll(newTokenLimitReader(r, 64, 64, 2, 3, noGroupLimit))
+				if tt.want == "" && err != nil {
+					t.Fatalf("%s refused: %v", tt.in, err)
+				}
+				if tt.want != "" && (err == nil || err.Error() != tt.want) {
+					t.Fatalf("%s: error = %v, want %q", tt.in, err, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// Values in every group at groupDepth or deeper count towards one total too.
+func TestTokenLimitReaderCountsAllValues(t *testing.T) {
+	const tooMany = "more than 4 values in its entries"
+	for name, tt := range map[string]struct {
+		in, want string
+	}{
+		"at the limit":              {`[{"a":1,"b":2},{"a":1,"b":2},{"a":1,"b":2}]`, ""},
+		"over across groups":        {`[{"a":1,"b":2},{"a":1,"b":2},{"a":1,"b":2},{"a":1,"b":2}]`, tooMany},
+		"nested values count":       {`[{"a":[1,2]},{"a":[1,2]},{"a":[1,2]},{"a":[1,2]}]`, tooMany},
+		"shallower values are free": {`[1,2,3,4,5,6,7,8]`, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, r := range []io.Reader{strings.NewReader(tt.in), iotest.OneByteReader(strings.NewReader(tt.in))} {
+				_, err := io.ReadAll(newTokenLimitReader(r, 64, 64, 2, 3, 4))
+				if tt.want == "" && err != nil {
+					t.Fatalf("%s refused: %v", tt.in, err)
+				}
+				if tt.want != "" && (err == nil || err.Error() != tt.want) {
+					t.Fatalf("%s: error = %v, want %q", tt.in, err, tt.want)
+				}
+			}
+		})
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/spicy-lemonade/salt/internal/check"
 	"github.com/spicy-lemonade/salt/internal/preset"
 	"github.com/spicy-lemonade/salt/internal/private"
 	"github.com/spicy-lemonade/salt/internal/seal"
@@ -138,6 +139,12 @@ func (a *App) Backup(o BackupOptions) error {
 		}
 		return fmt.Errorf("the backup was committed, but salt could not check origin, so old backups were not dropped and it was not pushed: %w", err)
 	}
+	// The pre-push hook's check, which salt never runs itself, of every
+	// commit the push sends, as one made earlier with --no-verify. Prune
+	// keeps the trees of the commits it copies, so it adds nothing to check.
+	if err := a.checkBackupPush(r.Root, lease); err != nil {
+		return err
+	}
 	// Ctrl-C can reach git before salt cancels ctx, so an error from git
 	// that says it was stopped counts too. Prune must not start after one.
 	if err := a.warnPush(ctx, r.Root, lease, sealed.Written); interrupted(ctx, err) {
@@ -154,6 +161,22 @@ func (a *App) Backup(o BackupOptions) error {
 		return fmt.Errorf("the backup was committed but not pushed: %w", err)
 	}
 	return nil
+}
+
+// checkBackupPush refuses plaintext in the commits pushing the repo at root
+// sends to origin, whose branch is at lease: those HEAD holds and lease does
+// not. No remote is named, so commits a fetch brought in are checked too,
+// and a lease that is not a commit ID leaves the whole history checked.
+func (a *App) checkBackupPush(root, lease string) error {
+	head, err := a.Git.Head(root)
+	if err != nil {
+		return fmt.Errorf("the backup was committed, but salt could not read it to check what it pushes, so old backups were not dropped and it was not pushed: %w", err)
+	}
+	var have []string
+	if check.IsObjectID(lease) {
+		have = []string{lease}
+	}
+	return a.checkPushed(root, []string{head}, have, "")
 }
 
 // interrupted reports whether err came from Ctrl-C or SIGTERM, which may

@@ -458,6 +458,14 @@ func (a *App) CheckPush(repoRoot, remote string, refs io.Reader) error {
 	if len(tips) == 0 {
 		return nil
 	}
+	return a.checkPushed(repoRoot, tips, have, remote)
+}
+
+// checkPushed refuses plaintext in what a push of tips from the repository
+// at repoRoot sends: every file the commits reachable from tips, and not
+// from have or remote's remote-tracking branches, add or change (see
+// check.Pushed).
+func (a *App) checkPushed(repoRoot string, tips, have []string, remote string) error {
 	vs, err := a.Git.Pushed(repoRoot, tips, have, remote)
 	if err != nil {
 		return fmt.Errorf("salt check could not inspect the push, refusing it: %w", err)

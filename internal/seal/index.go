@@ -74,6 +74,28 @@ const (
 // MaxIndexEntries is the most files and symlinks one backup can hold.
 var MaxIndexEntries = 100_000
 
+// maxEntryObjects is the most objects one file's entry can name. A chunk
+// name takes about 50 bytes of the index, so maxIndexSize already stops a
+// real backup well short of it, at roughly 700,000 chunks (about 2.7 TiB at
+// avgChunk). It only refuses a crafted index, such as one of one-byte part
+// names, which encoding/json would build into a slice of millions of strings
+// before the signature is checked. It is a variable so tests can lower it.
+var maxEntryObjects = 1 << 20
+
+// entryDepth is how deeply one entry sits in the index: inside the index
+// object and its list of entries. entryFields is more than the fields an
+// entry has, so tokenLimitReader counts its parts and leaves validEntry to
+// refuse an entry with too many. maxIndexValues bounds the values in all
+// entries together, so a crafted index cannot spread its parts over many
+// entries instead. Every value in a real entry takes over 10 bytes of the
+// index, and a part 48, so maxIndexSize keeps a real index well under a
+// million of them.
+const (
+	entryDepth     = 3
+	entryFields    = 16
+	maxIndexValues = 1 << 21
+)
+
 // objects returns every object holding e's ciphertext, in order.
 func (e Entry) objects() []string {
 	return append([]string{e.Object}, e.Parts...)
@@ -221,7 +243,8 @@ func writeIndex(root string, b []byte, recipients []age.Recipient) error {
 // signed by the signing key of one of ids, as opt allows. A key added to the
 // repo since this machine approved it can decrypt the index but, if
 // opt.SignedBy lists the approved keys, not sign it. It decodes one entry at
-// a time, so memory stays bounded however the index was crafted.
+// a time, and refuses an entry with too many values before decoding it, so
+// memory stays bounded however the index was crafted.
 func ReadIndex(root string, ids []age.Identity, opt SignatureOptions) (*Index, error) {
 	rt, err := os.OpenRoot(root)
 	if err != nil {
@@ -235,7 +258,7 @@ func ReadIndex(root string, ids []age.Identity, opt SignatureOptions) (*Index, e
 	defer closeFn()
 	lr := &io.LimitedReader{R: r, N: maxIndexSize + 1}
 	d := newIndexDigest()
-	ix, err := decodeIndex(json.NewDecoder(newTokenLimitReader(lr, maxIndexJSONString, maxIndexToken)), d)
+	ix, err := decodeIndex(json.NewDecoder(newTokenLimitReader(lr, maxIndexJSONString, maxIndexToken, entryDepth, maxEntryObjects+entryFields, maxIndexValues)), d)
 	if lr.N <= 0 {
 		return nil, fmt.Errorf("index is larger than %d bytes", maxIndexSize)
 	}
@@ -358,7 +381,22 @@ func validEntry(e *Entry) error {
 	if e.Size < 0 {
 		return fmt.Errorf("size for %s is negative", clip(p))
 	}
+	if len(e.Parts) >= maxEntryObjects {
+		return fmt.Errorf("%s is in more than %d objects", clip(p), maxEntryObjects)
+	}
+	if int64(len(e.Parts)) > e.Size/minObjectPlaintext() {
+		return fmt.Errorf("%s is in more objects than its size allows", clip(p))
+	}
 	return nil
+}
+
+// minObjectPlaintext is the least plaintext any object of a file but its last
+// holds. A chunk holds at least minChunk bytes. A part holds oneObjectLimit
+// bytes of ciphertext, cut from one zstd stream, which is never more than a
+// fraction of a percent larger than the plaintext it holds, so half
+// oneObjectLimit leaves plenty to spare. Parts from older salts are 45 MiB.
+func minObjectPlaintext() int64 {
+	return max(1, min(int64(minChunk), oneObjectLimit)/2)
 }
 
 func isSHA256(s string) bool {

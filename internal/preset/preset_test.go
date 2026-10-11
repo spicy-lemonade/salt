@@ -71,6 +71,16 @@ func TestDefaultSecretKeysAreValid(t *testing.T) {
 	}
 }
 
+// defaultNever holds patterns that path.Match can use, in lower case, as
+// names are matched in lower case.
+func TestDefaultNeverIsValid(t *testing.T) {
+	for _, pat := range defaultNever {
+		if _, err := path.Match(pat, ""); err != nil || pat != strings.ToLower(pat) {
+			t.Errorf("%q: %v", pat, err)
+		}
+	}
+}
+
 // defaultSecretKeys catch a secret's setting written in snake_case or
 // camelCase, but not a setting that only ends in key.
 func TestDefaultSecretKeysMatch(t *testing.T) {
@@ -151,8 +161,10 @@ func TestParseRefusesBadPresets(t *testing.T) {
 		`ref setting "ID" must be an exact name in lower case`:  `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["source", "ID"]]}]}`,
 		`ref setting "*id" must be an exact name in lower case`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["source", "*id"]]}]}`,
 		`ref setting "i[d" must be an exact name in lower case`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["source", "i[d"]]}]}`,
-		`ref [] must name settings`:                             `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [[]]}]}`,
-		`ref ["id" "id"] must name settings, each once`:         `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["id", "id"]]}]}`,
+		// Names are matched in lower case, so .ENV would never match.
+		`never pattern ".ENV" must be in lower case`:    `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "never": [".ENV"]}`,
+		`ref [] must name settings`:                     `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [[]]}]}`,
+		`ref ["id" "id"] must name settings, each once`: `{"name": "t", "paths": [{"from": "/a", "to": "a"}], "secrets": [{"files": ["x"], "refs": [["id", "id"]]}]}`,
 	} {
 		_, err := Parse("t", []byte(body))
 		if err == nil || !strings.Contains(err.Error(), want) || !strings.HasPrefix(err.Error(), "preset t: ") {

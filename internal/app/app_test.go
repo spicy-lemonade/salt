@@ -610,6 +610,35 @@ func TestDoctorProblems(t *testing.T) {
 	}
 }
 
+// Doctor never shows a password or token held in origin's URL, and shows
+// every other URL as it is, the SSH form's user included.
+func TestDoctorHidesRemoteCredentials(t *testing.T) {
+	// Subtests are not named by URL, since the name is in the test's
+	// temporary folder, which doctor shows.
+	for _, tt := range []struct{ name, remote, want, never string }{
+		{"user and token", "https://x-access-token:ghp_SECRET123@github.com/you/backup.git", "remote: https://github.com/you/backup.git", "SECRET123"},
+		{"token as user", "https://ghp_SECRET123@github.com/you/backup.git", "remote: https://github.com/you/backup.git", "SECRET123"},
+		{"ssh", "git@github.com:you/backup.git", "remote: git@github.com:you/backup.git", ""},
+		{"https", "https://github.com/you/backup.git", "remote: https://github.com/you/backup.git", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			healthyRepo(t, e)
+			e.git.remote = tt.remote
+			if err := e.app.Doctor(e.root); err != nil {
+				t.Fatalf("Doctor: %v\n%s", err, e.ui.out.String())
+			}
+			out := e.ui.out.String()
+			if !strings.Contains(out, tt.want) {
+				t.Errorf("output missing %q:\n%s", tt.want, out)
+			}
+			if tt.never != "" && strings.Contains(out, tt.never) {
+				t.Errorf("output shows %q:\n%s", tt.never, out)
+			}
+		})
+	}
+}
+
 // Doctor warns about a file over GitHub's limit, which salt never writes
 // but an older salt or a person might have, and not about one at the limit.
 // The files are sparse, so they take no space on disk.

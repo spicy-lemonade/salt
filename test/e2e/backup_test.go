@@ -790,6 +790,40 @@ func TestBackupAfterAPushByHand(t *testing.T) {
 	}
 }
 
+// A plaintext file committed by hand with --no-verify, which the pre-commit
+// hook never sees, stops the next salt backup before old backups are
+// dropped or anything is pushed, even though that backup's own commit
+// removes the file. salt backup pushes with hooks off, so it runs the
+// pre-push hook's check itself.
+func TestBackupRefusesAnUncheckedCommit(t *testing.T) {
+	e := newEnv(t)
+	b := newBackupRepo(t, e)
+	blob := filepath.Join(e.home, ".hermes", "mnemosyne", "blobs", "x")
+	write(t, blob, "a file")
+	e.must(b.base, "salt", "backup", "--preset", "mnemosyne", b.dir)
+	pushed := strings.TrimSpace(e.must(b.remote, "git", "rev-parse", "main"))
+
+	write(t, filepath.Join(b.dir, "notes.txt"), "a plaintext note")
+	e.must(b.dir, "git", "add", "notes.txt")
+	e.must(b.dir, "git", "commit", "-q", "--no-verify", "-m", "notes")
+	plain := strings.TrimSpace(e.must(b.dir, "git", "rev-parse", "HEAD:notes.txt"))
+	write(t, blob, "a changed file")
+	out, code := e.run(b.base, "salt", "backup", "--preset", "mnemosyne", "--keep-days", "1", b.dir)
+	if code != 1 || !strings.Contains(out, "salt check: refusing push: 1 file(s) in the commits being pushed are not encrypted") || !strings.Contains(out, "notes.txt") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if tip := strings.TrimSpace(e.must(b.remote, "git", "rev-parse", "main")); tip != pushed {
+		t.Fatalf("the remote moved from %s to %s", pushed, tip)
+	}
+	if _, code := e.run(b.remote, "git", "cat-file", "-e", plain); code == 0 {
+		t.Fatal("the remote holds the plaintext file")
+	}
+	// Nothing was dropped: the set-up commit, from an earlier day, is kept.
+	if log := e.must(b.dir, "git", "log", "--format=%s"); !strings.Contains(log, "Set up salt") || !strings.Contains(log, "notes") {
+		t.Fatalf("the local history is:\n%s", log)
+	}
+}
+
 // salt backup refuses to back up with no branch checked out, before it
 // commits anything, and a commit that git refuses, here because signing it
 // fails, fails with git's own reason, not a bare exit status.

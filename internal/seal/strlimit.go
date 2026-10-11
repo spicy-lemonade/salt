@@ -18,20 +18,31 @@ const (
 // maxString raw bytes, or one number or literal runs past maxOther bytes.
 // encoding/json builds each whole token before salt can check its length, and
 // may quote it in full in an error, so the limit has to apply to the bytes on
-// the way in.
+// the way in. It also refuses a value nested groupDepth deep, such as one
+// entry of the index, that holds more than maxGroupValues values at any
+// depth, and a stream whose values at groupDepth or deeper number more than
+// maxValues in all. Values are counted by the commas between them:
+// encoding/json builds a whole array, such as an entry's parts, before salt
+// can count it.
 type tokenLimitReader struct {
-	r         io.Reader
-	maxString int
-	maxOther  int
-	inString  bool
-	escaped   bool
-	n         int // raw bytes in the current string, quotes excluded
-	run       int // bytes in the current number or literal
-	err       error
+	r              io.Reader
+	maxString      int
+	maxOther       int
+	groupDepth     int
+	maxGroupValues int
+	maxValues      int
+	inString       bool
+	escaped        bool
+	n              int // raw bytes in the current string, quotes excluded
+	run            int // bytes in the current number or literal
+	depth          int // objects and arrays open
+	values         int // commas in the current group
+	total          int // commas in every group so far
+	err            error
 }
 
-func newTokenLimitReader(r io.Reader, maxString, maxOther int) *tokenLimitReader {
-	return &tokenLimitReader{r: r, maxString: maxString, maxOther: maxOther}
+func newTokenLimitReader(r io.Reader, maxString, maxOther, groupDepth, maxGroupValues, maxValues int) *tokenLimitReader {
+	return &tokenLimitReader{r: r, maxString: maxString, maxOther: maxOther, groupDepth: groupDepth, maxGroupValues: maxGroupValues, maxValues: maxValues}
 }
 
 func (s *tokenLimitReader) Read(p []byte) (int, error) {
@@ -44,7 +55,30 @@ func (s *tokenLimitReader) Read(p []byte) (int, error) {
 			switch c {
 			case '"':
 				s.inString, s.n, s.run = true, 0, 0
-			case ' ', '\t', '\r', '\n', '{', '}', '[', ']', ',', ':':
+			case '{', '[':
+				s.depth++
+				s.run = 0
+			case '}', ']':
+				s.depth--
+				if s.depth < s.groupDepth {
+					s.values = 0
+				}
+				s.run = 0
+			case ',':
+				if s.depth >= s.groupDepth {
+					s.values++
+					s.total++
+					if s.values >= s.maxGroupValues {
+						s.err = fmt.Errorf("more than %d values in one entry", s.maxGroupValues)
+						return i, s.err
+					}
+					if s.total >= s.maxValues {
+						s.err = fmt.Errorf("more than %d values in its entries", s.maxValues)
+						return i, s.err
+					}
+				}
+				s.run = 0
+			case ' ', '\t', '\r', '\n', ':':
 				s.run = 0
 			default:
 				s.run++

@@ -400,6 +400,59 @@ func TestGatherNeverAppliesToEveryPreset(t *testing.T) {
 	}
 }
 
+// Files and folders that hold secrets wherever they are, such as .env files,
+// key files and SSH logins, are left out by every preset that walks a
+// folder, alone or with any other, whatever their names' case. Other files
+// beside them are backed up.
+func TestGatherNeverBaseline(t *testing.T) {
+	home := t.TempDir()
+	// Each preset that walks a folder, a folder it backs up, and where that
+	// is in the backup.
+	folders := map[string][2]string{
+		"hermes":     {".hermes/skills/notes", "hermes/skills/notes"},
+		"mnemosyne":  {".hermes/mnemosyne/data", "hermes/mnemosyne/data"},
+		"openclaw":   {".openclaw/workspace", "openclaw/workspace"},
+		"openviking": {".openviking/data/viking", "openviking/data/viking"},
+	}
+	secretNames := []string{
+		".env", ".env.local", ".env.production", "prod.env", "id_rsa", "id_rsa.pub", "id_ed25519", "x.pem", "x.key",
+		".npmrc", ".netrc", ".pypirc", ".git-credentials", ".ssh/config", ".aws/credentials",
+		// Names in another case go in a folder of their own, as the
+		// temporary folder may ignore case.
+		"upper/.ENV", "upper/.Env.Local", "upper/ID_RSA", "upper/Key.PEM", "upper/.SSH/config", "upper/.AWS/credentials",
+	}
+	kept := []string{"SKILL.md", "service-account.json", "upper/NOTES.md"}
+	for _, dir := range folders {
+		for _, name := range slices.Concat(secretNames, kept) {
+			write(t, filepath.Join(home, dir[0], name), name)
+		}
+	}
+	for _, names := range [][]string{
+		{"hermes"}, {"mnemosyne"}, {"openclaw"}, {"openviking"},
+		{"hermes", "openclaw"}, {"hermes", "mnemosyne", "openclaw", "openviking"},
+	} {
+		presets, err := GetAll(names)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := envOf(home, nil).Gather(presets, t.TempDir(), plain)
+		if err != nil {
+			t.Fatalf("%v: %v", names, err)
+		}
+		got, _ := rels(f)
+		var want []string
+		for _, n := range names {
+			for _, name := range kept {
+				want = append(want, path.Join(folders[n][1], name))
+			}
+		}
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Errorf("%v: files = %v, want %v", names, got, want)
+		}
+	}
+}
+
 // A file checked for secrets carries the SHA-256 of the contents checked, so
 // seal leaves it out if it changes before it is read. Other files carry none.
 func TestGatherRecordsWhatWasChecked(t *testing.T) {
@@ -1457,6 +1510,71 @@ func TestSecretIn(t *testing.T) {
 	}
 	if _, got, err := readToCheck(dir); !strings.Contains(got, "could not be read") || err != nil {
 		t.Errorf("folder: %q, %v", got, err)
+	}
+}
+
+// Every value but a number, true or false, or null is text, whatever its
+// tag, so a secret behind a tag of the tool's own or read as a date is still
+// found. A number is still only named, not taken for a secret.
+func TestSecretInTaggedValues(t *testing.T) {
+	sec := Secret{Keys: defaultSecretKeys}
+	for _, tt := range []struct{ content, why, number string }{
+		{"apiKey: !secret sk-live-abc\n", "its setting apiKey holds a secret", ""},
+		{"{\"apiKey\": !secret \"sk-live-abc\"}\n", "its setting apiKey holds a secret", ""},
+		{"password: 2024-01-01\n", "its setting password holds a secret", ""},
+		{"password: !secret 1234\n", "its setting password holds a secret", ""},
+		{"password: !!timestamp 2024-01-01T10:00:00Z\n", "its setting password holds a secret", ""},
+		{"apiKey: !!str sk-live-abc\n", "its setting apiKey holds a secret", ""},
+		{"apiKey: [!secret sk-live-abc]\n", "its setting apiKey holds a secret", ""},
+		{"password: 1234\n", "", "password"},
+		{"password: !!int 1234\n", "", "password"},
+		{"password: !!float 1.5\n", "", "password"},
+		{"password: true\n", "", ""},
+		{"password: !!bool false\n", "", ""},
+		{"password: null\n", "", ""},
+		{"password: !!null\n", "", ""},
+		{"password: !secret\n", "", ""},
+		{"apiKey: ${MODEL_API_KEY}\n", "", ""},
+		{"apiKey: !secret ${MODEL_API_KEY}\n", "", ""},
+		{"apiKey: !secret ${X:-sk-1}\n", "its setting apiKey holds a secret", ""},
+	} {
+		why, secret, number := secretsIn([]byte(tt.content), sec)
+		if why != tt.why || secret != (tt.why != "") || number != tt.number {
+			t.Errorf("secretsIn(%q) = %q, %v, %q, want %q, %q", tt.content, why, secret, number, tt.why, tt.number)
+		}
+	}
+}
+
+// JSON5 reads an escape in a name not quoted or in single quotes, and a
+// space that is not ASCII after a name, where YAML reads them as part of the
+// name. So such a name inside {} keeps the file out, since it could hide a
+// secret's setting. A name in double quotes is read the same by both, and
+// one outside {} is YAML.
+func TestSecretInOddNames(t *testing.T) {
+	sec := Secret{Keys: defaultSecretKeys}
+	const odd = "a name with an escape or an unusual space stops it being checked for secrets"
+	for _, tt := range []struct{ content, want string }{
+		{`{models: {x: {'api\x4bey':'sk-D'}}}`, odd},
+		{`{api\u004bey: "x"}`, odd},
+		{"{ apiKey\u00a0: \"x\" }", odd},
+		{"{ apiKey\u200b: \"x\" }", odd},
+		{"{ \u00a0apiKey: \"x\" }", odd},
+		{"{ apiKey\u3000: \"x\" }", odd},
+		{"{café: 1}", odd},
+		{`{'C:\path': 1}`, odd},
+		{"[{a: {b\u00a0: 1}}]", odd},
+		{`{apiKey: "x"}`, "its setting apiKey holds a secret"},
+		{`{'apiKey': "x"}`, "its setting apiKey holds a secret"},
+		{`{"api\x4bey": "x"}`, "its setting apiKey holds a secret"},
+		{`{"a:b": 1}`, ""},
+		{`{"C:\\path": 1, "café": 2, "a\u00a0b": 3}`, ""},
+		{`{'a b': 1, model: "gpt", "name": "x"}`, ""},
+		{"café: 1\nC:\\path: 2\n", ""},
+	} {
+		why, secret, _ := secretsIn([]byte(tt.content), sec)
+		if why != tt.want || secret != strings.HasSuffix(tt.want, "holds a secret") {
+			t.Errorf("secretsIn(%q) = %q, %v, want %q", tt.content, why, secret, tt.want)
+		}
 	}
 }
 

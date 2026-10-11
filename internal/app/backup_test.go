@@ -230,7 +230,11 @@ func TestBackupGitFailures(t *testing.T) {
 		"prune": {func(g *fakeGit) { g.prune, g.pruneErr = nil, boom },
 			"the backup was committed, but dropping old backups failed, so it was not pushed: boom", []string{"stage", "commit salt backup", "lease", "prune"}, true},
 		"head": {func(g *fakeGit) { g.headErr = boom },
-			"the backup was committed but not pushed: boom", []string{"stage", "commit salt backup", "lease", "prune"}, true},
+			"salt could not read it to check what it pushes, so old backups were not dropped and it was not pushed: boom", []string{"stage", "commit salt backup", "lease"}, false},
+		"plaintext pushed": {func(g *fakeGit) { g.pushedFound = []check.Violation{{Path: "notes.txt", Reason: "not encrypted"}} },
+			"problems reported", []string{"stage", "commit salt backup", "lease"}, false},
+		"push check": {func(g *fakeGit) { g.pushedErr = boom },
+			"salt check could not inspect the push, refusing it: boom", []string{"stage", "commit salt backup", "lease"}, false},
 		"push": {func(g *fakeGit) { g.push = func(context.Context) error { return boom } },
 			"the backup was committed but not pushed: boom", []string{"stage", "commit salt backup", "lease", "prune", "push"}, true},
 	} {
@@ -245,6 +249,52 @@ func TestBackupGitFailures(t *testing.T) {
 				t.Fatalf("git calls = %v, pruned %v", e.git.calls, e.git.pruneDays)
 			}
 		})
+	}
+}
+
+// Before pruning and pushing, backup checks every commit the push sends, as
+// the pre-push hook would: those HEAD holds and the commit origin's branch
+// is at does not. No remote is named, so remote-tracking branches a fetch
+// moved cannot hide a commit. A plaintext file in them, as in a commit made
+// with --no-verify, stops the backup with the pre-push hook's report, and
+// nothing is pruned or pushed. A clean push prints nothing.
+func TestBackupChecksWhatItPushes(t *testing.T) {
+	head, tip := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	for _, tt := range []struct {
+		name  string
+		lease string
+		have  []string
+	}{
+		{"origin has the branch", tip, []string{tip}},
+		{"origin has no branch", "", nil},
+		// Lease's commit comes from origin, so one that is not a commit ID
+		// leaves the whole history checked.
+		{"lease not a commit", "HEAD", nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e, _, presets := backupEnv(t)
+			e.git.head = head
+			e.git.lease = func(context.Context) (string, error) { return tt.lease, nil }
+			if err := e.backup(presets); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(e.git.pushedTips, []string{head}) || !slices.Equal(e.git.pushedHave, tt.have) || e.git.pushedRemote != "" {
+				t.Errorf("checked tips %v, have %v, remote %q", e.git.pushedTips, e.git.pushedHave, e.git.pushedRemote)
+			}
+			if !slices.Contains(e.git.calls, "push") || e.ui.out.String() != "" {
+				t.Errorf("calls %v, output %q", e.git.calls, e.ui.out.String())
+			}
+		})
+	}
+	e, _, presets := backupEnv(t)
+	e.git.pushedFound = []check.Violation{{Path: "notes.txt", Reason: "not encrypted"}}
+	err := e.backup(presets)
+	out := e.ui.out.String()
+	if !errors.Is(err, ErrReported) || !strings.Contains(out, "salt check: refusing push: 1 file(s)") || !strings.Contains(out, "notes.txt") {
+		t.Fatalf("backup = %v, output %q", err, out)
+	}
+	if slices.Contains(e.git.calls, "prune") || slices.Contains(e.git.calls, "push") || len(e.git.sizeLeases) != 0 {
+		t.Fatalf("calls %v, measured %v", e.git.calls, e.git.sizeLeases)
 	}
 }
 

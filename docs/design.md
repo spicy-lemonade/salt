@@ -445,8 +445,9 @@ against someone who can push to it:
   to a remote with no remote-tracking branches has its whole history
   checked, so one holding plaintext from before salt is refused. The same
   file at a public path, such as `README.md`, and at another is checked at
-  both. `salt backup` pushes with hooks off, having checked its commit
-  itself.
+  both. `salt backup` pushes with hooks off, so it runs both checks itself,
+  on its commit and on every commit its push sends (see "One-command
+  backup").
 - **Symlinks.** Salt never creates symlinks where it keeps data (`.salt/`,
   `index.age`, `objects/`, `files/`). Seal, restore and verify refuse to run
   if one is there, whether it points outside the repo or back inside it. As a
@@ -457,8 +458,13 @@ against someone who can push to it:
   salt read without end or show what the file holds. A bad key in
   `.salt/recipients.txt` is named by its line number, not quoted.
 - **Tampered index.** The index is read one entry at a time, capped at 100,000
-  entries and 32 MB, so a crafted index can't use much memory. `salt verify`
-  lists at most 50 problems, with long paths shortened.
+  entries and 32 MB, so a crafted index can't use much memory. The values in
+  one entry, such as a file's list of chunks, are counted as the index is
+  read, before the entry is decoded, and the index is refused past about a
+  million in one entry or two million in all. A real backup never comes near
+  either, since 32 MB holds well under a million real values. An entry also
+  names no more objects than its size could fill. `salt verify` lists at most
+  50 problems, with long paths shortened.
 - **Terminal codes.** Someone who can push chooses file names, attribute
   values and the index's paths, and a remote or database server chooses what
   git and `pg_dump` print. A control character among them, such as ESC, could
@@ -837,7 +843,14 @@ It is meant for a cron line, so it prints nothing when it works. In order, it:
    push could add enough such refs to push the branch's own line out of
    what salt reads. The record keeps at most 100 commits, always including
    the one the last push that worked left on origin, however many pushes
-   have failed since;
+   have failed since. It then runs the pre-push hook's check (`salt check
+   --pre-push`) on every commit the push sends, those the branch holds and
+   origin's branch does not. It names no remote, so a fetch cannot hide a
+   commit from it. A file in them that is not encrypted, such as one
+   committed by hand with `--no-verify`, stops the backup with the hook's
+   report, before old backups are dropped or anything is pushed. Prune keeps
+   the files of every backup it copies, so it adds nothing the check has
+   not seen;
 6. warns when the push would send more than 1 GiB, or when a file added
    more than 500 MiB of new encrypted data, naming the file (see "Large
    files"). The push still goes ahead. Ctrl-C or SIGTERM while the push is
@@ -920,7 +933,14 @@ code reads them all, so adding a tool means adding one file:
   as `.env`, a key file or a folder of credentials. No preset given with
   this one backs them up either, wherever it finds them, a place it names
   included. So another tool's preset, pointed by a variable at this tool's
-  folder, never backs up its secrets.
+  folder, never backs up its secrets. Whichever presets are given, salt
+  also always leaves out the files and folders that hold secrets for most
+  tools. These are `.env` files (`.env`, `*.env` and `.env.*`), key files
+  (`*.pem` and `*.key`), SSH keys whose names start with `id_rsa` or
+  `id_ed25519`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, and the
+  `.ssh` and `.aws` folders. `never` adds the tool's own. Names are compared
+  in lower case, since macOS and Windows usually ignore case, so `.ENV` is
+  left out with `.env`. `never` patterns are written in lower case too.
 - `skip` lists name patterns of files and folders this preset never backs
   up, such as caches, logs and downloaded models. Another preset that
   reaches the same folder may still back them up (see below). `.DS_Store`
@@ -937,8 +957,10 @@ code reads them all, so adding a tool means adding one file:
   `*secret_key`, `*secretkey`, `*access_key`, `*accesskey`, `*private_key`,
   `*privatekey`, `*password`, `*passphrase`, `token`, `*_token`, `*-token`
   and `authorization`), in snake_case and camelCase. `keys` adds the tool's
-  own, so it can be left out. If one of these holds text (a non-empty string
-  at any depth below the setting, or a YAML alias, which salt does not
+  own, so it can be left out. If one of these holds text (a value that is
+  not empty at any depth below the setting, other than a number, true or
+  false, or null, so a date or a value with a tag of the tool's own, as in
+  `api_key: !secret sk-1`, counts too, or a YAML alias, which salt does not
   follow), the file is left out. Salt prints one line naming the file and the
   setting, never its value. Numbers, true or false, and null never count, so
   `max_token: 512` is not taken for a secret. Nor does a string that is only
@@ -969,8 +991,15 @@ code reads them all, so adding a tool means adding one file:
   space after its colon. This includes YAML that means such a name, as in
   `{llama3:8b: 1}`, which salt cannot tell apart. A quoted name such as
   `"a:b"`, and a YAML name outside braces such as `llama3:8b`, are names.
-  Remove comments from such a file, and put a space after each colon, to be
-  sure it is checked as written and backed up. Salt never changes the file
+  JSON5 also reads an escape in a name that is not quoted or is in single
+  quotes, as in `'api\x4bey'`, which YAML keeps as written, and takes a
+  space that is not ASCII, such as a no-break space, beside a name for a
+  space. So inside braces, a name not quoted that holds a backslash, a
+  character that is not ASCII or a space other than a plain one, and a name
+  in single quotes that holds a backslash, keep the file out too. A name in
+  double quotes is read the same way by both. Remove comments from such a
+  file, put a space after each colon, and put such names in double quotes,
+  to be sure it is checked as written and backed up. Salt never changes the file
   to remove the secret. Salt reads such a file once, every rule checks what
   was read, and seal backs it up only if it reads the same contents. One a
   tool changed after the check, as it could by writing a secret into it, is
@@ -1037,7 +1066,8 @@ each Hermes profile, and where `MNEMOSYNE_DATA_DIR`, `MNEMOSYNE_BLOB_DIR`,
 `MNEMOSYNE_SHARED_DB_PATH` and `MNEMOSYNE_HOME` point. Mnemosyne keeps its
 downloaded models, logs and `backups` folder beside these folders, not in
 them, so they are not backed up. Inside them, the preset leaves out `.env`
-files, the copies Mnemosyne makes of a database before migrating it
+files and the other files every backup leaves out (see `never` above), the
+copies Mnemosyne makes of a database before migrating it
 (`*.pre_*_backup`) and its unfinished repairs (`.mnemosyne-repair-*`). A
 folder that `MNEMOSYNE_MODEL_CACHE_DIR` or `MNEMOSYNE_BACKUP_DIR` points to
 inside one of them is backed up with it. Mnemosyne's default blob folder,
@@ -1074,7 +1104,8 @@ channel list (`channel_directory.json`, a cache Hermes builds again when it
 starts), logs, the `sessions` folder of JSON transcripts, caches, browser
 profiles, downloaded models, the `hermes-agent` source folder, Hermes's own
 backups and snapshots, and each board's workspaces and attachments. Inside
-the folders it backs up, it leaves out `.env` files, `auth.json`, the vault
+the folders it backs up, it leaves out `.env` files, key files and the other
+files every backup leaves out (see `never` above), `auth.json`, the vault
 files, and the Python and Node caches and packages a skill can hold
 (`__pycache__`, `node_modules`, `.venv` and the like), which are installed
 again when needed. Memory providers with their own database, such as
@@ -1314,9 +1345,10 @@ OpenClaw SecretRef, such as
 `{"source": "env", "provider": "default", "id": "NAME"}`, names where the
 key is. Neither counts as a secret, so a file holding only such keys is
 backed up. OpenClaw reads its settings as JSON5, but writes them as plain
-JSON, dropping any comment. Most comments, and a name with no space after
-its colon, keep the file out of the backup, as `secrets` above explains, so
-remove comments and keep the space to be sure it is backed up.
+JSON, dropping any comment. Most comments, a name with no space after its
+colon, and a name with an escape or an unusual space, keep the file out of
+the backup, as `secrets` above explains, so remove comments and keep the
+space to be sure it is backed up.
 After restoring, set up OpenClaw's logins and keys again, as on a new
 machine.
 
