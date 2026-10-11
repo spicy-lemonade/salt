@@ -390,6 +390,22 @@ func TestGitEdgeCases(t *testing.T) {
 	if code != 1 || !strings.Contains(out, "2 staged file(s)") || !strings.Contains(out, "not a regular file") {
 		t.Fatalf("check with odd entries: exit %d\n%s", code, out)
 	}
+	e.must(repoDir, "git", "update-index", "--force-remove", "odd\nname.md", "sub")
+
+	// A submodule entry naming a commit that is in the repo: git prints the
+	// commit's text, which must not be read as the lines about the files
+	// after it, even when its message looks like one for a file that is
+	// encrypted.
+	tree := strings.TrimSpace(e.must(repoDir, "git", "mktree"))
+	commit := strings.TrimSpace(e.must(repoDir, "git", "-c", "user.name=t", "-c", "user.email=t@t",
+		"commit-tree", tree, "-m", "x", "-m", "x blob 22\nage-encryption.org/v1"))
+	e.must(repoDir, "git", "update-index", "--add", "--cacheinfo", "160000,"+commit+",a-sub")
+	write(t, filepath.Join(repoDir, "b-plain.md"), "plaintext")
+	e.must(repoDir, "git", "add", "b-plain.md")
+	out, code = e.run(repoDir, "salt", "check")
+	if code != 1 || !strings.Contains(out, "2 staged file(s)") || !strings.Contains(out, "a-sub: not a regular file") || !strings.Contains(out, "b-plain.md: not encrypted") {
+		t.Fatalf("check with a submodule entry naming a commit here: exit %d\n%s", code, out)
+	}
 }
 
 // Exit codes: 2 for usage mistakes, 1 for failures.

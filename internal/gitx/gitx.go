@@ -131,7 +131,7 @@ func objectHeads(dir string, names, specs []string, n int, fn func(name string, 
 		w.Flush()
 		stdin.Close()
 	}()
-	if err := ReadBatch(stdout, names, n, fn); err != nil {
+	if err := readBatch(stdout, names, n, fn); err != nil {
 		// git's output ends early when git fails, so its own message says
 		// why.
 		cmd.Process.Kill()
@@ -147,12 +147,14 @@ func objectHeads(dir string, names, specs []string, n int, fn func(name string, 
 	return nil
 }
 
-// ReadBatch reads `git cat-file --batch` output for one object for each of
+// readBatch reads `git cat-file --batch` output for one object for each of
 // names, in order, and calls fn with the name and the object's first n
-// bytes. An object that is missing or not a blob, such as a submodule, is
-// reported with ok=false. Each blob is read through, so memory use stays
-// bounded however large it is.
-func ReadBatch(r io.Reader, names []string, n int, fn func(name string, head []byte, ok bool)) error {
+// bytes. An object that is missing, or is not a blob, such as the commit a
+// submodule names, is reported with ok=false. git prints the contents of
+// every object it finds, whatever its type, so each is read through, or the
+// text of a commit would be read as the lines about the objects after it.
+// Memory use stays bounded however large an object is.
+func readBatch(r io.Reader, names []string, n int, fn func(name string, head []byte, ok bool)) error {
 	br := bufio.NewReader(r)
 	head := &prefix{buf: make([]byte, 0, n)}
 	for _, name := range names {
@@ -160,19 +162,28 @@ func ReadBatch(r io.Reader, names []string, n int, fn func(name string, head []b
 		if err != nil {
 			return fmt.Errorf("git cat-file: %w", err)
 		}
-		fields := strings.Fields(line)
-		if len(fields) != 3 || fields[1] != "blob" {
-			// "missing" or a non-blob (e.g. a submodule): never ciphertext.
+		// An object not found is one line, with nothing after it.
+		if l := strings.TrimSuffix(line, "\n"); strings.HasSuffix(l, " missing") || strings.HasSuffix(l, " ambiguous") {
 			fn(name, nil, false)
 			continue
 		}
-		size, err := strconv.ParseInt(fields[2], 10, 64)
-		if err != nil || size < 0 {
+		fields := strings.Fields(line)
+		var size int64
+		if len(fields) == 3 {
+			size, err = strconv.ParseInt(fields[2], 10, 64)
+		}
+		if len(fields) != 3 || err != nil || size < 0 {
 			return fmt.Errorf("git cat-file: bad size in %q", line)
 		}
 		head.buf, head.max = head.buf[:0], int(min(size, int64(n)))
 		if _, err := io.CopyN(head, br, size+1); err != nil { // +1: trailing newline
 			return fmt.Errorf("git cat-file: %w", err)
+		}
+		if fields[1] != "blob" {
+			// Anything but a blob, such as a submodule's commit, is never
+			// ciphertext.
+			fn(name, nil, false)
+			continue
 		}
 		fn(name, head.buf, true)
 	}
