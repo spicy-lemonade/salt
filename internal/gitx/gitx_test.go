@@ -3,6 +3,7 @@ package gitx
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -141,5 +142,28 @@ func TestReadBatch(t *testing.T) {
 		if err == nil || !strings.HasPrefix(err.Error(), "git cat-file: ") {
 			t.Errorf("%s: readBatch = %v, want an error from reading git cat-file", name, err)
 		}
+	}
+}
+
+// readBatch reads every object through one buffer, so it allocates only a
+// few bytes for each object, not a buffer of up to 32 KiB.
+func TestReadBatchAllocations(t *testing.T) {
+	const objects = 200
+	var out strings.Builder
+	names := make([]string, objects)
+	for i := range names {
+		names[i] = fmt.Sprint(i)
+		out.WriteString("1111 blob 100000\n" + strings.Repeat("x", 100000) + "\n")
+	}
+	text := out.String()
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if err := readBatch(strings.NewReader(text), names, 8, func(string, []byte, bool) {}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	if perObject := (after.TotalAlloc - before.TotalAlloc - 32<<10) / objects; perObject > 1<<10 {
+		t.Fatalf("readBatch allocated %d bytes for each object", perObject)
 	}
 }

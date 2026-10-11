@@ -162,6 +162,10 @@ var noObject = []string{" missing", " ambiguous", " submodule"}
 func readBatch(r io.Reader, names []string, n int, fn func(name string, head []byte, ok bool)) error {
 	br := bufio.NewReader(r)
 	head := &prefix{buf: make([]byte, 0, n)}
+	// One buffer and one limit carry every object, where io.CopyN would
+	// make a new buffer of up to 32 KiB for each.
+	buf := make([]byte, 32<<10)
+	body := &io.LimitedReader{R: br}
 	for _, name := range names {
 		line, err := br.ReadString('\n')
 		if err != nil {
@@ -184,7 +188,12 @@ func readBatch(r io.Reader, names []string, n int, fn func(name string, head []b
 			return fmt.Errorf("git cat-file: bad size in %q", line)
 		}
 		head.buf, head.max = head.buf[:0], int(min(size, int64(n)))
-		if _, err := io.CopyN(head, br, size+1); err != nil { // +1: trailing newline
+		body.N = size + 1 // +1: trailing newline
+		copied, err := io.CopyBuffer(head, body, buf)
+		if err == nil && copied != size+1 {
+			err = io.ErrUnexpectedEOF
+		}
+		if err != nil {
 			return fmt.Errorf("git cat-file: %w", err)
 		}
 		if fields[1] != "blob" {
