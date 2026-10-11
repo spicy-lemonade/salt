@@ -212,8 +212,12 @@ func (f FallbackStore) Get(recipient string) (Secret, error) {
 // keychain at all works as one whose keychain lacks the key.
 type KeychainError struct{ Err error }
 
-func (e *KeychainError) Error() string {
-	return fmt.Sprintf("%v, and the system keychain could not be read (%v)", ErrNotFound, e.Err)
+func (e *KeychainError) Error() string { return ErrNotFound.Error() + e.Why() }
+
+// Why says why the key may be there after all, to follow a message that
+// says it is missing: ", and the system keychain could not be read (…)".
+func (e *KeychainError) Why() string {
+	return fmt.Sprintf(", and the system keychain could not be read (%v)", e.Err)
 }
 
 func (e *KeychainError) Is(target error) bool { return target == ErrNotFound }

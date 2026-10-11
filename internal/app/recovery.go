@@ -204,7 +204,7 @@ func (a *App) storedIdentity(rcpt string) (*age.X25519Identity, error) {
 func keychainNote(err error) string {
 	var kc *keys.KeychainError
 	if errors.As(err, &kc) {
-		return fmt.Sprintf(", and the system keychain could not be read (%v)", kc.Err)
+		return kc.Why()
 	}
 	return ""
 }
