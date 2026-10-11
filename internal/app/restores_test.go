@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 func TestRestoreLog(t *testing.T) {
@@ -63,27 +62,19 @@ func TestRestoreLog(t *testing.T) {
 	}
 	os.Remove(unreadable)
 
-	// A record cut short, by a crash as it was written, names no folder,
-	// even one that exists. add leaves a young one, which may be another
-	// salt's still being written, and removes an old one. It leaves files
-	// that are not records alone.
-	cut := filepath.Join(l.dir, "fedcba9876543210")
-	os.WriteFile(cut, []byte(b), 0o600)
+	// A temporary file a crash left behind as a record was written is never
+	// read as one, and add leaves it alone, as it does every file that is
+	// not a record.
+	leftover := l.record(b) + ".tmp-123"
+	os.WriteFile(leftover, []byte(filepath.Join(base, "x")), 0o600)
 	if dirs, _ := l.leftovers(); !slices.Equal(dirs, []string{b}) {
-		t.Fatalf("leftovers with a record cut short = %v", dirs)
+		t.Fatalf("leftovers with a temporary file = %v", dirs)
 	}
 	l.add(b)
-	if _, err := os.Stat(cut); err != nil {
-		t.Fatalf("a young record cut short was removed: %v", err)
-	}
-	old := time.Now().Add(-2 * staleRecord)
-	os.Chtimes(cut, old, old)
-	l.add(b)
-	if _, err := os.Stat(cut); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("an old record cut short was kept: %v", err)
-	}
-	if _, err := os.Stat(other); err != nil {
-		t.Fatalf("a file that is not a record was removed: %v", err)
+	for _, p := range []string{leftover, other} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("add removed %s, which is not a record: %v", filepath.Base(p), err)
+		}
 	}
 
 	// The list an older salt kept is read, but never changed. add removes
@@ -104,12 +95,18 @@ func TestRestoreLog(t *testing.T) {
 		t.Fatalf("an older list naming no folder that exists was kept: %v", err)
 	}
 
-	// An older list that cannot be read is reported, and kept, as it may
-	// name a folder of decrypted files.
+	// A damaged older list is reported, and removed by add, as it can never
+	// be read. One that cannot be read now, as a folder in its place, is
+	// kept, as it may name a folder of decrypted files once it can be.
 	os.WriteFile(l.older, []byte("{"), 0o600)
-	if _, err := l.leftovers(); err == nil || !strings.Contains(err.Error(), l.older) {
+	if _, err := l.leftovers(); err == nil || !strings.Contains(err.Error(), l.older+": it is damaged") {
 		t.Fatalf("corrupt list: %v", err)
 	}
+	l.add(b)
+	if _, err := os.Stat(l.older); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a damaged older list was kept: %v", err)
+	}
+	os.Mkdir(l.older, 0o700)
 	l.add(b)
 	if _, err := os.Stat(l.older); err != nil {
 		t.Fatalf("an older list that could not be read was removed: %v", err)

@@ -12,7 +12,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
+
+	"github.com/spicy-lemonade/salt/internal/private"
 )
 
 // ErrInterrupted means the person stopped a command (Ctrl-C or SIGTERM), or
@@ -25,16 +26,12 @@ var ErrInterrupted = errors.New("interrupted")
 // cannot clean up, and its folder may hold decrypted files, so doctor
 // reports any still recorded. older is the one list an older salt kept for
 // them all, which is only read, and removed once it names no folder that
-// still exists.
+// still exists, or is damaged.
 type restoreLog struct{ dir, older string }
 
 func (a *App) restoreLog() restoreLog {
 	return restoreLog{dir: filepath.Join(a.CacheDir, "restores"), older: filepath.Join(a.CacheDir, "restores.json")}
 }
-
-// staleRecord is how old a record cut short must be before add removes it.
-// Writing one takes far less.
-const staleRecord = time.Minute
 
 // recordName is the length of a record's name: 8 bytes of the SHA-256 of
 // the folder it records, in hex.
@@ -46,31 +43,24 @@ func (l restoreLog) record(tmp string) string {
 	return filepath.Join(l.dir, hex.EncodeToString(sum[:recordName/2]))
 }
 
-// add records tmp. It is written in place, not through a temporary file as
-// private.Write does, so no temporary file is ever left in l.dir. A record
-// ends with a newline, so one cut short by a crash names no folder. Records
-// of folders already gone are then removed, and so are those cut short once
-// they are older than staleRecord, as a younger one may be another salt's
-// still being written. So is an older salt's list, once it has been read and
-// none of its folders exist. Losing any of that only leaves something doctor
-// skips.
+// add records tmp. Records of folders already gone are then removed, and so
+// is an older salt's list, once it has been read and none of its folders
+// exist, or it is damaged, since it can never be read. One that cannot be
+// read now, but may be later, is kept. Losing any of that only leaves
+// something doctor skips.
 func (l restoreLog) add(tmp string) error {
-	if err := os.MkdirAll(l.dir, 0o700); err != nil {
-		return err
-	}
-	if err := os.WriteFile(l.record(tmp), []byte(tmp+"\n"), 0o600); err != nil {
+	if err := private.Write(l.record(tmp), []byte(tmp)); err != nil {
 		return err
 	}
 	exists := func(d string) bool { _, err := os.Lstat(d); return err == nil }
 	records, _ := l.records()
 	for p, d := range records {
-		if d != "" && !exists(d) {
-			os.Remove(p)
-		} else if fi, err := os.Stat(p); d == "" && err == nil && time.Since(fi.ModTime()) > staleRecord {
+		if !exists(d) {
 			os.Remove(p)
 		}
 	}
-	if older, err := l.loadOlder(); err == nil && !slices.ContainsFunc(older, exists) {
+	older, err := l.loadOlder()
+	if errors.Is(err, errDamagedList) || (err == nil && !slices.ContainsFunc(older, exists)) {
 		os.Remove(l.older)
 	}
 	return nil
@@ -85,8 +75,9 @@ func (l restoreLog) remove(tmp string) error {
 	return err
 }
 
-// records maps each record in l.dir to the folder it records, or to "" for
-// one cut short. Only files named as add names them are records.
+// records maps each record in l.dir to the folder it records. Only files
+// named as record names them are records, so a temporary file private.Write
+// left behind is never read as one.
 func (l restoreLog) records() (map[string]string, error) {
 	entries, err := os.ReadDir(l.dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -107,11 +98,7 @@ func (l restoreLog) records() (map[string]string, error) {
 			errs = append(errs, err)
 			continue
 		}
-		d, complete := strings.CutSuffix(string(b), "\n")
-		if !complete {
-			d = ""
-		}
-		out[p] = d
+		out[p] = string(b)
 	}
 	return out, errors.Join(errs...)
 }
@@ -121,6 +108,9 @@ func (l restoreLog) records() (map[string]string, error) {
 func isRecordName(name string) bool {
 	return len(name) == recordName && strings.Trim(name, "0123456789abcdef") == ""
 }
+
+// errDamagedList means an older salt's list is not the JSON it wrote.
+var errDamagedList = errors.New("it is damaged")
 
 // loadOlder reads an older salt's list, or none when there is none.
 func (l restoreLog) loadOlder() ([]string, error) {
@@ -133,7 +123,7 @@ func (l restoreLog) loadOlder() ([]string, error) {
 	}
 	var dirs []string
 	if err := json.Unmarshal(b, &dirs); err != nil {
-		return nil, fmt.Errorf("%s: %w", l.older, err)
+		return nil, fmt.Errorf("%s: %w (%v)", l.older, errDamagedList, err)
 	}
 	return dirs, nil
 }
