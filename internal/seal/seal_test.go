@@ -77,10 +77,7 @@ func newFixture(t *testing.T, encryptPaths bool) *fixture {
 func (f *fixture) writeIndex(ix *Index) []byte {
 	f.t.Helper()
 	ix.sign(f.signer)
-	b, _, err := ix.marshal()
-	if err != nil {
-		f.t.Fatal(err)
-	}
+	b, _ := ix.marshal()
 	if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
 		f.t.Fatal(err)
 	}
@@ -436,7 +433,7 @@ func TestReadIndexRejectsUnsafePaths(t *testing.T) {
 	for _, bad := range []string{"../escape", "/etc/passwd", "a/../../b"} {
 		f := newFixture(t, true)
 		ix := &Index{Version: repo.FormatVersion, Entries: []Entry{{Path: bad, Object: "objects/aa/bb.age"}}}
-		b, _, _ := ix.marshal()
+		b, _ := ix.marshal()
 		if err := writeIndex(f.root, b, f.repo.Recipients); err != nil {
 			t.Fatal(err)
 		}

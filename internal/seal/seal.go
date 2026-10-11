@@ -2,6 +2,7 @@ package seal
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -382,10 +383,7 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	}
 	ix := &Index{Version: version, Entries: entries}
 	ix.sign(opt.Signer)
-	b, ixSHA, err := ix.marshal()
-	if err != nil {
-		return fail(err)
-	}
+	b, ixSHA := ix.marshal()
 	if len(b) > maxIndexSize {
 		return fail(fmt.Errorf("the index would be %d bytes; salt supports at most %d", len(b), maxIndexSize))
 	}
@@ -401,13 +399,11 @@ func Seal(src string, r *repo.Repo, opt Options) (*Result, error) {
 	// Only now is the index on disk the one next names.
 	next.IndexSHA, next.IndexSize, next.IndexModTime = ixSHA, ixPart.CipherSize, ixPart.ModTime
 
+	// The cache is saved even if the clean-up fails, as the index it names
+	// is written.
 	removed, err := removeStale(rt, keep, opt.Prune)
 	res.Removed = removed
-	if err != nil {
-		next.save(cPath)
-		return res, err
-	}
-	return res, next.save(cPath)
+	return res, cmp.Or(err, next.save(cPath))
 }
 
 // leftOut is why a file was left out of the backup, if it was.
@@ -603,20 +599,24 @@ func partIntact(rt *os.Root, p cachePart) (cachePart, bool) {
 	return p, true
 }
 
+// walkSource lists the files and symlinks in the folder src. filepath.WalkDir
+// does not go into a symlink it is given, so a source folder given as one
+// would be sealed as empty, removing everything sealed before. The folder
+// is walked where its symlinks lead instead, so errors about the files in it
+// name them there.
 func walkSource(src string, exclude []string, res *Result, fn func(string) string) ([]item, error) {
-	fi, err := os.Stat(src)
+	real, err := filepath.EvalSymlinks(src)
+	var fi os.FileInfo
+	if err == nil {
+		fi, err = os.Stat(real)
+	}
 	if err != nil {
 		return nil, err
 	}
 	if !fi.IsDir() {
 		return nil, fmt.Errorf("%s is not a directory", show(fn, src))
 	}
-	// filepath.WalkDir does not go into a symlink it is given, so a source
-	// folder given as one would be sealed as empty, removing everything
-	// sealed before. It is walked where the symlink leads instead.
-	if src, err = filepath.EvalSymlinks(src); err != nil {
-		return nil, err
-	}
+	src = real
 	skip := map[string]bool{}
 	for _, e := range exclude {
 		skip[e] = true
