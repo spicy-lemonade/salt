@@ -487,6 +487,7 @@ func encryptChunks(rt *os.Root, r *repo.Repo, abs string, gear *gearTable, prev 
 		}
 	}
 	ch := newChunker(f, gear)
+	defer ch.release()
 	whole := sha256.New()
 	seen := map[string]cachePart{}
 	var parts []cachePart

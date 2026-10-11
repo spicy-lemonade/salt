@@ -3,7 +3,9 @@ package seal
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path"
@@ -144,6 +146,65 @@ func TestChunkerFindsBoundariesAgain(t *testing.T) {
 		if n := newChunks(before, got); n > 4 {
 			t.Errorf("%s: %d of %d chunks are new", name, n, len(got))
 		}
+	}
+}
+
+// The boundaries are pinned: a change to how the chunker reads must find
+// exactly the same ones, or the next seal of every chunked file would
+// encrypt all of it again. These are what salt has found since chunking
+// began, at the real sizes and at the test ones, read whole and in small
+// pieces.
+func TestChunkerBoundariesPinned(t *testing.T) {
+	data := noise(40 << 20)
+	want := []int{9158712, 5375656, 2375036, 7358386, 4318802, 5537145, 1921685, 5892402, 5216}
+	for name, r := range map[string]io.Reader{"whole": bytes.NewReader(data), "in pieces": iotest.HalfReader(bytes.NewReader(data))} {
+		var got []int
+		for _, c := range chunksOf(t, r, testGear(1)) {
+			got = append(got, len(c))
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: chunk sizes %v, want %v", name, got, want)
+		}
+	}
+
+	smallChunks(t)
+	data = noise(3 << 20)
+	for name, r := range map[string]io.Reader{"whole": bytes.NewReader(data), "in pieces": iotest.OneByteReader(bytes.NewReader(data))} {
+		var got []int
+		for _, c := range chunksOf(t, r, testGear(1)) {
+			got = append(got, len(c))
+		}
+		sum := sha256.Sum256([]byte(fmt.Sprint(got)))
+		if len(got) != 163 || hex.EncodeToString(sum[:]) != "727824b90c841a2ac73322b19eadac192e5e69856da2c1393f026224ea0374cd" {
+			t.Errorf("%s: %d small chunks, not the boundaries found before", name, len(got))
+		}
+	}
+}
+
+// A chunker reads only a step past where it looks for a boundary, so when a
+// chunk ends it holds little of the next one, which it moves to the start
+// of its buffer. Reading a whole buffer ahead moved about three times as
+// many bytes as it chunked.
+func TestChunkerReadsLittleAhead(t *testing.T) {
+	smallChunks(t)
+	c := newChunker(bytes.NewReader(noise(2<<20)), testGear(1))
+	defer c.release()
+	chunks := 0
+	for {
+		b, err := c.next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		chunks++
+		if ahead := c.n - len(b); ahead > readStep() {
+			t.Fatalf("chunk %d: %d bytes read ahead, want at most %d", chunks, ahead, readStep())
+		}
+	}
+	if chunks < 2<<20/maxChunk {
+		t.Fatalf("2 MiB made %d chunks", chunks)
 	}
 }
 

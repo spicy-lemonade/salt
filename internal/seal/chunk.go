@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"math/bits"
+	"sync"
 )
 
 // A file over maxChunk bytes is sealed in chunks of plaintext, each
@@ -51,7 +52,10 @@ func chunkGear(seed []byte) *gearTable {
 }
 
 // chunker splits a stream into content-defined chunks. It holds at most
-// maxChunk bytes at a time, in one buffer it reuses.
+// maxChunk bytes at a time, in one buffer it reuses, taken from chunkBufs.
+// It reads a step at a time (see readStep) while it looks for a boundary,
+// so it has read little of the next chunk when one ends, and moves only
+// that little to the start of the buffer for the next.
 type chunker struct {
 	r            io.Reader
 	gear         *gearTable
@@ -63,8 +67,21 @@ type chunker struct {
 	maskS, maskL uint64
 }
 
+// chunkBufs holds the buffers of chunkers that are done, so each large file
+// does not need a new one of maxChunk bytes. At most one per worker is in
+// use at a time.
+var chunkBufs sync.Pool
+
+// readStep is how much a chunker reads at a time.
+func readStep() int { return max(avgChunk/8, 1) }
+
 func newChunker(r io.Reader, gear *gearTable) *chunker {
 	b := bits.Len(uint(avgChunk)) - 1
+	buf, ok := chunkBufs.Get().(*[]byte)
+	if !ok || len(*buf) != maxChunk {
+		fresh := make([]byte, maxChunk)
+		buf = &fresh
+	}
 	// FastCDC's normalised chunking, at level 1: a harder test before
 	// avgChunk and an easier one after it keep most chunks close to
 	// avgChunk. Level 2, FastCDC's default, found the old boundaries again
@@ -74,56 +91,81 @@ func newChunker(r io.Reader, gear *gearTable) *chunker {
 	return &chunker{
 		r:     r,
 		gear:  gear,
-		buf:   make([]byte, maxChunk),
+		buf:   *buf,
 		maskS: ^uint64(0) << (64 - (b + 1)),
 		maskL: ^uint64(0) << (64 - (b - 1)),
 	}
 }
 
+// release gives the chunker's buffer back for another to use. Neither the
+// chunker nor the last chunk it returned may be used after.
+func (c *chunker) release() {
+	buf := c.buf
+	c.buf = nil
+	chunkBufs.Put(&buf)
+}
+
 // next returns the next chunk. It is valid only until next is called again.
 // An empty stream is one empty chunk, so every file has at least one. After
 // the last chunk next returns io.EOF.
+//
+// A chunk ends after the first byte from minChunk on where the rolling hash
+// passes the test for where it is (see newChunker), at maxChunk bytes, or at
+// the end of the stream. The hash starts afresh at minChunk, so a boundary
+// depends only on the bytes since then, never on how they were read.
 func (c *chunker) next() ([]byte, error) {
 	c.n = copy(c.buf, c.buf[c.cut:c.n])
 	c.cut = 0
-	for !c.eof && c.n < len(c.buf) {
-		m, err := c.r.Read(c.buf[c.n:])
-		c.n += m
-		if errors.Is(err, io.EOF) {
-			c.eof = true
-		} else if err != nil {
+	var h uint64
+	i := minChunk
+	gear, maskS, maskL := c.gear, c.maskS, c.maskL
+	for {
+		// The bytes read so far are scanned through locals, which keep the
+		// loop as fast as one over the whole buffer.
+		data := c.buf[:c.n]
+		for end := min(len(data), avgChunk); i < end; i++ {
+			h = h<<1 + gear[data[i]]
+			if h&maskS == 0 {
+				return c.chunk(i + 1), nil
+			}
+		}
+		for ; i < len(data); i++ {
+			h = h<<1 + gear[data[i]]
+			if h&maskL == 0 {
+				return c.chunk(i + 1), nil
+			}
+		}
+		if c.eof || c.n == len(c.buf) {
+			break
+		}
+		if err := c.fill(); err != nil {
 			return nil, err
 		}
 	}
 	if c.n == 0 && c.emitted {
 		return nil, io.EOF
 	}
-	c.emitted = true
-	c.cut = c.boundary(c.buf[:c.n])
-	return c.buf[:c.cut], nil
+	return c.chunk(c.n), nil
 }
 
-// boundary returns the length of the chunk at the start of data, which
-// holds maxChunk bytes unless the stream ends sooner.
-func (c *chunker) boundary(data []byte) int {
-	n := len(data)
-	if n <= minChunk {
-		return n
-	}
-	normal := min(avgChunk, n)
-	var h uint64
-	i := minChunk
-	for ; i < normal; i++ {
-		h = h<<1 + c.gear[data[i]]
-		if h&c.maskS == 0 {
-			return i + 1
+// chunk returns the first n bytes held as the next chunk.
+func (c *chunker) chunk(n int) []byte {
+	c.emitted, c.cut = true, n
+	return c.buf[:n]
+}
+
+// fill reads up to readStep more bytes, stopping early at the end of the
+// stream or of the buffer.
+func (c *chunker) fill() error {
+	end := min(len(c.buf), c.n+readStep())
+	for !c.eof && c.n < end {
+		m, err := c.r.Read(c.buf[c.n:end])
+		c.n += m
+		if errors.Is(err, io.EOF) {
+			c.eof = true
+		} else if err != nil {
+			return err
 		}
 	}
-	for ; i < n; i++ {
-		h = h<<1 + c.gear[data[i]]
-		if h&c.maskL == 0 {
-			return i + 1
-		}
-	}
-	return n
+	return nil
 }
