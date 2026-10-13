@@ -83,7 +83,7 @@ salt backup --preset NAME ~/my-backup-repo
 
 The presets are `hermes`, `hindsight`, `holographic`, `honcho`, `mnemosyne`, `openclaw` and `openviking`. Your repo then holds only what the presets find, so give `salt backup` a repo of its own. The design doc explains [how to run it every day](docs/design.md#running-it-every-day) and [what each preset backs up](docs/design.md#presets).
 
-To back up Claude Code, use [enclaude](https://github.com/coredipper/enclaude), which encrypts its `~/.claude` folder and syncs it through git.
+Claude Code's data is more complex, so it has a separate tool, Salt's sister project [enclaude](https://github.com/coredipper/enclaude). It encrypts Claude Code's `~/.claude` folder and syncs it through git.
 
 ## 🧹 Keeping only recent backups
 

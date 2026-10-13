@@ -1645,7 +1645,3 @@ rm ~/my-backup-repo/.git/hooks/pre-commit ~/my-backup-repo/.git/hooks/pre-push
 ## Out of scope
 
 Touch ID, and switching between the recovery phrase and a passphrase.
-
-## Still to build
-
-- Presets for more tools.
